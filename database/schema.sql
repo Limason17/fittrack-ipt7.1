@@ -8,3 +8,14 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash VARCHAR(255) NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS exercises (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NULL, -- NULL = global exercise, otherwise created by user
+  name VARCHAR(80) NOT NULL,
+  description VARCHAR(255) NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_exercises_user
+    FOREIGN KEY (user_id) REFERENCES users(id)
+    ON DELETE SET NULL
+);
