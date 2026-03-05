@@ -19,3 +19,15 @@ CREATE TABLE IF NOT EXISTS exercises (
     FOREIGN KEY (user_id) REFERENCES users(id)
     ON DELETE SET NULL
 );
+
+CREATE TABLE IF NOT EXISTS workouts (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  title VARCHAR(100) NOT NULL,
+  workout_date DATE NOT NULL,
+  notes VARCHAR(255) NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_workouts_user
+    FOREIGN KEY (user_id) REFERENCES users(id)
+    ON DELETE CASCADE
+);
