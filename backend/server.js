@@ -3,6 +3,7 @@ const cors = require("cors");
 require("dotenv").config();
 
 const db = require("./config/db");
+const userRoutes = require("./routes/user");
 
 const app = express();
 
@@ -13,6 +14,8 @@ app.use(express.json());
 app.get("/api/health", (req, res) => {
     res.json({ message: "API is running" });
 });
+
+app.use("/api/users", userRoutes);
 
 const PORT = process.env.PORT || 3000;
 
