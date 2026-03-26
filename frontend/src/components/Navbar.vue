@@ -27,31 +27,26 @@ import { RouterLink } from 'vue-router'
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 1rem 2rem;
-  background-color: #2c3e50;
-  color: white;
-  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+  padding: 1.2rem 5%;
+  background-color: #1e2229;
+  border-bottom: 1px solid #2a2f38;
 }
 
 .logo a {
   font-size: 1.5rem;
-  font-weight: bold;
+  font-weight: 800;
   color: #42b983;
-  text-decoration: none;
 }
 
 .nav-links {
   display: flex;
   list-style: none;
-  gap: 1.5rem;
-  margin: 0;
-  padding: 0;
+  gap: 2rem;
 }
 
 .nav-links a {
-  color: white;
-  text-decoration: none;
-  font-weight: 500;
+  color: #a0aab5;
+  font-weight: 600;
   transition: color 0.3s ease;
 }
 
@@ -67,38 +62,40 @@ import { RouterLink } from 'vue-router'
 }
 
 .lang-switch {
-  background: none;
-  border: 1px solid white;
-  color: white;
-  padding: 0.3rem 0.6rem;
-  border-radius: 4px;
+  background: transparent;
+  border: 1px solid #555;
+  color: #a0aab5;
+  padding: 0.4rem 0.8rem;
+  border-radius: 6px;
   cursor: pointer;
+  transition: all 0.3s ease;
 }
 
 .lang-switch:hover {
-  background: rgba(255, 255, 255, 0.1);
+  border-color: #42b983;
+  color: #42b983;
 }
 
 .btn {
-  text-decoration: none;
-  padding: 0.5rem 1rem;
+  padding: 0.6rem 1.2rem;
   border-radius: 6px;
-  font-weight: bold;
+  font-weight: 600;
   transition: all 0.3s ease;
 }
 
 .login-btn {
-  color: white;
-  border: 1px solid #42b983;
+  color: #ffffff;
+  border: 1px solid #555;
 }
 
 .login-btn:hover {
-  background-color: rgba(66, 185, 131, 0.1);
+  border-color: #42b983;
+  color: #42b983;
 }
 
 .register-btn {
   background-color: #42b983;
-  color: #2c3e50;
+  color: #121418;
 }
 
 .register-btn:hover {
