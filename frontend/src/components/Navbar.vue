@@ -3,102 +3,79 @@ import { RouterLink } from 'vue-router'
 </script>
 
 <template>
-  <nav class="navbar">
-    <div class="logo">
-      <RouterLink to="/">FitTrack</RouterLink>
-    </div>
+  <nav class="nav-wrap">
+    <div class="page-container">
+      <div class="nav-inner">
+        <RouterLink to="/" class="brand">FitTrack</RouterLink>
 
-    <ul class="nav-links">
-      <li><RouterLink to="/exercises">Übungen</RouterLink></li>
-      <li><RouterLink to="/workouts">Workouts</RouterLink></li>
-      <li><RouterLink to="/progress">Fortschritt</RouterLink></li>
-    </ul>
+        <div class="nav-links">
+          <RouterLink to="/exercises">Übungen</RouterLink>
+          <RouterLink to="/workouts">Workouts</RouterLink>
+          <RouterLink to="/progress">Fortschritt</RouterLink>
+        </div>
 
-    <div class="nav-actions">
-      <button class="lang-switch" title="Sprache wechseln">DE / EN</button>
-      <RouterLink to="/login" class="btn login-btn">Login</RouterLink>
-      <RouterLink to="/register" class="btn register-btn">Registrieren</RouterLink>
+        <div class="nav-actions">
+          <RouterLink to="/login" class="btn btn-secondary">Login</RouterLink>
+          <RouterLink to="/register" class="btn btn-primary">Registrieren</RouterLink>
+        </div>
+      </div>
     </div>
   </nav>
 </template>
 
 <style scoped>
-.navbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 1.2rem 5%;
-  background-color: #1e2229;
-  border-bottom: 1px solid #2a2f38;
+.nav-wrap {
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  padding: 1rem 0;
+  background: #d9d1c6;
+  border-bottom: 1px solid var(--border);
 }
 
-.logo a {
-  font-size: 1.5rem;
+.nav-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 0.2rem 0;
+}
+
+.brand {
+  font-size: 1.2rem;
   font-weight: 800;
-  color: #42b983;
+  letter-spacing: -0.03em;
 }
 
 .nav-links {
   display: flex;
-  list-style: none;
   gap: 2rem;
 }
 
 .nav-links a {
-  color: #a0aab5;
+  color: var(--text-soft);
   font-weight: 600;
-  transition: color 0.3s ease;
 }
 
-.nav-links a:hover,
-.nav-links a.router-link-active {
-  color: #42b983;
+.nav-links a.router-link-active,
+.nav-links a:hover {
+  color: var(--text);
 }
 
 .nav-actions {
   display: flex;
-  align-items: center;
-  gap: 1rem;
+  gap: 0.65rem;
 }
 
-.lang-switch {
-  background: transparent;
-  border: 1px solid #555;
-  color: #a0aab5;
-  padding: 0.4rem 0.8rem;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.3s ease;
-}
+@media (max-width: 900px) {
+  .nav-inner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 
-.lang-switch:hover {
-  border-color: #42b983;
-  color: #42b983;
-}
-
-.btn {
-  padding: 0.6rem 1.2rem;
-  border-radius: 6px;
-  font-weight: 600;
-  transition: all 0.3s ease;
-}
-
-.login-btn {
-  color: #ffffff;
-  border: 1px solid #555;
-}
-
-.login-btn:hover {
-  border-color: #42b983;
-  color: #42b983;
-}
-
-.register-btn {
-  background-color: #42b983;
-  color: #121418;
-}
-
-.register-btn:hover {
-  background-color: #3aa876;
+  .nav-links,
+  .nav-actions {
+    flex-wrap: wrap;
+  }
 }
 </style>
