@@ -1,10 +1,4 @@
 <script setup>
-const exerciseItems = [
-  { name: 'Bankdrücken', category: 'Brust', note: 'Klassische Grundübung' },
-  { name: 'Kniebeugen', category: 'Beine', note: 'Stabilität und Kraft' },
-  { name: 'Klimmzüge', category: 'Rücken', note: 'Eigengewicht' },
-  { name: 'Schulterdrücken', category: 'Schultern', note: 'Oberkörperdruck' },
-]
 </script>
 
 <template>
@@ -14,21 +8,26 @@ const exerciseItems = [
         <span class="eyebrow">Übungen</span>
         <h1 class="page-title">Deine Übungsübersicht</h1>
         <p class="page-subtitle">
-          Hier kannst du deine wichtigsten Übungen sammeln und geordnet anzeigen.
+          Hier kannst du deine Übungen später sammeln, ordnen und schnell wiederfinden.
         </p>
       </div>
 
-      <div class="toolbar">
-        <input class="input" type="text" placeholder="Übung suchen" />
-        <button class="btn btn-primary">Neue Übung</button>
+      <div class="toolbar card">
+        <div>
+          <h2>Noch keine Übungen vorhanden</h2>
+          <p>
+            Sobald du eigene Übungen anlegst oder globale Übungen einbindest, erscheinen sie hier.
+          </p>
+        </div>
+
+        <button class="btn btn-primary" type="button">Neue Übung</button>
       </div>
 
-      <div class="grid-2">
-        <article v-for="exercise in exerciseItems" :key="exercise.name" class="exercise-card card">
-          <h2>{{ exercise.name }}</h2>
-          <p>{{ exercise.category }}</p>
-          <span>{{ exercise.note }}</span>
-        </article>
+      <div class="empty-card card">
+        <p>
+          Im Moment ist deine Übungsliste noch leer. Das ist ein guter Platz für deine wichtigsten
+          Kraft-, Cardio- oder Mobility-Übungen.
+        </p>
       </div>
     </div>
   </section>
@@ -40,35 +39,36 @@ const exerciseItems = [
 }
 
 .toolbar {
-  display: grid;
-  grid-template-columns: 1fr auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   gap: 1rem;
+  padding: 1.5rem;
   margin-bottom: 1.5rem;
 }
 
-.exercise-card {
+.toolbar h2 {
+  font-size: 1.1rem;
+  font-weight: 750;
+  margin-bottom: 0.35rem;
+}
+
+.toolbar p {
+  color: var(--text-soft);
+}
+
+.empty-card {
   padding: 1.5rem;
 }
 
-.exercise-card h2 {
-  font-size: 1.15rem;
-  font-weight: 750;
-  margin-bottom: 0.4rem;
-}
-
-.exercise-card p {
+.empty-card p {
   color: var(--text-soft);
-  margin-bottom: 0.7rem;
-}
-
-.exercise-card span {
-  color: var(--text-muted);
-  font-size: 0.95rem;
 }
 
 @media (max-width: 900px) {
   .toolbar {
-    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 </style>

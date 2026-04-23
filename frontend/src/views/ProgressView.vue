@@ -1,9 +1,4 @@
 <script setup>
-const progressItems = [
-  { exercise: 'Bankdrücken', before: '60 kg', now: '67.5 kg' },
-  { exercise: 'Kniebeugen', before: '80 kg', now: '95 kg' },
-  { exercise: 'Klimmzüge', before: '8 Wdh.', now: '12 Wdh.' },
-]
 </script>
 
 <template>
@@ -13,24 +8,16 @@ const progressItems = [
         <span class="eyebrow">Fortschritt</span>
         <h1 class="page-title">Deine Entwicklung</h1>
         <p class="page-subtitle">
-          Vergleiche frühere Leistungen mit deinem aktuellen Stand.
+          Hier wirst du später sehen, wie sich deine Leistungen mit der Zeit verändern.
         </p>
       </div>
 
-      <div class="grid-3">
-        <article v-for="item in progressItems" :key="item.exercise" class="progress-card card">
-          <h2>{{ item.exercise }}</h2>
-          <div class="values">
-            <div>
-              <span>Vorher</span>
-              <strong>{{ item.before }}</strong>
-            </div>
-            <div>
-              <span>Jetzt</span>
-              <strong>{{ item.now }}</strong>
-            </div>
-          </div>
-        </article>
+      <div class="progress-empty card">
+        <h2>Noch keine Fortschrittsdaten vorhanden</h2>
+        <p>
+          Sobald du Trainingseinträge erfasst, kannst du hier frühere und aktuelle Werte
+          miteinander vergleichen.
+        </p>
       </div>
     </div>
   </section>
@@ -41,31 +28,17 @@ const progressItems = [
   margin-bottom: 2rem;
 }
 
-.progress-card {
-  padding: 1.5rem;
+.progress-empty {
+  padding: 1.6rem;
 }
 
-.progress-card h2 {
+.progress-empty h2 {
   font-size: 1.1rem;
   font-weight: 750;
-  margin-bottom: 1rem;
+  margin-bottom: 0.5rem;
 }
 
-.values {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.values span {
-  display: block;
+.progress-empty p {
   color: var(--text-soft);
-  font-size: 0.95rem;
-  margin-bottom: 0.25rem;
-}
-
-.values strong {
-  font-size: 1.15rem;
-  font-weight: 750;
 }
 </style>
