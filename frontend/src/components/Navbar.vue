@@ -1,5 +1,17 @@
 <script setup>
-import { RouterLink } from 'vue-router'
+import { computed } from 'vue'
+import { RouterLink, useRouter } from 'vue-router'
+import { authUser, authToken, logout } from '../utils/auth'
+
+const router = useRouter()
+
+const loggedIn = computed(() => !!authToken.value)
+const user = computed(() => authUser.value)
+
+function handleLogout() {
+  logout()
+  router.push('/login')
+}
 </script>
 
 <template>
@@ -8,15 +20,26 @@ import { RouterLink } from 'vue-router'
       <div class="nav-inner">
         <RouterLink to="/" class="brand">FitTrack</RouterLink>
 
-        <div class="nav-links">
+        <div v-if="loggedIn" class="nav-links">
           <RouterLink to="/exercises">Übungen</RouterLink>
           <RouterLink to="/workouts">Workouts</RouterLink>
           <RouterLink to="/progress">Fortschritt</RouterLink>
         </div>
 
         <div class="nav-actions">
-          <RouterLink to="/login" class="btn btn-secondary">Login</RouterLink>
-          <RouterLink to="/register" class="btn btn-primary">Registrieren</RouterLink>
+          <template v-if="loggedIn">
+            <span class="user-name">
+              {{ user?.username || 'Angemeldet' }}
+            </span>
+            <button class="btn btn-primary" @click="handleLogout">
+              Logout
+            </button>
+          </template>
+
+          <template v-else>
+            <RouterLink to="/login" class="btn btn-secondary">Login</RouterLink>
+            <RouterLink to="/register" class="btn btn-primary">Registrieren</RouterLink>
+          </template>
         </div>
       </div>
     </div>
@@ -64,7 +87,13 @@ import { RouterLink } from 'vue-router'
 
 .nav-actions {
   display: flex;
-  gap: 0.65rem;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.user-name {
+  font-weight: 700;
+  color: var(--text);
 }
 
 @media (max-width: 900px) {
