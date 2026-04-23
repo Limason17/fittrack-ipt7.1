@@ -1,5 +1,10 @@
 <script setup>
+import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
+import { authUser, authToken } from '../utils/auth'
+
+const loggedIn = computed(() => !!authToken.value)
+const user = computed(() => authUser.value)
 
 const features = [
   {
@@ -21,41 +26,90 @@ const features = [
   <section class="section">
     <div class="page-container hero">
       <div class="hero-left">
-        <span class="eyebrow">Einfaches Trainingstracking</span>
+        <span class="eyebrow">
+          {{ loggedIn ? 'Dein Bereich' : 'Einfaches Trainingstracking' }}
+        </span>
+
         <h1 class="page-title hero-title">
-          Eine ruhigere Art, dein Training zu organisieren.
+          <template v-if="loggedIn">
+            Willkommen zurück, {{ user?.username }}.
+          </template>
+          <template v-else>
+            Eine ruhigere Art, dein Training zu organisieren.
+          </template>
         </h1>
+
         <p class="page-subtitle">
-          FitTrack soll sich nicht wie ein lautes Fitness-Template anfühlen,
-          sondern wie ein klares Werkzeug, das du wirklich gern benutzt.
+          <template v-if="loggedIn">
+            Verwalte deine Übungen, plane deine Workouts und behalte deinen Fortschritt an einem Ort.
+          </template>
+          <template v-else>
+            FitTrack soll sich nicht wie ein lautes Fitness-Template anfühlen,
+            sondern wie ein klares Werkzeug, das du wirklich gern benutzt.
+          </template>
         </p>
 
         <div class="hero-actions">
-          <RouterLink to="/register" class="btn btn-primary">Jetzt starten</RouterLink>
-          <RouterLink to="/login" class="btn btn-secondary">Login</RouterLink>
+          <template v-if="loggedIn">
+            <RouterLink to="/workouts" class="btn btn-primary">Zu deinen Workouts</RouterLink>
+            <RouterLink to="/progress" class="btn btn-secondary">Fortschritt ansehen</RouterLink>
+          </template>
+
+          <template v-else>
+            <RouterLink to="/register" class="btn btn-primary">Jetzt starten</RouterLink>
+            <RouterLink to="/login" class="btn btn-secondary">Login</RouterLink>
+          </template>
         </div>
       </div>
 
       <div class="hero-right card">
-        <div class="preview-top">
-          <span>Diese Woche</span>
-          <strong>4 Einheiten geplant</strong>
-        </div>
+        <template v-if="loggedIn">
+          <div class="preview-top">
+            <span>Dein Schnellzugriff</span>
+            <strong>Was möchtest du heute machen?</strong>
+          </div>
 
-        <div class="preview-list">
-          <div class="preview-item">
-            <span>Montag</span>
-            <strong>Push</strong>
+          <div class="preview-list">
+            <RouterLink to="/exercises" class="preview-item preview-link">
+              <span>Übungen</span>
+              <strong>Verwalten</strong>
+            </RouterLink>
+
+            <RouterLink to="/workouts" class="preview-item preview-link">
+              <span>Workouts</span>
+              <strong>Öffnen</strong>
+            </RouterLink>
+
+            <RouterLink to="/progress" class="preview-item preview-link">
+              <span>Fortschritt</span>
+              <strong>Ansehen</strong>
+            </RouterLink>
           </div>
-          <div class="preview-item">
-            <span>Mittwoch</span>
-            <strong>Pull</strong>
+        </template>
+
+        <template v-else>
+          <div class="preview-top">
+            <span>Persönlicher Bereich</span>
+            <strong>Bitte zuerst einloggen</strong>
           </div>
-          <div class="preview-item">
-            <span>Freitag</span>
-            <strong>Legs</strong>
+
+          <div class="preview-list">
+            <div class="preview-item">
+              <span>Geplante Übungen</span>
+              <RouterLink to="/login" class="inline-login-link">Zum Login</RouterLink>
+            </div>
+
+            <div class="preview-item">
+              <span>Deine Workouts</span>
+              <RouterLink to="/login" class="inline-login-link">Zum Login</RouterLink>
+            </div>
+
+            <div class="preview-item">
+              <span>Dein Fortschritt</span>
+              <RouterLink to="/login" class="inline-login-link">Zum Login</RouterLink>
+            </div>
           </div>
-        </div>
+        </template>
       </div>
     </div>
   </section>
@@ -126,6 +180,7 @@ const features = [
   border-radius: 14px;
   background: #fff;
   border: 1px solid var(--border);
+  gap: 1rem;
 }
 
 .preview-item span {
@@ -134,6 +189,20 @@ const features = [
 
 .preview-item strong {
   font-weight: 700;
+}
+
+.preview-link {
+  transition: 0.2s ease;
+}
+
+.preview-link:hover {
+  transform: translateY(-1px);
+  background: #f8f5ef;
+}
+
+.inline-login-link {
+  font-weight: 700;
+  color: var(--text);
 }
 
 .feature-card {
