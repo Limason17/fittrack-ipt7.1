@@ -1,7 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { getToken } from '../utils/auth'
-import ExerciseIllustration from '../components/ExerciseIllustration.vue'
 import { getExerciseImage } from '../utils/exerciseImageMap'
 
 const exercises = ref([])
@@ -69,38 +68,6 @@ const filteredCreateMuscleGroups = computed(() => {
 
   return categoryToMuscleGroups[newExercise.value.category] || []
 })
-
-function normalizeText(value) {
-  const map = {
-    Rcken: 'Rücken',
-    'Oberer Rcken': 'Oberer Rücken',
-    Ganzkrper: 'Ganzkörper',
-    Schrgbank: 'Schrägbank',
-    Druckbung: 'Druckübung',
-    Zugbung: 'Zugübung',
-    Ruderbung: 'Ruderübung',
-    Grundbung: 'Grundübung',
-    Beinrckseite: 'Beinrückseite',
-    Gesss: 'Gesäss',
-    'bung fr die Waden.': 'Übung für die Waden.',
-    Krpermitte: 'Körpermitte',
-    'Statische Core-bung.': 'Statische Core-Übung.',
-    'Ausdauertraining fr Herz und Kreislauf.': 'Ausdauertraining für Herz und Kreislauf.',
-    'Klassische Druckbung fr die Brust.': 'Klassische Druckübung für die Brust.',
-    'Schrgbank mit Kurzhanteln fr die obere Brust.': 'Schrägbank mit Kurzhanteln für die obere Brust.',
-    'Zugbung fr den Rcken und besonders den Latissimus.': 'Zugübung für den Rücken und besonders den Latissimus.',
-    'Ruderbung fr den oberen Rcken.': 'Ruderübung für den oberen Rücken.',
-    'Grundbung fr Beine und Rumpf.': 'Grundübung für Beine und Rumpf.',
-    'Beinrckseite und Gesss.': 'Beinrückseite und Gesäss.',
-    'Druckbung fr die Schultern.': 'Druckübung für die Schultern.',
-    'Isolation fr die seitliche Schulter.': 'Isolation für die seitliche Schulter.',
-    'Klassische Bizepsbung.': 'Klassische Bizepsübung.',
-    'Isolation fr den Trizeps.': 'Isolation für den Trizeps.',
-    'Bauchbung fr die Krpermitte.': 'Bauchübung für die Körpermitte.',
-  }
-
-  return map[value] || value
-}
 
 async function loadExercises() {
   isLoading.value = true
@@ -393,19 +360,46 @@ onMounted(() => {
             :key="exercise.id"
             class="exercise-card card"
         >
-          <img
-              v-if="getExerciseImage(exercise.name)"
-              :src="getExerciseImage(exercise.name)"
-              :alt="exercise.name"
-              class="exercise-image"
-          />
+          <div class="exercise-media">
+            <div
+                v-if="exercise.user_id && exercise.image_url"
+                class="exercise-image-shell exercise-image-shell-url"
+            >
+              <img
+                  :src="exercise.image_url"
+                  :alt="exercise.name"
+                  class="exercise-image exercise-image-cover"
+              />
+            </div>
 
-          <ExerciseIllustration
-              v-else
-              :exercise-name="exercise.name"
-              :category="exercise.category"
-              :muscle-group="exercise.muscle_group"
-          />
+            <div
+                v-else-if="getExerciseImage(exercise.name)"
+                class="exercise-image-shell"
+            >
+              <img
+                  :src="getExerciseImage(exercise.name)"
+                  :alt="exercise.name"
+                  class="exercise-image"
+              />
+            </div>
+
+            <div
+                v-else-if="exercise.image_url"
+                class="exercise-image-shell exercise-image-shell-url"
+            >
+              <img
+                  :src="exercise.image_url"
+                  :alt="exercise.name"
+                  class="exercise-image exercise-image-cover"
+              />
+            </div>
+
+            <div v-else class="exercise-image-shell">
+              <div class="exercise-image exercise-image-placeholder">
+                <span class="placeholder-label">Kein Bild vorhanden</span>
+              </div>
+            </div>
+          </div>
 
           <div class="exercise-body">
             <div class="exercise-top">
@@ -591,13 +585,59 @@ onMounted(() => {
   line-height: 1.55;
 }
 
+.exercise-media {
+  padding: 1rem 1rem 0;
+  background: transparent;
+}
+
+.exercise-image-shell {
+  width: 100%;
+  height: 240px;
+  border-radius: 18px;
+  overflow: hidden;
+  background: linear-gradient(180deg, #f7f3ed 0%, #f0ebe3 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.exercise-image-shell-url {
+  width: calc(100% - 2rem);
+  height: 200px;
+  margin: 1rem auto;
+}
+
 .exercise-image {
   width: 100%;
-  height: 250px;
+  height: 100%;
   object-fit: contain;
-  background: linear-gradient(180deg, #f7f3ed 0%, #f0ebe3 100%);
-  padding: 1.25rem;
-  border-bottom: 1px solid var(--border);
+  padding: 1rem;
+  display: block;
+  border-radius: 18px;
+}
+
+.exercise-image-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.placeholder-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.exercise-image-cover {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  padding: 0.75rem;
+  border-radius: 18px;
 }
 
 @media (max-width: 1100px) {
