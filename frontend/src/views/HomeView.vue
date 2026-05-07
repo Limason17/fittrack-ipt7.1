@@ -1,24 +1,17 @@
 <script setup>
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import { authUser, authToken } from '../utils/auth'
+import { authToken, authUser } from '../utils/auth'
+import { t } from '../utils/i18n'
 
 const loggedIn = computed(() => !!authToken.value)
 const user = computed(() => authUser.value)
+const features = computed(() => t('home.features'))
 
-const features = [
-  {
-    title: 'Übungen sammeln',
-    text: 'Lege deine wichtigsten Übungen zentral ab und halte dein Training übersichtlich.',
-  },
-  {
-    title: 'Workouts planen',
-    text: 'Baue dir einen klaren Trainingsplan auf, statt überall Notizen zu verteilen.',
-  },
-  {
-    title: 'Fortschritt sehen',
-    text: 'Verfolge Gewichte, Wiederholungen und deine Entwicklung mit mehr Struktur.',
-  },
+const quickLinks = [
+  { route: '/exercises', labelKey: 'nav.exercises', actionKey: 'home.manage' },
+  { route: '/workouts', labelKey: 'nav.workouts', actionKey: 'home.open' },
+  { route: '/progress', labelKey: 'nav.progress', actionKey: 'home.view' },
 ]
 </script>
 
@@ -27,94 +20,78 @@ const features = [
     <div class="page-container hero">
       <div class="hero-left">
         <span class="eyebrow">
-          {{ loggedIn ? 'Dein Bereich' : 'Einfaches Trainingstracking' }}
+          {{ loggedIn ? t('home.loggedInEyebrow') : t('home.guestEyebrow') }}
         </span>
 
         <h1 class="page-title hero-title">
           <template v-if="loggedIn">
-            Willkommen zurück, {{ user?.username }}.
+            {{ t('home.loggedInTitle', { username: user?.username || '' }) }}
           </template>
           <template v-else>
-            Eine ruhigere Art, dein Training zu organisieren.
+            {{ t('home.guestTitle') }}
           </template>
         </h1>
 
         <p class="page-subtitle">
-          <template v-if="loggedIn">
-            Verwalte deine Übungen, plane deine Workouts und behalte deinen Fortschritt an einem Ort.
-          </template>
-          <template v-else>
-            FitTrack soll sich nicht wie ein lautes Fitness-Template anfühlen,
-            sondern wie ein klares Werkzeug, das du wirklich gern benutzt.
-          </template>
+          {{ loggedIn ? t('home.loggedInSubtitle') : t('home.guestSubtitle') }}
         </p>
 
         <div class="hero-actions">
           <template v-if="loggedIn">
-            <RouterLink to="/workouts" class="btn btn-primary">Zu deinen Workouts</RouterLink>
-            <RouterLink to="/progress" class="btn btn-secondary">Fortschritt ansehen</RouterLink>
+            <RouterLink to="/workouts" class="btn btn-primary">{{ t('home.workoutsCta') }}</RouterLink>
+            <RouterLink to="/progress" class="btn btn-secondary">{{ t('home.progressCta') }}</RouterLink>
           </template>
 
           <template v-else>
-            <RouterLink to="/register" class="btn btn-primary">Jetzt starten</RouterLink>
-            <RouterLink to="/login" class="btn btn-secondary">Login</RouterLink>
+            <RouterLink to="/register" class="btn btn-primary">{{ t('home.start') }}</RouterLink>
+            <RouterLink to="/login" class="btn btn-secondary">{{ t('home.login') }}</RouterLink>
           </template>
         </div>
       </div>
 
-      <div class="hero-right card">
+      <div class="hero-panel card">
         <template v-if="loggedIn">
-          <div class="preview-top">
-            <span>Dein Schnellzugriff</span>
-            <strong>Was möchtest du heute machen?</strong>
+          <div class="panel-top">
+            <span>{{ t('home.quickAccess') }}</span>
+            <strong>{{ t('home.quickQuestion') }}</strong>
           </div>
 
           <div class="preview-list">
-            <RouterLink to="/exercises" class="preview-item preview-link">
-              <span>Übungen</span>
-              <strong>Verwalten</strong>
-            </RouterLink>
-
-            <RouterLink to="/workouts" class="preview-item preview-link">
-              <span>Workouts</span>
-              <strong>Öffnen</strong>
-            </RouterLink>
-
-            <RouterLink to="/progress" class="preview-item preview-link">
-              <span>Fortschritt</span>
-              <strong>Ansehen</strong>
+            <RouterLink
+                v-for="link in quickLinks"
+                :key="link.route"
+                :to="link.route"
+                class="preview-item preview-link"
+            >
+              <span>{{ t(link.labelKey) }}</span>
+              <strong>{{ t(link.actionKey) }}</strong>
             </RouterLink>
           </div>
         </template>
 
         <template v-else>
-          <div class="preview-top">
-            <span>Persönlicher Bereich</span>
-            <strong>Bitte zuerst einloggen</strong>
+          <div class="panel-top">
+            <span>{{ t('home.personalArea') }}</span>
+            <strong>{{ t('home.loginRequired') }}</strong>
           </div>
 
           <div class="preview-list">
-            <div class="preview-item">
-              <span>Geplante Übungen</span>
-              <RouterLink to="/login" class="inline-login-link">Zum Login</RouterLink>
-            </div>
-
-            <div class="preview-item">
-              <span>Deine Workouts</span>
-              <RouterLink to="/login" class="inline-login-link">Zum Login</RouterLink>
-            </div>
-
-            <div class="preview-item">
-              <span>Dein Fortschritt</span>
-              <RouterLink to="/login" class="inline-login-link">Zum Login</RouterLink>
-            </div>
+            <RouterLink
+                v-for="link in quickLinks"
+                :key="link.route"
+                to="/login"
+                class="preview-item preview-link"
+            >
+              <span>{{ t(link.labelKey) }}</span>
+              <strong>{{ t('nav.login') }}</strong>
+            </RouterLink>
           </div>
         </template>
       </div>
     </div>
   </section>
 
-  <section class="section features-section">
+  <section class="section compact-section">
     <div class="page-container">
       <div class="grid-3">
         <article v-for="feature in features" :key="feature.title" class="feature-card card">
@@ -129,56 +106,55 @@ const features = [
 <style scoped>
 .hero {
   display: grid;
-  grid-template-columns: 1.15fr 0.85fr;
+  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
   gap: 2rem;
   align-items: center;
 }
 
 .hero-title {
-  max-width: 700px;
+  max-width: 720px;
 }
 
 .hero-actions {
   display: flex;
-  gap: 1rem;
-  margin-top: 2rem;
+  gap: 0.8rem;
+  margin-top: 1.8rem;
   flex-wrap: wrap;
 }
 
-.hero-right {
-  padding: 1.5rem;
-  background: #fcfbf8;
+.hero-panel {
+  padding: 1.2rem;
 }
 
-.preview-top {
+.panel-top {
   display: flex;
   flex-direction: column;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1rem;
 }
 
-.preview-top span {
+.panel-top span {
   color: var(--text-soft);
-  margin-bottom: 0.35rem;
+  margin-bottom: 0.25rem;
 }
 
-.preview-top strong {
-  font-size: 1.35rem;
-  font-weight: 750;
+.panel-top strong {
+  font-size: 1.15rem;
 }
 
 .preview-list {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.65rem;
 }
 
 .preview-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0.95rem 1rem;
-  border-radius: 14px;
-  background: #fff;
+  min-height: 56px;
+  padding: 0.8rem 0.9rem;
+  border-radius: 8px;
+  background: var(--surface-soft);
   border: 1px solid var(--border);
   gap: 1rem;
 }
@@ -188,31 +164,25 @@ const features = [
 }
 
 .preview-item strong {
-  font-weight: 700;
-}
-
-.preview-link {
-  transition: 0.2s ease;
+  font-weight: 800;
 }
 
 .preview-link:hover {
-  transform: translateY(-1px);
-  background: #f8f5ef;
+  border-color: var(--accent);
 }
 
-.inline-login-link {
-  font-weight: 700;
-  color: var(--text);
+.compact-section {
+  padding-top: 0;
 }
 
 .feature-card {
-  padding: 1.6rem;
+  padding: 1.3rem;
 }
 
 .feature-card h2 {
-  font-size: 1.15rem;
-  font-weight: 750;
-  margin-bottom: 0.65rem;
+  font-size: 1.05rem;
+  font-weight: 800;
+  margin-bottom: 0.5rem;
 }
 
 .feature-card p {

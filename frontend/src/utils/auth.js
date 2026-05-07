@@ -3,9 +3,22 @@ import { ref } from 'vue'
 const TOKEN_KEY = 'fittrack_token'
 const USER_KEY = 'fittrack_user'
 
-const storedUser = localStorage.getItem(USER_KEY)
+function readStoredUser() {
+    const storedUser = localStorage.getItem(USER_KEY)
 
-export const authUser = ref(storedUser ? JSON.parse(storedUser) : null)
+    if (!storedUser) {
+        return null
+    }
+
+    try {
+        return JSON.parse(storedUser)
+    } catch (error) {
+        localStorage.removeItem(USER_KEY)
+        return null
+    }
+}
+
+export const authUser = ref(readStoredUser())
 export const authToken = ref(localStorage.getItem(TOKEN_KEY))
 
 export function saveAuth(token, user) {
@@ -14,6 +27,20 @@ export function saveAuth(token, user) {
 
     authToken.value = token
     authUser.value = user
+}
+
+export function updateAuthUser(updates) {
+    if (!authUser.value) {
+        return
+    }
+
+    const updatedUser = {
+        ...authUser.value,
+        ...updates,
+    }
+
+    localStorage.setItem(USER_KEY, JSON.stringify(updatedUser))
+    authUser.value = updatedUser
 }
 
 export function getToken() {

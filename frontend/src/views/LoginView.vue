@@ -1,7 +1,9 @@
 <script setup>
 import { ref } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { saveAuth } from '../utils/auth'
+import { apiRequest } from '../utils/api'
+import { applyLanguageForUser, t } from '../utils/i18n'
 
 const router = useRouter()
 const route = useRoute()
@@ -15,40 +17,30 @@ async function handleLogin() {
   errorMessage.value = ''
 
   if (!email.value || !password.value) {
-    errorMessage.value = 'Bitte fülle alle Felder aus.'
+    errorMessage.value = t('auth.fillFields')
     return
   }
 
   isLoading.value = true
 
   try {
-    const response = await fetch('http://localhost:3001/api/users/login', {
+    const data = await apiRequest('/users/login', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
+      body: {
         email: email.value,
         password: password.value,
-      }),
+      },
     })
 
-    const data = await response.json()
-
-    if (!response.ok) {
-      errorMessage.value = data.message || 'Login fehlgeschlagen.'
-      return
-    }
-
     saveAuth(data.token, data.user)
+    await applyLanguageForUser(data.user)
 
     email.value = ''
     password.value = ''
 
-    const redirectPath = route.query.redirect || '/'
-    router.push(redirectPath)
+    router.push(route.query.redirect || '/')
   } catch (error) {
-    errorMessage.value = 'Server nicht erreichbar. Bitte versuche es erneut.'
+    errorMessage.value = error.status ? t('auth.loginFailed') : t('common.serverError')
   } finally {
     isLoading.value = false
   }
@@ -59,17 +51,17 @@ async function handleLogin() {
   <section class="section">
     <div class="page-container auth-wrap">
       <div class="auth-intro">
-        <span class="eyebrow">Login</span>
-        <h1 class="page-title">Willkommen zurück.</h1>
+        <span class="eyebrow">{{ t('nav.login') }}</span>
+        <h1 class="page-title">{{ t('auth.loginTitle') }}</h1>
         <p class="page-subtitle">
-          Melde dich an, um deine Übungen, Workouts und Fortschritte zu sehen.
+          {{ t('auth.loginSubtitle') }}
         </p>
       </div>
 
       <div class="auth-card card">
         <form class="auth-form" @submit.prevent="handleLogin">
           <div class="form-group">
-            <label class="form-label" for="email">E-Mail</label>
+            <label class="form-label" for="email">{{ t('auth.email') }}</label>
             <input
                 id="email"
                 v-model="email"
@@ -81,29 +73,29 @@ async function handleLogin() {
           </div>
 
           <div class="form-group">
-            <label class="form-label" for="password">Passwort</label>
+            <label class="form-label" for="password">{{ t('auth.password') }}</label>
             <input
                 id="password"
                 v-model="password"
                 type="password"
                 class="input"
-                placeholder="Passwort"
+                :placeholder="t('auth.password')"
                 autocomplete="current-password"
             />
           </div>
 
-          <p v-if="errorMessage" class="auth-message auth-message-error">
+          <p v-if="errorMessage" class="message message-error">
             {{ errorMessage }}
           </p>
 
           <button type="submit" class="btn btn-primary auth-btn" :disabled="isLoading">
-            {{ isLoading ? 'Login läuft...' : 'Login' }}
+            {{ isLoading ? t('auth.loginLoading') : t('auth.loginButton') }}
           </button>
         </form>
 
         <p class="auth-footer">
-          Noch kein Konto?
-          <router-link to="/register">Registrieren</router-link>
+          {{ t('auth.noAccount') }}
+          <RouterLink to="/register">{{ t('auth.toRegister') }}</RouterLink>
         </p>
       </div>
     </div>
@@ -116,17 +108,17 @@ async function handleLogin() {
 }
 
 .auth-intro {
-  margin-bottom: 2rem;
+  margin-bottom: 1.5rem;
 }
 
 .auth-card {
-  padding: 2rem;
+  padding: 1.5rem;
 }
 
 .auth-form {
   display: flex;
   flex-direction: column;
-  gap: 1.1rem;
+  gap: 1rem;
 }
 
 .auth-btn {
@@ -135,23 +127,12 @@ async function handleLogin() {
 }
 
 .auth-footer {
-  margin-top: 1.1rem;
+  margin-top: 1rem;
   color: var(--text-soft);
 }
 
 .auth-footer a {
-  font-weight: 700;
-}
-
-.auth-message {
-  padding: 0.85rem 1rem;
-  border-radius: 12px;
-  font-size: 0.95rem;
-}
-
-.auth-message-error {
-  background: #f7e6e6;
-  color: #8a2f2f;
-  border: 1px solid #e7c5c5;
+  color: var(--accent);
+  font-weight: 800;
 }
 </style>

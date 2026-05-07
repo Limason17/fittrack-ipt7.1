@@ -1,7 +1,15 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { getToken } from '../utils/auth'
+import { apiRequest } from '../utils/api'
 import { getExerciseImage } from '../utils/exerciseImageMap'
+import {
+  t,
+  translateCategory,
+  translateExerciseDescription,
+  translateMuscleGroup,
+} from '../utils/i18n'
+import { normalizeExercise } from '../utils/taxonomy'
 
 const exercises = ref([])
 const isLoading = ref(true)
@@ -10,16 +18,18 @@ const successMessage = ref('')
 
 const selectedCategory = ref('')
 const selectedMuscleGroup = ref('')
-
 const showCreateForm = ref(false)
+const editingExerciseId = ref(null)
 
-const newExercise = ref({
+const emptyExercise = {
   name: '',
   description: '',
   category: '',
   muscle_group: '',
   image_url: '',
-})
+}
+
+const newExercise = ref({ ...emptyExercise })
 
 const categoryOptions = [
   'Brust',
@@ -69,13 +79,16 @@ const filteredCreateMuscleGroups = computed(() => {
   return categoryToMuscleGroups[newExercise.value.category] || []
 })
 
+function resetExerciseForm() {
+  newExercise.value = { ...emptyExercise }
+  editingExerciseId.value = null
+}
+
 async function loadExercises() {
   isLoading.value = true
   errorMessage.value = ''
-  successMessage.value = ''
 
   try {
-    const token = getToken()
     const params = new URLSearchParams()
 
     if (selectedCategory.value) {
@@ -86,71 +99,43 @@ async function loadExercises() {
       params.append('muscle_group', selectedMuscleGroup.value)
     }
 
-    const url = `http://localhost:3001/api/exercises${params.toString() ? `?${params.toString()}` : ''}`
-
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
+    const query = params.toString() ? `?${params.toString()}` : ''
+    const data = await apiRequest(`/exercises${query}`, {
+      token: getToken(),
     })
 
-    const data = await response.json()
-
-    if (!response.ok) {
-      errorMessage.value = data.message || 'Übungen konnten nicht geladen werden.'
-      return
-    }
-
-    exercises.value = data
+    exercises.value = data.map(normalizeExercise)
   } catch (error) {
-    errorMessage.value = 'Server nicht erreichbar. Bitte versuche es erneut.'
+    errorMessage.value = t('exercises.loadError')
   } finally {
     isLoading.value = false
   }
 }
 
-async function createExercise() {
+async function saveExercise() {
   errorMessage.value = ''
   successMessage.value = ''
 
   if (!newExercise.value.name || !newExercise.value.category || !newExercise.value.muscle_group) {
-    errorMessage.value = 'Bitte fülle Name, Kategorie und Muskelgruppe aus.'
+    errorMessage.value = t('exercises.missingFields')
     return
   }
 
-  try {
-    const token = getToken()
+  const isEditing = !!editingExerciseId.value
 
-    const response = await fetch('http://localhost:3001/api/exercises', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(newExercise.value),
+  try {
+    await apiRequest(isEditing ? `/exercises/${editingExerciseId.value}` : '/exercises', {
+      method: isEditing ? 'PUT' : 'POST',
+      token: getToken(),
+      body: newExercise.value,
     })
 
-    const data = await response.json()
-
-    if (!response.ok) {
-      errorMessage.value = data.message || 'Übung konnte nicht erstellt werden.'
-      return
-    }
-
-    successMessage.value = 'Übung erfolgreich erstellt.'
-
-    newExercise.value = {
-      name: '',
-      description: '',
-      category: '',
-      muscle_group: '',
-      image_url: '',
-    }
-
+    successMessage.value = isEditing ? t('exercises.updated') : t('exercises.created')
+    resetExerciseForm()
     showCreateForm.value = false
     await loadExercises()
   } catch (error) {
-    errorMessage.value = 'Server nicht erreichbar. Bitte versuche es erneut.'
+    errorMessage.value = t('exercises.saveError')
   }
 }
 
@@ -194,6 +179,62 @@ function resetFilters() {
   loadExercises()
 }
 
+function toggleCreateForm() {
+  if (showCreateForm.value) {
+    resetExerciseForm()
+    showCreateForm.value = false
+    return
+  }
+
+  resetExerciseForm()
+  showCreateForm.value = true
+}
+
+function startEditExercise(exercise) {
+  if (!exercise.user_id) {
+    return
+  }
+
+  newExercise.value = {
+    name: exercise.name || '',
+    description: exercise.description || '',
+    category: exercise.category || '',
+    muscle_group: exercise.muscle_group || '',
+    image_url: exercise.image_url || '',
+  }
+  editingExerciseId.value = exercise.id
+  showCreateForm.value = true
+}
+
+async function deleteExercise(exercise) {
+  if (!exercise.user_id || !confirm(t('exercises.confirmDelete', { name: exercise.name }))) {
+    return
+  }
+
+  errorMessage.value = ''
+  successMessage.value = ''
+
+  try {
+    await apiRequest(`/exercises/${exercise.id}`, {
+      method: 'DELETE',
+      token: getToken(),
+    })
+
+    successMessage.value = t('exercises.deleted')
+    await loadExercises()
+  } catch (error) {
+    errorMessage.value = t('exercises.deleteError')
+  }
+}
+
+function displayDescription(exercise) {
+  if (exercise.user_id) {
+    return exercise.description || t('exercises.noDescription')
+  }
+
+  return translateExerciseDescription(exercise)
+}
+
 onMounted(() => {
   loadExercises()
 })
@@ -203,49 +244,49 @@ onMounted(() => {
   <section class="section">
     <div class="page-container">
       <div class="header">
-        <span class="eyebrow">Übungen</span>
-        <h1 class="page-title">Dein Übungskatalog</h1>
+        <span class="eyebrow">{{ t('exercises.eyebrow') }}</span>
+        <h1 class="page-title">{{ t('exercises.title') }}</h1>
         <p class="page-subtitle">
-          Filtere Übungen nach Kategorie und Muskelgruppe oder erstelle eine eigene Übung.
+          {{ t('exercises.subtitle') }}
         </p>
       </div>
 
       <div class="toolbar card">
         <div class="toolbar-left">
           <div class="filter-group">
-            <label class="form-label" for="categoryFilter">Kategorie</label>
+            <label class="form-label" for="categoryFilter">{{ t('exercises.category') }}</label>
             <select
                 id="categoryFilter"
                 v-model="selectedCategory"
                 class="input"
                 @change="handleCategoryChange"
             >
-              <option value="">Alle Kategorien</option>
+              <option value="">{{ t('exercises.allCategories') }}</option>
               <option
                   v-for="category in availableCategoryOptions"
                   :key="category"
                   :value="category"
               >
-                {{ category }}
+                {{ translateCategory(category) }}
               </option>
             </select>
           </div>
 
           <div class="filter-group">
-            <label class="form-label" for="muscleGroupFilter">Muskelgruppe</label>
+            <label class="form-label" for="muscleGroupFilter">{{ t('exercises.muscleGroup') }}</label>
             <select
                 id="muscleGroupFilter"
                 v-model="selectedMuscleGroup"
                 class="input"
                 @change="handleMuscleGroupChange"
             >
-              <option value="">Alle Muskelgruppen</option>
+              <option value="">{{ t('exercises.allMuscleGroups') }}</option>
               <option
                   v-for="muscleGroup in availableMuscleGroupOptions"
                   :key="muscleGroup"
                   :value="muscleGroup"
               >
-                {{ muscleGroup }}
+                {{ translateMuscleGroup(muscleGroup) }}
               </option>
             </select>
           </div>
@@ -253,105 +294,103 @@ onMounted(() => {
 
         <div class="toolbar-actions">
           <button class="btn btn-secondary" type="button" @click="resetFilters">
-            Filter zurücksetzen
+            {{ t('exercises.resetFilters') }}
           </button>
-          <button class="btn btn-primary" type="button" @click="showCreateForm = !showCreateForm">
-            {{ showCreateForm ? 'Schließen' : 'Neue Übung' }}
+          <button class="btn btn-primary" type="button" @click="toggleCreateForm">
+            {{ showCreateForm ? t('common.close') : t('exercises.newExercise') }}
           </button>
         </div>
       </div>
 
       <div v-if="showCreateForm" class="create-card card">
-        <h2>Eigene Übung erstellen</h2>
+        <h2>{{ editingExerciseId ? t('exercises.editTitle') : t('exercises.createTitle') }}</h2>
 
         <div class="create-grid">
           <div class="form-group">
-            <label class="form-label" for="exerciseName">Name</label>
+            <label class="form-label" for="exerciseName">{{ t('exercises.name') }}</label>
             <input
                 id="exerciseName"
                 v-model="newExercise.name"
                 type="text"
                 class="input"
-                placeholder="z. B. Cable Fly"
+                placeholder="Cable Fly"
             />
           </div>
 
           <div class="form-group">
-            <label class="form-label" for="exerciseCategory">Kategorie</label>
+            <label class="form-label" for="exerciseCategory">{{ t('exercises.category') }}</label>
             <select
                 id="exerciseCategory"
                 v-model="newExercise.category"
                 class="input"
                 @change="handleCreateCategoryChange"
             >
-              <option value="">Kategorie wählen</option>
+              <option value="">{{ t('exercises.chooseCategory') }}</option>
               <option v-for="category in categoryOptions" :key="category" :value="category">
-                {{ category }}
+                {{ translateCategory(category) }}
               </option>
             </select>
           </div>
 
           <div class="form-group">
-            <label class="form-label" for="exerciseMuscleGroup">Muskelgruppe</label>
+            <label class="form-label" for="exerciseMuscleGroup">{{ t('exercises.muscleGroup') }}</label>
             <select
                 id="exerciseMuscleGroup"
                 v-model="newExercise.muscle_group"
                 class="input"
             >
-              <option value="">Muskelgruppe wählen</option>
+              <option value="">{{ t('exercises.chooseMuscleGroup') }}</option>
               <option
                   v-for="muscleGroup in filteredCreateMuscleGroups"
                   :key="muscleGroup"
                   :value="muscleGroup"
               >
-                {{ muscleGroup }}
+                {{ translateMuscleGroup(muscleGroup) }}
               </option>
             </select>
           </div>
 
           <div class="form-group">
-            <label class="form-label" for="exerciseImage">Bild-URL</label>
+            <label class="form-label" for="exerciseImage">{{ t('exercises.imageUrl') }}</label>
             <input
                 id="exerciseImage"
                 v-model="newExercise.image_url"
                 type="text"
                 class="input"
-                placeholder="Optional"
+                :placeholder="t('common.optional')"
             />
           </div>
         </div>
 
         <div class="form-group">
-          <label class="form-label" for="exerciseDescription">Beschreibung</label>
+          <label class="form-label" for="exerciseDescription">{{ t('exercises.description') }}</label>
           <textarea
               id="exerciseDescription"
               v-model="newExercise.description"
               class="input textarea"
-              placeholder="Kurze Beschreibung der Übung"
+              :placeholder="t('exercises.descriptionPlaceholder')"
           />
         </div>
 
         <div class="create-actions">
-          <button class="btn btn-primary" type="button" @click="createExercise">
-            Übung speichern
+          <button class="btn btn-secondary" type="button" @click="toggleCreateForm">
+            {{ t('common.cancel') }}
+          </button>
+          <button class="btn btn-primary" type="button" @click="saveExercise">
+            {{ editingExerciseId ? t('exercises.updateExercise') : t('exercises.saveExercise') }}
           </button>
         </div>
       </div>
 
-      <div v-if="errorMessage" class="message-card message-error">
-        <p>{{ errorMessage }}</p>
+      <p v-if="errorMessage" class="message message-error">{{ errorMessage }}</p>
+      <p v-if="successMessage" class="message message-success">{{ successMessage }}</p>
+
+      <div v-if="isLoading" class="empty-state card">
+        <p>{{ t('exercises.loading') }}</p>
       </div>
 
-      <div v-if="successMessage" class="message-card message-success">
-        <p>{{ successMessage }}</p>
-      </div>
-
-      <div v-if="isLoading" class="empty-card card">
-        <p>Übungen werden geladen...</p>
-      </div>
-
-      <div v-else-if="exercises.length === 0" class="empty-card card">
-        <p>Keine Übungen gefunden. Passe die Filter an oder erstelle eine neue Übung.</p>
+      <div v-else-if="exercises.length === 0" class="empty-state card">
+        <p>{{ t('exercises.empty') }}</p>
       </div>
 
       <div v-else class="exercise-grid">
@@ -361,62 +400,57 @@ onMounted(() => {
             class="exercise-card card"
         >
           <div class="exercise-media">
-            <div
+            <img
                 v-if="exercise.user_id && exercise.image_url"
-                class="exercise-image-shell exercise-image-shell-url"
-            >
-              <img
-                  :src="exercise.image_url"
-                  :alt="exercise.name"
-                  class="exercise-image exercise-image-cover"
-              />
-            </div>
+                :src="exercise.image_url"
+                :alt="exercise.name"
+                class="exercise-image exercise-image-cover"
+            />
 
-            <div
+            <img
                 v-else-if="getExerciseImage(exercise.name)"
-                class="exercise-image-shell"
-            >
-              <img
-                  :src="getExerciseImage(exercise.name)"
-                  :alt="exercise.name"
-                  class="exercise-image"
-              />
-            </div>
+                :src="getExerciseImage(exercise.name)"
+                :alt="exercise.name"
+                class="exercise-image"
+            />
 
-            <div
+            <img
                 v-else-if="exercise.image_url"
-                class="exercise-image-shell exercise-image-shell-url"
-            >
-              <img
-                  :src="exercise.image_url"
-                  :alt="exercise.name"
-                  class="exercise-image exercise-image-cover"
-              />
-            </div>
+                :src="exercise.image_url"
+                :alt="exercise.name"
+                class="exercise-image exercise-image-cover"
+            />
 
-            <div v-else class="exercise-image-shell">
-              <div class="exercise-image exercise-image-placeholder">
-                <span class="placeholder-label">Kein Bild vorhanden</span>
-              </div>
+            <div v-else class="exercise-placeholder">
+              {{ t('exercises.noImage') }}
             </div>
           </div>
 
           <div class="exercise-body">
             <div class="exercise-top">
               <h2>{{ exercise.name }}</h2>
-              <span class="exercise-badge">
-                {{ exercise.user_id ? 'Eigene Übung' : 'Globale Übung' }}
+              <span class="pill">
+                {{ exercise.user_id ? t('exercises.custom') : t('exercises.global') }}
               </span>
             </div>
 
             <div class="exercise-tags">
-              <span class="tag">{{ exercise.category }}</span>
-              <span class="tag tag-highlight">{{ exercise.muscle_group }}</span>
+              <span class="tag">{{ translateCategory(exercise.category) }}</span>
+              <span class="tag tag-highlight">{{ translateMuscleGroup(exercise.muscle_group) }}</span>
             </div>
 
             <p class="exercise-description">
-              {{ exercise.description || 'Keine Beschreibung vorhanden.' }}
+              {{ displayDescription(exercise) }}
             </p>
+
+            <div v-if="exercise.user_id" class="card-actions">
+              <button class="btn btn-secondary" type="button" @click="startEditExercise(exercise)">
+                {{ t('common.edit') }}
+              </button>
+              <button class="btn btn-danger" type="button" @click="deleteExercise(exercise)">
+                {{ t('common.delete') }}
+              </button>
+            </div>
           </div>
         </article>
       </div>
@@ -426,16 +460,16 @@ onMounted(() => {
 
 <style scoped>
 .header {
-  margin-bottom: 2rem;
+  margin-bottom: 1.6rem;
 }
 
 .toolbar {
   display: flex;
-  justify-content: space-between;
   align-items: end;
+  justify-content: space-between;
   gap: 1rem;
-  padding: 1.5rem;
-  margin-bottom: 1.5rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
 }
 
 .toolbar-left {
@@ -450,21 +484,28 @@ onMounted(() => {
   flex: 1;
 }
 
-.toolbar-actions {
+.toolbar-actions,
+.create-actions,
+.card-actions {
   display: flex;
-  gap: 0.75rem;
+  gap: 0.65rem;
   flex-wrap: wrap;
 }
 
+.toolbar-actions,
+.create-actions {
+  justify-content: flex-end;
+}
+
 .create-card {
-  padding: 1.5rem;
-  margin-bottom: 1.5rem;
+  padding: 1.2rem;
+  margin-bottom: 1rem;
 }
 
 .create-card h2 {
   margin-bottom: 1rem;
-  font-size: 1.15rem;
-  font-weight: 750;
+  font-size: 1.1rem;
+  font-weight: 850;
 }
 
 .create-grid {
@@ -474,170 +515,106 @@ onMounted(() => {
   margin-bottom: 1rem;
 }
 
-.textarea {
-  min-height: 120px;
-  resize: vertical;
-  padding-top: 0.9rem;
-  border-radius: 12px;
-}
-
 .create-actions {
   margin-top: 1rem;
-  display: flex;
-  justify-content: flex-end;
 }
 
-.message-card {
-  padding: 1rem 1.2rem;
-  border-radius: 14px;
-  margin-bottom: 1.5rem;
-}
-
-.message-error {
-  background: #f7e6e6;
-  color: #8a2f2f;
-  border: 1px solid #e7c5c5;
-}
-
-.message-success {
-  background: #e8f4ec;
-  color: #256043;
-  border: 1px solid #c8dfd0;
-}
-
-.empty-card {
-  padding: 1.5rem;
-}
-
-.empty-card p {
-  color: var(--text-soft);
+.message {
+  margin-bottom: 1rem;
 }
 
 .exercise-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1.5rem;
+  gap: 1rem;
 }
 
 .exercise-card {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  border-radius: 24px;
   min-height: 100%;
 }
 
-.exercise-body {
-  padding: 1.3rem 1.35rem 1.45rem;
+.exercise-media {
+  width: 100%;
+  height: 220px;
+  padding: 0.75rem;
+  background: var(--surface-soft);
+}
+
+.exercise-image,
+.exercise-placeholder {
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+}
+
+.exercise-image {
+  display: block;
+  object-fit: contain;
+  padding: 0.7rem;
+  background: #fff;
+}
+
+.exercise-image-cover {
+  object-fit: contain;
+}
+
+.exercise-placeholder {
   display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-weight: 750;
+  text-align: center;
+  background: #fff;
+}
+
+.exercise-body {
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  gap: 0.8rem;
+  padding: 1rem;
 }
 
 .exercise-top {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
-  align-items: start;
   gap: 0.8rem;
-  margin-bottom: 0.95rem;
 }
 
 .exercise-top h2 {
-  font-size: 1.1rem;
-  font-weight: 800;
+  font-size: 1.05rem;
+  font-weight: 850;
   line-height: 1.25;
-}
-
-.exercise-badge {
-  font-size: 0.8rem;
-  padding: 0.38rem 0.68rem;
-  border-radius: 999px;
-  background: #f7f2eb;
-  border: 1px solid var(--border);
-  white-space: nowrap;
-  color: var(--text-soft);
 }
 
 .exercise-tags {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.45rem;
   flex-wrap: wrap;
-  margin-bottom: 0.9rem;
 }
 
 .tag {
-  font-size: 0.82rem;
-  padding: 0.38rem 0.7rem;
+  padding: 0.3rem 0.58rem;
   border-radius: 999px;
-  background: #f6f1ea;
+  background: var(--surface-soft);
   color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 750;
 }
 
 .tag-highlight {
-  background: #f4dcd7;
-  color: #a3473b;
-  font-weight: 700;
+  background: var(--surface-tint);
+  color: var(--warning);
 }
 
 .exercise-description {
+  flex: 1;
   color: var(--text-soft);
-  line-height: 1.55;
-}
-
-.exercise-media {
-  padding: 1rem 1rem 0;
-  background: transparent;
-}
-
-.exercise-image-shell {
-  width: 100%;
-  height: 240px;
-  border-radius: 18px;
-  overflow: hidden;
-  background: linear-gradient(180deg, #f7f3ed 0%, #f0ebe3 100%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.exercise-image-shell-url {
-  width: calc(100% - 2rem);
-  height: 200px;
-  margin: 1rem auto;
-}
-
-.exercise-image {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  padding: 1rem;
-  display: block;
-  border-radius: 18px;
-}
-
-.exercise-image-placeholder {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-}
-
-.placeholder-label {
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-
-.exercise-image-cover {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  object-position: center;
-  padding: 0.75rem;
-  border-radius: 18px;
 }
 
 @media (max-width: 1100px) {
@@ -648,16 +625,18 @@ onMounted(() => {
 
 @media (max-width: 900px) {
   .toolbar {
-    flex-direction: column;
     align-items: stretch;
+    flex-direction: column;
   }
 
-  .create-grid {
-    grid-template-columns: 1fr;
-  }
-
+  .create-grid,
   .exercise-grid {
     grid-template-columns: 1fr;
+  }
+
+  .toolbar-actions,
+  .create-actions {
+    justify-content: flex-start;
   }
 }
 </style>

@@ -6,10 +6,6 @@ const props = defineProps({
     type: String,
     default: '',
   },
-  category: {
-    type: String,
-    default: '',
-  },
   exerciseName: {
     type: String,
     default: '',
@@ -24,8 +20,6 @@ function normalizeValue(value) {
       .replaceAll('ö', 'oe')
       .replaceAll('ü', 'ue')
       .replaceAll('ß', 'ss')
-      .replace('rcken', 'ruecken')
-      .replace('ganzkrper', 'ganzkoerper')
 }
 
 const normalizedMuscle = computed(() => normalizeValue(props.muscleGroup))
@@ -67,7 +61,7 @@ const titleText = computed(() => props.exerciseName || 'Übung')
         role="img"
         :aria-label="titleText"
     >
-      <rect x="0" y="0" width="260" height="260" rx="24" class="bg" />
+      <rect x="0" y="0" width="260" height="260" rx="8" class="bg" />
 
       <circle cx="130" cy="42" r="20" class="body" />
       <rect x="98" y="66" width="64" height="82" rx="28" class="body" />
@@ -100,7 +94,7 @@ const titleText = computed(() => props.exerciseName || 'Übung')
         role="img"
         :aria-label="titleText"
     >
-      <rect x="0" y="0" width="260" height="260" rx="24" class="bg" />
+      <rect x="0" y="0" width="260" height="260" rx="8" class="bg" />
 
       <circle cx="130" cy="42" r="20" class="body" />
       <rect x="98" y="66" width="64" height="82" rx="28" class="body" />
@@ -133,18 +127,18 @@ const titleText = computed(() => props.exerciseName || 'Übung')
 
 <style scoped>
 .illustration-wrap {
-  width: 100%;
-  height: 250px;
-  background: linear-gradient(180deg, #f7f3ed 0%, #f0ebe3 100%);
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 100%;
+  height: 250px;
+  background: var(--surface-soft);
 }
 
 .illustration-svg {
+  display: block;
   width: 100%;
   height: 100%;
-  display: block;
 }
 
 .bg {
@@ -152,11 +146,11 @@ const titleText = computed(() => props.exerciseName || 'Übung')
 }
 
 .body {
-  fill: #d6cec2;
+  fill: #c9d7cf;
 }
 
 .body-soft {
-  fill: #e7e1d8;
+  fill: #dce8e0;
 }
 
 .highlight {
