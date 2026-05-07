@@ -1,45 +1,56 @@
-﻿# FitTrack
+# FitTrack
 
-FitTrack ist eine Web-Applikation, mit der Nutzer ihre Workouts planen, Übungen verwalten und ihren Trainingsfortschritt verfolgen können.
+FitTrack ist eine mehrsprachige Web-Applikation, mit der Nutzer Übungen verwalten, Workouts planen und ihren Trainingsfortschritt verfolgen können.
 
 ## Funktionen
+
 - Account erstellen und einloggen
-- Übungen hinzufügen und verwalten
-- Trainings planen
-- Fortschritt verfolgen
-- Trainings im Kalender anzeigen
+- Deutsch/Englisch umschalten und pro Nutzer speichern
+- Übungen anzeigen, filtern, hinzufügen, bearbeiten und löschen
+- Workouts mit Datum, Notizen, Sätzen, Wiederholungen und Gewicht speichern
+- Workouts im Kalender anzeigen
+- Fortschritt automatisch aus Workouts und manuell erfassten Einträgen anzeigen
 
 ## Projekt
+
 Dieses Projekt wurde im Rahmen von IPT 7.1 erstellt.
 
 ## Team
+
 - Liam Bruno
 - Fabio Erculiani
 - Noël Wenger
 
-## Projekt starten
+## Voraussetzungen
 
-### Voraussetzungen
-Bevor das Projekt gestartet werden kann, müssen diese Programme installiert sein:
 - Node.js
-- MySQL
+- Docker oder eine lokale MySQL-Installation
 
-### Installation
-1. Repository klonen oder pullen
-2. Im `backend`-Ordner `npm install` ausführen
-3. Die Datei `.env.example` zu `.env` kopieren
-4. Docker starten
-5. Im Hauptordner `docker compose up -d` ausführen
-6. Backend mit `node server.js` starten
+## Installation
+
+1. Im `backend`-Ordner `npm install` ausführen
+2. Im `frontend`-Ordner `npm install` ausführen
+3. `backend/.env.example` zu `backend/.env` kopieren
+4. Im Hauptordner `docker compose up -d` ausführen
+5. Backend starten: im `backend`-Ordner `npm run dev` oder `npm start`
+6. Frontend starten: im `frontend`-Ordner `npm run dev`
+
+Wenn bereits ein alter Docker-Volume mit einer früheren Datenbankstruktur existiert, muss die Datenbank neu initialisiert oder das Schema manuell aktualisiert werden. Für eine frische lokale Testdatenbank kann `docker compose down -v` und danach `docker compose up -d` verwendet werden.
 
 ## Umgebungsvariablen
-In der `.env`-Datei müssen folgende Werte stehen:
 
 ```env
 DB_HOST=localhost
 DB_USER=root
-DB_PASSWORD=
+DB_PASSWORD=root
 DB_NAME=fittrack
 DB_PORT=3306
-PORT=3000
-JWT_SECRET=fittracksecret
+PORT=3001
+JWT_SECRET=change-this-secret
+```
+
+Optional kann im Frontend eine eigene API-URL gesetzt werden:
+
+```env
+VITE_API_BASE_URL=http://localhost:3001/api
+```
