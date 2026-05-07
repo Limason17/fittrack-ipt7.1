@@ -2,101 +2,153 @@ const express = require("express");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const db = require("../config/db");
+const { JWT_SECRET } = require("../config/auth");
+const authenticateToken = require("../middleware/authMiddleware");
 
 const router = express.Router();
 
-// REGISTER
+function cleanString(value) {
+    return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeLanguage(value) {
+    return value === "en" ? "en" : "de";
+}
+
+function publicUser(user) {
+    return {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        language_preference: normalizeLanguage(user.language_preference)
+    };
+}
+
 router.post("/register", async (req, res) => {
-    const { username, email, password } = req.body;
+    const username = cleanString(req.body.username);
+    const email = cleanString(req.body.email).toLowerCase();
+    const password = req.body.password;
+    const languagePreference = normalizeLanguage(
+        req.body.language_preference || req.body.language
+    );
 
     if (!username || !email || !password) {
         return res.status(400).json({ message: "Please fill in all fields" });
     }
 
-    const checkSql = "SELECT * FROM users WHERE email = ? OR username = ?";
+    if (password.length < 6) {
+        return res.status(400).json({
+            message: "Password must be at least 6 characters long"
+        });
+    }
 
-    db.query(checkSql, [email, username], async (err, results) => {
-        if (err) {
-            return res.status(500).json({ message: "Database error", error: err });
-        }
+    try {
+        const [existingUsers] = await db.promise().query(
+            "SELECT id FROM users WHERE email = ? OR username = ?",
+            [email, username]
+        );
 
-        if (results.length > 0) {
+        if (existingUsers.length > 0) {
             return res.status(409).json({ message: "User already exists" });
         }
 
-        try {
-            const hashedPassword = await bcrypt.hash(password, 10);
+        const hashedPassword = await bcrypt.hash(password, 10);
 
-            const insertSql =
-                "INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)";
+        const [result] = await db.promise().query(
+            `INSERT INTO users (username, email, password_hash, language_preference)
+             VALUES (?, ?, ?, ?)`,
+            [username, email, hashedPassword, languagePreference]
+        );
 
-            db.query(insertSql, [username, email, hashedPassword], (err, result) => {
-                if (err) {
-                    return res.status(500).json({ message: "Error creating user", error: err });
-                }
-
-                res.status(201).json({
-                    message: "User registered successfully",
-                    userId: result.insertId
-                });
-            });
-        } catch (error) {
-            return res.status(500).json({ message: "Server error", error });
-        }
-    });
+        res.status(201).json({
+            message: "User registered successfully",
+            userId: result.insertId
+        });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error });
+    }
 });
 
-// LOGIN
-router.post("/login", (req, res) => {
-    const { email, password } = req.body;
+router.post("/login", async (req, res) => {
+    const email = cleanString(req.body.email).toLowerCase();
+    const password = req.body.password;
 
     if (!email || !password) {
         return res.status(400).json({ message: "Please fill in all fields" });
     }
 
-    const sql = "SELECT * FROM users WHERE email = ?";
+    try {
+        const [users] = await db.promise().query(
+            "SELECT * FROM users WHERE email = ?",
+            [email]
+        );
 
-    db.query(sql, [email], async (err, results) => {
-        if (err) {
-            return res.status(500).json({ message: "Database error", error: err });
-        }
-
-        if (results.length === 0) {
+        if (users.length === 0) {
             return res.status(401).json({ message: "Invalid email or password" });
         }
 
-        const user = results[0];
+        const user = users[0];
+        const isMatch = await bcrypt.compare(password, user.password_hash);
 
-        try {
-            const isMatch = await bcrypt.compare(password, user.password_hash);
-
-            if (!isMatch) {
-                return res.status(401).json({ message: "Invalid email or password" });
-            }
-
-            const token = jwt.sign(
-                {
-                    id: user.id,
-                    username: user.username,
-                    email: user.email
-                },
-                process.env.JWT_SECRET,
-                { expiresIn: "1h" }
-            );
-
-            res.json({
-                message: "Login successful",
-                token,
-                user: {
-                    id: user.id,
-                    username: user.username,
-                    email: user.email
-                }
-            });
-        } catch (error) {
-            return res.status(500).json({ message: "Server error", error });
+        if (!isMatch) {
+            return res.status(401).json({ message: "Invalid email or password" });
         }
-    });
+
+        const token = jwt.sign(
+            {
+                id: user.id,
+                username: user.username,
+                email: user.email
+            },
+            JWT_SECRET,
+            { expiresIn: "8h" }
+        );
+
+        res.json({
+            message: "Login successful",
+            token,
+            user: publicUser(user)
+        });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error });
+    }
+});
+
+router.get("/me", authenticateToken, async (req, res) => {
+    try {
+        const [users] = await db.promise().query(
+            "SELECT id, username, email, language_preference FROM users WHERE id = ?",
+            [req.user.id]
+        );
+
+        if (users.length === 0) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        res.json(publicUser(users[0]));
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error });
+    }
+});
+
+router.put("/language", authenticateToken, async (req, res) => {
+    const languagePreference = normalizeLanguage(
+        req.body.language_preference || req.body.language
+    );
+
+    try {
+        await db.promise().query(
+            "UPDATE users SET language_preference = ? WHERE id = ?",
+            [languagePreference, req.user.id]
+        );
+
+        res.json({
+            message: "Language updated successfully",
+            language_preference: languagePreference
+        });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error });
+    }
 });
 
 module.exports = router;

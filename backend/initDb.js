@@ -4,10 +4,10 @@ const path = require("path");
 require("dotenv").config();
 
 const connection = mysql.createConnection({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    port: process.env.DB_PORT,
+    host: process.env.DB_HOST || "localhost",
+    user: process.env.DB_USER || "root",
+    password: process.env.DB_PASSWORD || "root",
+    port: Number(process.env.DB_PORT) || 3306,
     multipleStatements: true,
     charset: "utf8mb4"
 });
@@ -33,6 +33,7 @@ connection.query(schemaSql, (err) => {
         } else {
             console.log("Test data inserted successfully.");
         }
+
         connection.end();
     });
 });

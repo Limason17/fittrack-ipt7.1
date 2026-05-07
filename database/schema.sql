@@ -3,11 +3,11 @@ USE fittrack;
 
 SET FOREIGN_KEY_CHECKS = 0;
 
+DROP TABLE IF EXISTS progress_entries;
+DROP TABLE IF EXISTS workout_exercises;
+DROP TABLE IF EXISTS workouts;
 DROP TABLE IF EXISTS exercises;
 DROP TABLE IF EXISTS users;
-DROP TABLE IF EXISTS workouts;
-DROP TABLE IF EXISTS workout_exercises;
-DROP TABLE IF EXISTS progress_entries;
 
 SET FOREIGN_KEY_CHECKS = 1;
 
@@ -16,8 +16,9 @@ CREATE TABLE IF NOT EXISTS users (
     username VARCHAR(50) NOT NULL UNIQUE,
     email VARCHAR(120) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
+    language_preference ENUM('de', 'en') NOT NULL DEFAULT 'de',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
+);
 
 CREATE TABLE IF NOT EXISTS exercises (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -31,7 +32,7 @@ CREATE TABLE IF NOT EXISTS exercises (
     CONSTRAINT fk_exercises_user
     FOREIGN KEY (user_id) REFERENCES users(id)
     ON DELETE SET NULL
-    );
+);
 
 CREATE TABLE IF NOT EXISTS workouts (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -43,33 +44,41 @@ CREATE TABLE IF NOT EXISTS workouts (
     CONSTRAINT fk_workouts_user
     FOREIGN KEY (user_id) REFERENCES users(id)
     ON DELETE CASCADE
-    );
+);
 
 CREATE TABLE IF NOT EXISTS workout_exercises (
     id INT AUTO_INCREMENT PRIMARY KEY,
     workout_id INT NOT NULL,
     exercise_id INT NOT NULL,
-    sets INT,
-    reps INT,
+    sets INT NOT NULL,
+    reps INT NOT NULL,
     weight DECIMAL(6,2),
     CONSTRAINT fk_workout_exercises_workout
     FOREIGN KEY (workout_id) REFERENCES workouts(id)
     ON DELETE CASCADE,
     CONSTRAINT fk_workout_exercises_exercise
     FOREIGN KEY (exercise_id) REFERENCES exercises(id)
-    );
+);
 
 CREATE TABLE IF NOT EXISTS progress_entries (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
+    workout_id INT NULL,
     exercise_id INT NOT NULL,
     weight DECIMAL(6,2),
-    reps INT,
-    sets INT,
-    entry_date DATE,
+    reps INT NOT NULL,
+    sets INT NOT NULL,
+    entry_date DATE NOT NULL,
     CONSTRAINT fk_progress_user
     FOREIGN KEY (user_id) REFERENCES users(id)
     ON DELETE CASCADE,
+    CONSTRAINT fk_progress_workout
+    FOREIGN KEY (workout_id) REFERENCES workouts(id)
+    ON DELETE CASCADE,
     CONSTRAINT fk_progress_exercise
     FOREIGN KEY (exercise_id) REFERENCES exercises(id)
-    );
+);
+
+CREATE INDEX idx_exercises_user ON exercises(user_id);
+CREATE INDEX idx_workouts_user_date ON workouts(user_id, workout_date);
+CREATE INDEX idx_progress_user_date ON progress_entries(user_id, entry_date);

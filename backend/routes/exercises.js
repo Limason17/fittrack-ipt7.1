@@ -1,8 +1,22 @@
 const express = require("express");
 const db = require("../config/db");
 const authenticateToken = require("../middleware/authMiddleware");
+const {
+    normalizeExercise,
+    normalizeText,
+    taxonomyVariants
+} = require("../utils/taxonomy");
 
 const router = express.Router();
+
+function cleanString(value) {
+    return typeof value === "string" ? value.trim() : "";
+}
+
+function positiveInteger(value) {
+    const number = Number(value);
+    return Number.isInteger(number) && number > 0 ? number : null;
+}
 
 router.get("/", authenticateToken, (req, res) => {
     const { category, muscle_group } = req.query;
@@ -16,16 +30,18 @@ router.get("/", authenticateToken, (req, res) => {
     const queryParams = [req.user.id];
 
     if (category) {
-        sql += ` AND category = ?`;
-        queryParams.push(category);
+        const variants = taxonomyVariants(category);
+        sql += ` AND category IN (${variants.map(() => "?").join(", ")})`;
+        queryParams.push(...variants);
     }
 
     if (muscle_group) {
-        sql += ` AND muscle_group = ?`;
-        queryParams.push(muscle_group);
+        const variants = taxonomyVariants(muscle_group);
+        sql += ` AND muscle_group IN (${variants.map(() => "?").join(", ")})`;
+        queryParams.push(...variants);
     }
 
-    sql += ` ORDER BY created_at DESC`;
+    sql += " ORDER BY user_id IS NULL DESC, name ASC";
 
     db.query(sql, queryParams, (err, results) => {
         if (err) {
@@ -35,15 +51,18 @@ router.get("/", authenticateToken, (req, res) => {
             });
         }
 
-        res.json(results);
+        res.json(results.map(normalizeExercise));
     });
 });
 
-// Neue Übung für eingeloggten User erstellen
 router.post("/", authenticateToken, (req, res) => {
-    const { name, description, category, muscle_group, image_url } = req.body;
+    const name = cleanString(req.body.name);
+    const description = normalizeText(cleanString(req.body.description));
+    const category = normalizeText(cleanString(req.body.category));
+    const muscleGroup = normalizeText(cleanString(req.body.muscle_group));
+    const imageUrl = cleanString(req.body.image_url);
 
-    if (!name || !category || !muscle_group) {
+    if (!name || !category || !muscleGroup) {
         return res.status(400).json({
             message: "Name, category and muscle_group are required"
         });
@@ -61,8 +80,8 @@ router.post("/", authenticateToken, (req, res) => {
             name,
             description || null,
             category,
-            muscle_group,
-            image_url || null
+            muscleGroup,
+            imageUrl || null
         ],
         (err, result) => {
             if (err) {
@@ -76,6 +95,85 @@ router.post("/", authenticateToken, (req, res) => {
                 message: "Exercise created successfully",
                 exerciseId: result.insertId
             });
+        }
+    );
+});
+
+router.put("/:id", authenticateToken, (req, res) => {
+    const exerciseId = positiveInteger(req.params.id);
+    const name = cleanString(req.body.name);
+    const description = normalizeText(cleanString(req.body.description));
+    const category = normalizeText(cleanString(req.body.category));
+    const muscleGroup = normalizeText(cleanString(req.body.muscle_group));
+    const imageUrl = cleanString(req.body.image_url);
+
+    if (!exerciseId) {
+        return res.status(400).json({ message: "Invalid exercise id" });
+    }
+
+    if (!name || !category || !muscleGroup) {
+        return res.status(400).json({
+            message: "Name, category and muscle_group are required"
+        });
+    }
+
+    const sql = `
+        UPDATE exercises
+        SET name = ?, description = ?, category = ?, muscle_group = ?, image_url = ?
+        WHERE id = ? AND user_id = ?
+    `;
+
+    db.query(
+        sql,
+        [
+            name,
+            description || null,
+            category,
+            muscleGroup,
+            imageUrl || null,
+            exerciseId,
+            req.user.id
+        ],
+        (err, result) => {
+            if (err) {
+                return res.status(500).json({
+                    message: "Error updating exercise",
+                    error: err
+                });
+            }
+
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ message: "Exercise not found" });
+            }
+
+            res.json({ message: "Exercise updated successfully" });
+        }
+    );
+});
+
+router.delete("/:id", authenticateToken, (req, res) => {
+    const exerciseId = positiveInteger(req.params.id);
+
+    if (!exerciseId) {
+        return res.status(400).json({ message: "Invalid exercise id" });
+    }
+
+    db.query(
+        "DELETE FROM exercises WHERE id = ? AND user_id = ?",
+        [exerciseId, req.user.id],
+        (err, result) => {
+            if (err) {
+                return res.status(409).json({
+                    message: "Exercise is already used in workouts or progress entries",
+                    error: err
+                });
+            }
+
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ message: "Exercise not found" });
+            }
+
+            res.json({ message: "Exercise deleted successfully" });
         }
     );
 });
