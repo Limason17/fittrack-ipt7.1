@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(120) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
     language_preference ENUM('de', 'en') NOT NULL DEFAULT 'de',
+    weight_unit ENUM('kg', 'lb') NOT NULL DEFAULT 'kg',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -50,9 +51,12 @@ CREATE TABLE IF NOT EXISTS workout_exercises (
     id INT AUTO_INCREMENT PRIMARY KEY,
     workout_id INT NOT NULL,
     exercise_id INT NOT NULL,
-    sets INT NOT NULL,
-    reps INT NOT NULL,
-    weight DECIMAL(6,2),
+    sets INT NULL,
+    reps INT NULL,
+    weight DECIMAL(6,2) NULL,
+    duration_minutes INT NULL,
+    distance_km DECIMAL(7,2) NULL,
+    intensity_level INT NULL,
     CONSTRAINT fk_workout_exercises_workout
     FOREIGN KEY (workout_id) REFERENCES workouts(id)
     ON DELETE CASCADE,
@@ -65,9 +69,12 @@ CREATE TABLE IF NOT EXISTS progress_entries (
     user_id INT NOT NULL,
     workout_id INT NULL,
     exercise_id INT NOT NULL,
-    weight DECIMAL(6,2),
-    reps INT NOT NULL,
-    sets INT NOT NULL,
+    weight DECIMAL(6,2) NULL,
+    reps INT NULL,
+    sets INT NULL,
+    duration_minutes INT NULL,
+    distance_km DECIMAL(7,2) NULL,
+    intensity_level INT NULL,
     entry_date DATE NOT NULL,
     CONSTRAINT fk_progress_user
     FOREIGN KEY (user_id) REFERENCES users(id)

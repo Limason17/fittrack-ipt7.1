@@ -3,6 +3,7 @@ const cors = require("cors");
 require("dotenv").config();
 
 require("./config/db");
+const ensureTrainingSchema = require("./utils/ensureTrainingSchema");
 const usersRoutes = require("./routes/users");
 const exercisesRoutes = require("./routes/exercises");
 const workoutsRoutes = require("./routes/workouts");
@@ -24,6 +25,12 @@ app.use("/api/progress", progressRoutes);
 
 const PORT = process.env.PORT || 3001;
 
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+ensureTrainingSchema()
+    .catch((error) => {
+        console.error("Training schema migration failed:", error.message);
+    })
+    .finally(() => {
+        app.listen(PORT, () => {
+            console.log(`Server is running on port ${PORT}`);
+        });
+    });
