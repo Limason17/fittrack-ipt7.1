@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { apiRequest } from '../utils/api'
 import { locale, t } from '../utils/i18n'
+import { weightUnit } from '../utils/units'
 
 const router = useRouter()
 
@@ -37,6 +38,7 @@ async function handleRegister() {
         email: email.value,
         password: password.value,
         language_preference: locale.value,
+        weight_unit: weightUnit.value,
       },
     })
 

@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { saveAuth } from '../utils/auth'
 import { apiRequest } from '../utils/api'
 import { applyLanguageForUser, t } from '../utils/i18n'
+import { applyWeightUnitForUser } from '../utils/units'
 
 const router = useRouter()
 const route = useRoute()
@@ -33,7 +34,10 @@ async function handleLogin() {
     })
 
     saveAuth(data.token, data.user)
-    await applyLanguageForUser(data.user)
+    await Promise.all([
+      applyLanguageForUser(data.user),
+      applyWeightUnitForUser(data.user)
+    ])
 
     email.value = ''
     password.value = ''
