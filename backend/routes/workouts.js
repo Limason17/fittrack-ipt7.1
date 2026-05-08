@@ -2,6 +2,11 @@ const express = require("express");
 const db = require("../config/db");
 const authenticateToken = require("../middleware/authMiddleware");
 const { normalizeText } = require("../utils/taxonomy");
+const {
+    normalizeRowForExercise,
+    normalizeTrainingRows,
+    positiveInteger
+} = require("../utils/trainingMetrics");
 
 const router = express.Router();
 
@@ -17,39 +22,6 @@ function normalizeDate(value) {
     }
 
     return dateValue;
-}
-
-function positiveInteger(value) {
-    const number = Number(value);
-    return Number.isInteger(number) && number > 0 ? number : null;
-}
-
-function nullableWeight(value) {
-    if (value === "" || value === null || value === undefined) {
-        return null;
-    }
-
-    const number = Number(value);
-    return Number.isFinite(number) && number >= 0 ? number : null;
-}
-
-function normalizeExerciseRows(rows) {
-    if (!Array.isArray(rows) || rows.length === 0) {
-        return null;
-    }
-
-    const normalizedRows = rows.map((row) => ({
-        exercise_id: positiveInteger(row.exercise_id),
-        sets: positiveInteger(row.sets),
-        reps: positiveInteger(row.reps),
-        weight: nullableWeight(row.weight)
-    }));
-
-    const hasInvalidRow = normalizedRows.some(
-        (row) => !row.exercise_id || !row.sets || !row.reps
-    );
-
-    return hasInvalidRow ? null : normalizedRows;
 }
 
 function groupWorkoutRows(rows) {
@@ -74,9 +46,13 @@ function groupWorkoutRows(rows) {
                 name: normalizeText(row.exercise_name),
                 category: normalizeText(row.category),
                 muscle_group: normalizeText(row.muscle_group),
+                image_url: row.image_url,
                 sets: row.sets,
                 reps: row.reps,
-                weight: row.weight
+                weight: row.weight,
+                duration_minutes: row.duration_minutes,
+                distance_km: row.distance_km,
+                intensity_level: row.intensity_level
             });
         }
     });
@@ -84,12 +60,12 @@ function groupWorkoutRows(rows) {
     return Array.from(workoutMap.values());
 }
 
-async function ensureExercisesAreAvailable(connection, userId, rows) {
+async function availableExercisesById(connection, userId, rows) {
     const exerciseIds = [...new Set(rows.map((row) => row.exercise_id))];
     const placeholders = exerciseIds.map(() => "?").join(", ");
 
     const [availableExercises] = await connection.query(
-        `SELECT id
+        `SELECT id, category
          FROM exercises
          WHERE id IN (${placeholders}) AND (user_id = ? OR user_id IS NULL)`,
         [...exerciseIds, userId]
@@ -100,37 +76,80 @@ async function ensureExercisesAreAvailable(connection, userId, rows) {
         error.status = 400;
         throw error;
     }
+
+    return new Map(availableExercises.map((exercise) => [exercise.id, exercise]));
+}
+
+function validatedTrainingRows(rows, exercisesById) {
+    const validatedRows = rows.map((row) =>
+        normalizeRowForExercise(row, exercisesById.get(row.exercise_id))
+    );
+
+    if (validatedRows.some((row) => !row)) {
+        const error = new Error("Complete strength or cardio data is required");
+        error.status = 400;
+        throw error;
+    }
+
+    return validatedRows;
 }
 
 async function insertWorkoutRows(connection, userId, workoutId, workoutDate, rows) {
-    await ensureExercisesAreAvailable(connection, userId, rows);
+    const exercisesById = await availableExercisesById(connection, userId, rows);
+    const trainingRows = validatedTrainingRows(rows, exercisesById);
 
-    const workoutValues = rows.map((row) => [
+    const workoutValues = trainingRows.map((row) => [
         workoutId,
         row.exercise_id,
         row.sets,
         row.reps,
-        row.weight
+        row.weight,
+        row.duration_minutes,
+        row.distance_km,
+        row.intensity_level
     ]);
 
     await connection.query(
-        `INSERT INTO workout_exercises (workout_id, exercise_id, sets, reps, weight)
+        `INSERT INTO workout_exercises (
+            workout_id,
+            exercise_id,
+            sets,
+            reps,
+            weight,
+            duration_minutes,
+            distance_km,
+            intensity_level
+         )
          VALUES ?`,
         [workoutValues]
     );
 
-    const progressValues = rows.map((row) => [
+    const progressValues = trainingRows.map((row) => [
         userId,
         workoutId,
         row.exercise_id,
         row.weight,
         row.reps,
         row.sets,
+        row.duration_minutes,
+        row.distance_km,
+        row.intensity_level,
         workoutDate
     ]);
 
     await connection.query(
-        `INSERT INTO progress_entries (user_id, workout_id, exercise_id, weight, reps, sets, entry_date)
+        `INSERT INTO progress_entries (
+            user_id,
+            workout_id,
+            exercise_id,
+            weight,
+            reps,
+            sets,
+            duration_minutes,
+            distance_km,
+            intensity_level,
+            entry_date
+         )
          VALUES ?`,
         [progressValues]
     );
@@ -150,9 +169,13 @@ router.get("/", authenticateToken, async (req, res) => {
                 we.sets,
                 we.reps,
                 we.weight,
+                we.duration_minutes,
+                we.distance_km,
+                we.intensity_level,
                 e.name AS exercise_name,
                 e.category,
-                e.muscle_group
+                e.muscle_group,
+                e.image_url
              FROM workouts w
              LEFT JOIN workout_exercises we ON we.workout_id = w.id
              LEFT JOIN exercises e ON e.id = we.exercise_id
@@ -171,7 +194,7 @@ router.post("/", authenticateToken, async (req, res) => {
     const title = cleanString(req.body.title);
     const workoutDate = normalizeDate(req.body.workout_date);
     const notes = cleanString(req.body.notes) || null;
-    const exerciseRows = normalizeExerciseRows(req.body.exercises);
+    const exerciseRows = normalizeTrainingRows(req.body.exercises);
 
     if (!title || !workoutDate || !exerciseRows) {
         return res.status(400).json({
@@ -220,7 +243,7 @@ router.put("/:id", authenticateToken, async (req, res) => {
     const title = cleanString(req.body.title);
     const workoutDate = normalizeDate(req.body.workout_date);
     const notes = cleanString(req.body.notes) || null;
-    const exerciseRows = normalizeExerciseRows(req.body.exercises);
+    const exerciseRows = normalizeTrainingRows(req.body.exercises);
 
     if (!workoutId || !title || !workoutDate || !exerciseRows) {
         return res.status(400).json({

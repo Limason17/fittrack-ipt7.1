@@ -1,16 +1,18 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { apiRequest } from '../utils/api'
 import { getToken } from '../utils/auth'
 import { getExerciseImage } from '../utils/exerciseImageMap'
 import {
   formatDate,
+  locale,
   t,
   translateCategory,
   translateExerciseDescription,
   translateMuscleGroup,
   weekdayNames,
 } from '../utils/i18n'
+import { weightUnit, formatWeightValue, normalizeWeightValue } from '../utils/units'
 import { normalizeExercise, normalizeWorkout } from '../utils/taxonomy'
 
 const workouts = ref([])
@@ -20,6 +22,7 @@ const isSaving = ref(false)
 const errorMessage = ref('')
 const successMessage = ref('')
 const showForm = ref(false)
+const workoutFormRef = ref(null)
 const editingWorkoutId = ref(null)
 const selectedMonth = ref(new Date(new Date().getFullYear(), new Date().getMonth(), 1))
 
@@ -62,6 +65,9 @@ function emptyWorkoutExercise() {
     sets: 3,
     reps: 10,
     weight: '',
+    duration_minutes: 30,
+    distance_km: '',
+    intensity_level: '',
   }
 }
 
@@ -185,6 +191,15 @@ function openCreateForm() {
   showForm.value = true
 }
 
+function scrollToWorkoutForm() {
+  nextTick(() => {
+    workoutFormRef.value?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    })
+  })
+}
+
 function closeForm() {
   resetForm()
   closeExercisePicker()
@@ -208,6 +223,14 @@ function selectedExerciseById(exerciseId) {
   return exercises.value.find((exercise) => Number(exercise.id) === Number(exerciseId))
 }
 
+function isCardioExercise(exercise) {
+  return exercise?.category === 'Cardio'
+}
+
+function isCardioRow(row) {
+  return isCardioExercise(selectedExerciseById(row.exercise_id))
+}
+
 function openExercisePicker(index) {
   pickerRowIndex.value = index
   exercisePickerOpen.value = true
@@ -223,7 +246,16 @@ function chooseExercise(exercise) {
     return
   }
 
-  form.value.exercises[pickerRowIndex.value].exercise_id = exercise.id
+  const row = form.value.exercises[pickerRowIndex.value]
+  row.exercise_id = exercise.id
+
+  if (isCardioExercise(exercise)) {
+    row.duration_minutes = row.duration_minutes || 30
+  } else {
+    row.sets = row.sets || 3
+    row.reps = row.reps || 10
+  }
+
   closeExercisePicker()
 }
 
@@ -258,9 +290,35 @@ function validWorkoutForm() {
     return false
   }
 
-  return form.value.exercises.every(
-      (row) => row.exercise_id && Number(row.sets) > 0 && Number(row.reps) > 0
-  )
+  return form.value.exercises.every((row) => {
+    if (!row.exercise_id) {
+      return false
+    }
+
+    if (isCardioRow(row)) {
+      return Number(row.duration_minutes) > 0
+    }
+
+    return Number(row.sets) > 0 && Number(row.reps) > 0
+  })
+}
+
+function workoutExercisePayload(row) {
+  if (isCardioRow(row)) {
+    return {
+      exercise_id: Number(row.exercise_id),
+      duration_minutes: Number(row.duration_minutes),
+      distance_km: row.distance_km === '' ? null : Number(row.distance_km),
+      intensity_level: row.intensity_level === '' ? null : Number(row.intensity_level),
+    }
+  }
+
+  return {
+    exercise_id: Number(row.exercise_id),
+    sets: Number(row.sets),
+    reps: Number(row.reps),
+    weight: row.weight === '' ? null : normalizeWeightValue(row.weight),
+  }
 }
 
 function workoutPayload() {
@@ -268,12 +326,7 @@ function workoutPayload() {
     title: form.value.title,
     workout_date: form.value.workout_date,
     notes: form.value.notes,
-    exercises: form.value.exercises.map((row) => ({
-      exercise_id: Number(row.exercise_id),
-      sets: Number(row.sets),
-      reps: Number(row.reps),
-      weight: row.weight === '' ? null : Number(row.weight),
-    })),
+    exercises: form.value.exercises.map(workoutExercisePayload),
   }
 }
 
@@ -313,9 +366,12 @@ function startEditWorkout(workout) {
     notes: workout.notes || '',
     exercises: workout.exercises.map((exercise) => ({
       exercise_id: exercise.exercise_id,
-      sets: exercise.sets,
-      reps: exercise.reps,
-      weight: exercise.weight ?? '',
+      sets: exercise.sets ?? 3,
+      reps: exercise.reps ?? 10,
+      weight: exercise.weight ? formatWeightValue(exercise.weight).toFixed(1) : '',
+      duration_minutes: exercise.duration_minutes ?? 30,
+      distance_km: exercise.distance_km ?? '',
+      intensity_level: exercise.intensity_level ?? '',
     })),
   }
 
@@ -325,6 +381,7 @@ function startEditWorkout(workout) {
 
   editingWorkoutId.value = workout.id
   showForm.value = true
+  scrollToWorkoutForm()
 }
 
 async function deleteWorkout(workout) {
@@ -357,7 +414,7 @@ function changeMonth(direction) {
 }
 
 function localeName() {
-  return document.documentElement.lang === 'en' ? 'en-US' : 'de-CH'
+  return locale.value === 'en' ? 'en-US' : 'de-CH'
 }
 
 function formatWeight(weight) {
@@ -365,7 +422,39 @@ function formatWeight(weight) {
     return '-'
   }
 
-  return `${Number(weight).toLocaleString(localeName(), { maximumFractionDigits: 2 })} ${t('common.kg')}`
+  const value = formatWeightValue(weight)
+  return `${Number(value).toLocaleString(localeName(), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ${weightUnit.value}`
+}
+
+function formatNumber(value, maximumFractionDigits = 1) {
+  return Number(value || 0).toLocaleString(localeName(), { maximumFractionDigits })
+}
+
+function formatCardioDetails(exercise) {
+  const details = []
+
+  if (exercise.duration_minutes) {
+    details.push(`${formatNumber(exercise.duration_minutes, 0)} ${t('common.minutesShort')}`)
+  }
+
+  if (exercise.distance_km) {
+    details.push(`${formatNumber(exercise.distance_km, 2)} ${t('common.km')}`)
+  }
+
+  if (exercise.intensity_level) {
+    details.push(`${t('common.level')} ${formatNumber(exercise.intensity_level, 0)}`)
+  }
+
+  return details.join(' - ') || '-'
+}
+
+function formatStrengthDetails(exercise) {
+  const weight = formatWeight(exercise.weight)
+  return `${exercise.sets} x ${exercise.reps} - ${weight}`
+}
+
+function formatWorkoutExercise(exercise) {
+  return isCardioExercise(exercise) ? formatCardioDetails(exercise) : formatStrengthDetails(exercise)
 }
 
 onMounted(() => {
@@ -393,7 +482,7 @@ onMounted(() => {
       <p v-if="errorMessage" class="message message-error">{{ errorMessage }}</p>
       <p v-if="successMessage" class="message message-success">{{ successMessage }}</p>
 
-      <div v-if="showForm" class="workout-form card">
+      <div v-if="showForm" ref="workoutFormRef" class="workout-form card">
         <div class="form-title-row">
           <h2>{{ editingWorkoutId ? t('workouts.formEditTitle') : t('workouts.formCreateTitle') }}</h2>
           <button class="btn btn-secondary" type="button" @click="closeForm">
@@ -473,28 +562,69 @@ onMounted(() => {
               </button>
             </div>
 
-            <div class="form-group small-field">
-              <label class="form-label" :for="`sets-${index}`">{{ t('common.sets') }}</label>
-              <input :id="`sets-${index}`" v-model="row.sets" class="input" type="number" min="1" />
-            </div>
+            <template v-if="isCardioRow(row)">
+              <div class="form-group small-field">
+                <label class="form-label" :for="`duration-${index}`">{{ t('common.duration') }}</label>
+                <input
+                    :id="`duration-${index}`"
+                    v-model="row.duration_minutes"
+                    class="input"
+                    type="number"
+                    min="1"
+                    :placeholder="t('common.minutesShort')"
+                />
+              </div>
 
-            <div class="form-group small-field">
-              <label class="form-label" :for="`reps-${index}`">{{ t('common.reps') }}</label>
-              <input :id="`reps-${index}`" v-model="row.reps" class="input" type="number" min="1" />
-            </div>
+              <div class="form-group small-field">
+                <label class="form-label" :for="`distance-${index}`">{{ t('common.distance') }}</label>
+                <input
+                    :id="`distance-${index}`"
+                    v-model="row.distance_km"
+                    class="input"
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    :placeholder="t('common.km')"
+                />
+              </div>
 
-            <div class="form-group small-field">
-              <label class="form-label" :for="`weight-${index}`">{{ t('common.weight') }}</label>
-              <input
-                  :id="`weight-${index}`"
-                  v-model="row.weight"
-                  class="input"
-                  type="number"
-                  min="0"
-                  step="0.25"
-                  :placeholder="t('common.kg')"
-              />
-            </div>
+              <div class="form-group small-field">
+                <label class="form-label" :for="`level-${index}`">{{ t('common.level') }}</label>
+                <input
+                    :id="`level-${index}`"
+                    v-model="row.intensity_level"
+                    class="input"
+                    type="number"
+                    min="1"
+                    :placeholder="t('common.optional')"
+                />
+              </div>
+            </template>
+
+            <template v-else>
+              <div class="form-group small-field">
+                <label class="form-label" :for="`sets-${index}`">{{ t('common.sets') }}</label>
+                <input :id="`sets-${index}`" v-model="row.sets" class="input" type="number" min="1" />
+              </div>
+
+              <div class="form-group small-field">
+                <label class="form-label" :for="`reps-${index}`">{{ t('common.reps') }}</label>
+                <input :id="`reps-${index}`" v-model="row.reps" class="input" type="number" min="1" />
+              </div>
+
+              <div class="form-group small-field">
+                <label class="form-label" :for="`weight-${index}`">{{ t('common.weight') }}</label>
+                <input
+                    :id="`weight-${index}`"
+                    v-model="row.weight"
+                    class="input"
+                    type="number"
+                    min="0"
+                    step="0.25"
+                    :placeholder="weightUnit"
+                />
+              </div>
+            </template>
 
             <button class="btn btn-danger row-remove" type="button" @click="removeExerciseRow(index)">
               {{ t('common.delete') }}
@@ -588,7 +718,7 @@ onMounted(() => {
                 <div v-for="exercise in workout.exercises" :key="exercise.id" class="workout-exercise">
                   <strong>{{ exercise.name }}</strong>
                   <span>
-                    {{ exercise.sets }} x {{ exercise.reps }} - {{ formatWeight(exercise.weight) }}
+                    {{ formatWorkoutExercise(exercise) }}
                   </span>
                 </div>
               </div>
@@ -747,6 +877,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  scroll-margin-top: 7rem;
 }
 
 .exercise-rows {
@@ -994,6 +1125,7 @@ onMounted(() => {
 
 .picker-head {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
   margin-bottom: 1rem;
@@ -1007,6 +1139,10 @@ onMounted(() => {
 .picker-head p {
   max-width: 680px;
   color: var(--text-soft);
+}
+
+.picker-head .btn {
+  flex: 0 0 auto;
 }
 
 .picker-toolbar {
@@ -1023,15 +1159,18 @@ onMounted(() => {
 
 .picker-grid {
   display: grid;
+  flex: 1;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.85rem;
+  align-content: start;
+  min-height: 0;
   overflow: auto;
   padding-right: 0.2rem;
 }
 
 .picker-card {
   display: flex;
-  min-height: 100%;
+  min-height: 190px;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1044,6 +1183,7 @@ onMounted(() => {
   justify-content: center;
   width: 38%;
   min-width: 120px;
+  min-height: 190px;
   background: var(--surface-soft);
   color: var(--text-muted);
   font-size: 0.85rem;
@@ -1062,14 +1202,15 @@ onMounted(() => {
   display: flex;
   flex: 1;
   flex-direction: column;
-  justify-content: space-between;
   gap: 0.75rem;
+  min-width: 0;
   padding: 0.85rem;
 }
 
 .picker-card h3 {
   font-size: 1rem;
   font-weight: 850;
+  line-height: 1.25;
 }
 
 .exercise-tags {
@@ -1089,8 +1230,18 @@ onMounted(() => {
 }
 
 .picker-card p {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   color: var(--text-soft);
   font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.picker-card-body .btn {
+  align-self: flex-start;
+  margin-top: auto;
 }
 
 @media (max-width: 1120px) {
@@ -1123,11 +1274,18 @@ onMounted(() => {
 
   .picker-card {
     flex-direction: column;
+    min-height: 0;
   }
 
   .picker-media {
     width: 100%;
+    min-width: 0;
+    min-height: 0;
     height: 170px;
+  }
+
+  .picker-card-body .btn {
+    width: 100%;
   }
 
   .weekday-grid,

@@ -2,7 +2,16 @@
 import { computed, onMounted, ref } from 'vue'
 import { apiRequest } from '../utils/api'
 import { getToken } from '../utils/auth'
-import { formatDate, t, translateMuscleGroup } from '../utils/i18n'
+import { getExerciseImage } from '../utils/exerciseImageMap'
+import {
+  formatDate,
+  locale,
+  t,
+  translateCategory,
+  translateExerciseDescription,
+  translateMuscleGroup,
+} from '../utils/i18n'
+import { weightUnit, formatWeightValue, normalizeWeightValue } from '../utils/units'
 import {
   normalizeExercise,
   normalizeProgressEntry,
@@ -13,13 +22,44 @@ const entries = ref([])
 const summary = ref([])
 const exercises = ref([])
 const isLoading = ref(true)
+const isExerciseLoading = ref(true)
 const isSaving = ref(false)
 const errorMessage = ref('')
 const successMessage = ref('')
+const exercisePickerOpen = ref(false)
+const pickerSearch = ref('')
+const pickerCategory = ref('')
+const pickerMuscleGroup = ref('')
+
+const categoryOptions = [
+  'Brust',
+  'R\u00fccken',
+  'Beine',
+  'Schultern',
+  'Arme',
+  'Core',
+  'Cardio',
+]
+
+const categoryToMuscleGroups = {
+  Brust: ['Brustmitte', 'Obere Brust'],
+  R\u00fccken: ['Latissimus', 'Oberer R\u00fccken'],
+  Beine: ['Quads', 'Hamstrings', 'Waden'],
+  Schultern: ['Vordere Schulter', 'Seitliche Schulter'],
+  Arme: ['Bizeps', 'Trizeps'],
+  Core: ['Bauch', 'Core'],
+  Cardio: ['Ganzk\u00f6rper', 'Beine'],
+}
+
+const allMuscleGroups = [...new Set(Object.values(categoryToMuscleGroups).flat())]
 
 function dateInputValue(date = new Date()) {
   const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
   return localDate.toISOString().slice(0, 10)
+}
+
+function localeName() {
+  return locale.value === 'en' ? 'en-US' : 'de-CH'
 }
 
 const form = ref({
@@ -28,32 +68,181 @@ const form = ref({
   sets: 3,
   reps: 10,
   weight: '',
+  duration_minutes: 30,
+  distance_km: '',
+  intensity_level: '',
 })
 
-const maxVolume = computed(() =>
-    Math.max(0, ...summary.value.map((item) => Number(item.max_volume) || 0))
+const selectedExercise = computed(() =>
+    exercises.value.find((exercise) => Number(exercise.id) === Number(form.value.exercise_id))
 )
 
-async function loadData() {
+const selectedExerciseIsCardio = computed(() => isCardioExercise(selectedExercise.value))
+
+const availablePickerCategoryOptions = computed(() => {
+  if (!pickerMuscleGroup.value) {
+    return categoryOptions
+  }
+
+  return categoryOptions.filter((category) =>
+      categoryToMuscleGroups[category]?.includes(pickerMuscleGroup.value)
+  )
+})
+
+const availablePickerMuscleGroupOptions = computed(() => {
+  if (!pickerCategory.value) {
+    return allMuscleGroups
+  }
+
+  return categoryToMuscleGroups[pickerCategory.value] || []
+})
+
+const filteredPickerExercises = computed(() => {
+  const search = pickerSearch.value.trim().toLowerCase()
+
+  return exercises.value.filter((exercise) => {
+    const matchesCategory = !pickerCategory.value || exercise.category === pickerCategory.value
+    const matchesMuscle =
+        !pickerMuscleGroup.value || exercise.muscle_group === pickerMuscleGroup.value
+    const exerciseName = searchText(exercise.name)
+    const exerciseMuscle = searchText(translateMuscleGroup(exercise.muscle_group))
+    const exerciseCategory = searchText(translateCategory(exercise.category))
+    const matchesSearch =
+        !search ||
+        exerciseName.includes(search) ||
+        exerciseMuscle.includes(search) ||
+        exerciseCategory.includes(search)
+
+    return matchesCategory && matchesMuscle && matchesSearch
+  })
+})
+
+const progressCharts = computed(() => {
+  const groups = new Map()
+  const sortedEntries = [...entries.value].sort((firstEntry, secondEntry) => {
+    const firstDate = new Date(firstEntry.entry_date).getTime()
+    const secondDate = new Date(secondEntry.entry_date).getTime()
+
+    if (firstDate !== secondDate) {
+      return firstDate - secondDate
+    }
+
+    return Number(firstEntry.id) - Number(secondEntry.id)
+  })
+
+  sortedEntries.forEach((entry) => {
+    if (!groups.has(entry.exercise_id)) {
+      groups.set(entry.exercise_id, {
+        exercise_id: entry.exercise_id,
+        exercise_name: entry.exercise_name,
+        category: entry.category,
+        muscle_group: entry.muscle_group,
+        image_url: entry.image_url,
+        entries: [],
+      })
+    }
+
+    groups.get(entry.exercise_id).entries.push(entry)
+  })
+
+  return Array.from(groups.values())
+      .map((group) => {
+        const metricType = chartMetricType(group.entries, isCardioExercise(group))
+        const chartPoints = group.entries
+            .map((entry) => ({
+              id: entry.id,
+              date: entry.entry_date,
+              value: progressMetricValue(entry, metricType),
+            }))
+            .filter((point) => Number.isFinite(point.value))
+
+        if (chartPoints.length === 0) {
+          return null
+        }
+
+        const firstValue = chartPoints[0]?.value || 0
+        const latestValue = chartPoints[chartPoints.length - 1]?.value || 0
+        const recentPoints = chartPoints.slice(-8)
+        const latestDate = chartPoints[chartPoints.length - 1]?.date || ''
+        const maxValue = Math.max(1, ...recentPoints.map((point) => point.value))
+        const minValue = Math.min(...recentPoints.map((point) => point.value))
+        const valueRange = maxValue - minValue
+
+        const linePoints = recentPoints.map((point, index) => {
+          const x = recentPoints.length === 1 ? 50 : (index / (recentPoints.length - 1)) * 100
+          const y = valueRange === 0 ? 50 : 92 - ((point.value - minValue) / valueRange) * 84
+
+          return {
+            ...point,
+            x: Number(x.toFixed(2)),
+            y: Number(y.toFixed(2)),
+          }
+        })
+
+        return {
+          exercise_id: group.exercise_id,
+          exercise_name: group.exercise_name,
+          category: group.category,
+          muscle_group: group.muscle_group,
+          image_url: group.image_url,
+          metricType,
+          metricLabel: chartMetricLabel(metricType),
+          firstValue,
+          latestValue,
+          latestDate,
+          totalEntries: chartPoints.length,
+          linePoints: linePoints.map((point) => `${point.x},${point.y}`).join(' '),
+          points: linePoints,
+        }
+      })
+      .filter(Boolean)
+      .sort((firstGroup, secondGroup) => {
+        const firstDate = new Date(firstGroup.latestDate).getTime() || 0
+        const secondDate = new Date(secondGroup.latestDate).getTime() || 0
+
+        if (secondDate !== firstDate) {
+          return secondDate - firstDate
+        }
+
+        return (firstGroup.exercise_name || '').localeCompare(secondGroup.exercise_name || '')
+      })
+})
+
+async function loadExercises() {
+  isExerciseLoading.value = true
+
+  try {
+    const exerciseData = await apiRequest('/exercises', { token: getToken() })
+    exercises.value = exerciseData.map(normalizeExercise)
+  } catch (error) {
+    errorMessage.value = t('progress.exerciseLoadError')
+  } finally {
+    isExerciseLoading.value = false
+  }
+}
+
+async function loadProgressData() {
   isLoading.value = true
-  errorMessage.value = ''
 
   try {
     const token = getToken()
-    const [entryData, summaryData, exerciseData] = await Promise.all([
+    const [entryData, summaryData] = await Promise.all([
       apiRequest('/progress', { token }),
       apiRequest('/progress/summary', { token }),
-      apiRequest('/exercises', { token }),
     ])
 
     entries.value = entryData.map(normalizeProgressEntry)
     summary.value = summaryData.map(normalizeProgressSummary)
-    exercises.value = exerciseData.map(normalizeExercise)
   } catch (error) {
     errorMessage.value = t('progress.loadError')
   } finally {
     isLoading.value = false
   }
+}
+
+async function loadData() {
+  errorMessage.value = ''
+  await Promise.all([loadExercises(), loadProgressData()])
 }
 
 function resetForm() {
@@ -63,16 +252,106 @@ function resetForm() {
     sets: 3,
     reps: 10,
     weight: '',
+    duration_minutes: 30,
+    distance_km: '',
+    intensity_level: '',
+  }
+}
+
+function openExercisePicker() {
+  exercisePickerOpen.value = true
+
+  if (!isExerciseLoading.value && exercises.value.length === 0) {
+    loadExercises()
+  }
+}
+
+function searchText(value) {
+  return String(value || '').toLowerCase()
+}
+
+function exerciseImageSource(item) {
+  const exerciseName = item?.exercise_name || item?.name || ''
+  return getExerciseImage(exerciseName) || item?.image_url || null
+}
+
+function closeExercisePicker() {
+  if (typeof document !== 'undefined') {
+    document.getElementById('progressExercisePicker')?.hidePopover?.()
+  }
+
+  exercisePickerOpen.value = false
+}
+
+function chooseExercise(exercise) {
+  form.value.exercise_id = exercise.id
+
+  if (isCardioExercise(exercise)) {
+    form.value.duration_minutes = form.value.duration_minutes || 30
+  } else {
+    form.value.sets = form.value.sets || 3
+    form.value.reps = form.value.reps || 10
+  }
+
+  closeExercisePicker()
+}
+
+function resetPickerFilters() {
+  pickerSearch.value = ''
+  pickerCategory.value = ''
+  pickerMuscleGroup.value = ''
+}
+
+function handlePickerCategoryChange() {
+  if (
+      pickerCategory.value &&
+      pickerMuscleGroup.value &&
+      !categoryToMuscleGroups[pickerCategory.value]?.includes(pickerMuscleGroup.value)
+  ) {
+    pickerMuscleGroup.value = ''
+  }
+}
+
+function handlePickerMuscleGroupChange() {
+  if (
+      pickerMuscleGroup.value &&
+      pickerCategory.value &&
+      !categoryToMuscleGroups[pickerCategory.value]?.includes(pickerMuscleGroup.value)
+  ) {
+    pickerCategory.value = ''
   }
 }
 
 function validForm() {
-  return (
-      form.value.exercise_id &&
-      form.value.entry_date &&
-      Number(form.value.sets) > 0 &&
-      Number(form.value.reps) > 0
-  )
+  if (!form.value.exercise_id || !form.value.entry_date) {
+    return false
+  }
+
+  if (selectedExerciseIsCardio.value) {
+    return Number(form.value.duration_minutes) > 0
+  }
+
+  return Number(form.value.sets) > 0 && Number(form.value.reps) > 0
+}
+
+function entryPayload() {
+  if (selectedExerciseIsCardio.value) {
+    return {
+      exercise_id: Number(form.value.exercise_id),
+      entry_date: form.value.entry_date,
+      duration_minutes: Number(form.value.duration_minutes),
+      distance_km: form.value.distance_km === '' ? null : Number(form.value.distance_km),
+      intensity_level: form.value.intensity_level === '' ? null : Number(form.value.intensity_level),
+    }
+  }
+
+  return {
+    exercise_id: Number(form.value.exercise_id),
+    entry_date: form.value.entry_date,
+    sets: Number(form.value.sets),
+    reps: Number(form.value.reps),
+    weight: form.value.weight === '' ? null : normalizeWeightValue(form.value.weight),
+  }
 }
 
 async function saveEntry() {
@@ -90,18 +369,12 @@ async function saveEntry() {
     await apiRequest('/progress', {
       method: 'POST',
       token: getToken(),
-      body: {
-        exercise_id: Number(form.value.exercise_id),
-        entry_date: form.value.entry_date,
-        sets: Number(form.value.sets),
-        reps: Number(form.value.reps),
-        weight: form.value.weight === '' ? null : Number(form.value.weight),
-      },
+      body: entryPayload(),
     })
 
     successMessage.value = t('progress.saved')
     resetForm()
-    await loadData()
+    await loadProgressData()
   } catch (error) {
     errorMessage.value = t('progress.saveError')
   } finally {
@@ -130,23 +403,209 @@ async function deleteEntry(entry) {
   }
 }
 
-function formatWeight(weight) {
-  if (weight === null || weight === undefined || weight === '') {
+function isCardioExercise(exercise) {
+  return exercise?.category === 'Cardio'
+}
+
+function numericValue(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+function hasMetricValue(value) {
+  const number = numericValue(value)
+  return number !== null && number > 0
+}
+
+function formatNumber(value, maximumFractionDigits = 1) {
+  const number = numericValue(value)
+
+  if (number === null) {
     return '-'
   }
 
-  return `${Number(weight).toLocaleString(document.documentElement.lang === 'en' ? 'en-US' : 'de-CH', {
-    maximumFractionDigits: 2,
-  })} ${t('common.kg')}`
+  return number.toLocaleString(localeName(), { maximumFractionDigits })
 }
 
-function volumePercent(item) {
-  if (!maxVolume.value) {
-    return 0
+function formatWeight(weight) {
+  if (!hasMetricValue(weight)) {
+    return '-'
   }
 
-  return Math.max(6, Math.round((Number(item.max_volume) / maxVolume.value) * 100))
+  const value = formatWeightValue(weight)
+  return `${formatNumber(value, 1)} ${weightUnit.value}`
 }
+
+function formatDuration(value) {
+  if (!hasMetricValue(value)) {
+    return '-'
+  }
+
+  return `${formatNumber(value, 0)} ${t('common.minutesShort')}`
+}
+
+function formatDistance(value) {
+  if (!hasMetricValue(value)) {
+    return '-'
+  }
+
+  return `${formatNumber(value, 2)} ${t('common.km')}`
+}
+
+function formatLevel(value) {
+  if (!hasMetricValue(value)) {
+    return '-'
+  }
+
+  return `${t('common.level')} ${formatNumber(value, 0)}`
+}
+
+function formatSpeed(value) {
+  if (!hasMetricValue(value)) {
+    return '-'
+  }
+
+  return `${formatNumber(value, 1)} ${t('common.kmh')}`
+}
+
+function formatTrainingLoad(value) {
+  return formatNumber(value, 1)
+}
+
+function estimatedOneRepMax(entry) {
+  const weight = numericValue(entry.weight)
+  const reps = numericValue(entry.reps)
+
+  if (!weight || !reps) {
+    return null
+  }
+
+  return weight * (1 + reps / 30)
+}
+
+function totalReps(entry) {
+  const sets = numericValue(entry.sets)
+  const reps = numericValue(entry.reps)
+
+  if (!sets || !reps) {
+    return null
+  }
+
+  return sets * reps
+}
+
+function chartMetricType(groupEntries, isCardio) {
+  if (isCardio) {
+    const distancePoints = groupEntries.filter((entry) => hasMetricValue(entry.distance_km)).length
+    return distancePoints >= Math.min(2, groupEntries.length) ? 'distance' : 'duration'
+  }
+
+  return groupEntries.some((entry) => hasMetricValue(entry.weight))
+      ? 'estimatedOneRepMax'
+      : 'totalReps'
+}
+
+function progressMetricValue(entry, metricType) {
+  if (metricType === 'distance') {
+    return hasMetricValue(entry.distance_km) ? numericValue(entry.distance_km) : null
+  }
+
+  if (metricType === 'duration') {
+    return hasMetricValue(entry.duration_minutes) ? numericValue(entry.duration_minutes) : null
+  }
+
+  if (metricType === 'estimatedOneRepMax') {
+    return formatWeightValue(estimatedOneRepMax(entry))
+  }
+
+  return totalReps(entry)
+}
+
+function chartMetricLabel(metricType) {
+  const labels = {
+    distance: t('common.distance'),
+    duration: t('common.duration'),
+    estimatedOneRepMax: t('progress.estimatedOneRepMax'),
+    totalReps: t('progress.totalReps'),
+  }
+
+  return labels[metricType] || ''
+}
+
+function formatMetricValue(value, metricType) {
+  if (metricType === 'distance') {
+    return formatDistance(value)
+  }
+
+  if (metricType === 'duration') {
+    return formatDuration(value)
+  }
+
+  if (metricType === 'estimatedOneRepMax') {
+    return formatWeight(value)
+  }
+
+  return `${formatNumber(value, 0)} ${t('common.reps')}`
+}
+
+function formatCardioEntry(entry) {
+  return [
+    formatDuration(entry.duration_minutes),
+    formatDistance(entry.distance_km),
+    formatLevel(entry.intensity_level),
+  ].filter((value) => value !== '-').join(' - ') || '-'
+}
+
+function formatStrengthEntry(entry) {
+  const details = [`${entry.sets || '-'} x ${entry.reps || '-'}`]
+
+  if (hasMetricValue(entry.weight)) {
+    details.push(formatWeight(entry.weight))
+  }
+
+  return details.join(' - ')
+}
+
+function formatEntryDetails(entry) {
+  return isCardioExercise(entry) ? formatCardioEntry(entry) : formatStrengthEntry(entry)
+}
+
+function summaryPrimaryLabel(item) {
+  if (isCardioExercise(item)) {
+    return t('progress.maxDuration')
+  }
+
+  return hasMetricValue(item.max_estimated_one_rep_max)
+      ? t('progress.estimatedOneRepMax')
+      : t('progress.maxWeight')
+}
+
+function summaryPrimaryValue(item) {
+  if (isCardioExercise(item)) {
+    return formatDuration(item.max_duration_minutes)
+  }
+
+  return formatWeight(item.max_estimated_one_rep_max || item.max_weight)
+}
+
+function summaryDetailText(item) {
+  if (isCardioExercise(item)) {
+    return [
+      `${t('progress.maxDistance')}: ${formatDistance(item.max_distance_km)}`,
+      `${t('progress.maxSpeed')}: ${formatSpeed(item.max_speed_kmh)}`,
+      `${t('common.level')}: ${hasMetricValue(item.max_intensity_level) ? formatNumber(item.max_intensity_level, 0) : '-'}`,
+    ].join(' - ')
+  }
+
+  return [
+    `${t('progress.maxWeight')}: ${formatWeight(item.max_weight)}`,
+    `${t('progress.maxVolume')}: ${formatTrainingLoad(item.max_volume)}`,
+  ].join(' - ')
+}
+
+onMounted(() => {
+  loadData()
+})
 </script>
 
 <template>
@@ -168,13 +627,41 @@ function volumePercent(item) {
 
         <div class="progress-form-grid">
           <div class="form-group exercise-select">
-            <label class="form-label" for="progressExercise">{{ t('common.exercise') }}</label>
-            <select id="progressExercise" v-model="form.exercise_id" class="input">
-              <option value="">{{ t('common.noSelection') }}</option>
-              <option v-for="exercise in exercises" :key="exercise.id" :value="exercise.id">
-                {{ exercise.name }} · {{ translateMuscleGroup(exercise.muscle_group) }}
-              </option>
-            </select>
+            <span class="form-label">{{ t('common.exercise') }}</span>
+            <button
+                class="exercise-choice"
+                type="button"
+                popovertarget="progressExercisePicker"
+                @click="openExercisePicker"
+            >
+              <template v-if="selectedExercise">
+                <span class="choice-media">
+                  <img
+                      v-if="getExerciseImage(selectedExercise.name) || selectedExercise.image_url"
+                      :src="getExerciseImage(selectedExercise.name) || selectedExercise.image_url"
+                      :alt="selectedExercise.name"
+                  />
+                </span>
+                <span class="choice-body">
+                  <strong>{{ selectedExercise.name }}</strong>
+                  <small>
+                    {{ translateCategory(selectedExercise.category) }}
+                    -
+                    {{ translateMuscleGroup(selectedExercise.muscle_group) }}
+                  </small>
+                </span>
+                <span class="choice-action">{{ t('workouts.changeExercise') }}</span>
+              </template>
+
+              <template v-else>
+                <span class="choice-empty">
+                  {{ isExerciseLoading ? t('common.loading') : t('workouts.chooseExercise') }}
+                </span>
+              </template>
+            </button>
+            <small v-if="!isExerciseLoading && exercises.length === 0" class="field-hint">
+              {{ t('progress.noExercisesAvailable') }}
+            </small>
           </div>
 
           <div class="form-group">
@@ -182,28 +669,69 @@ function volumePercent(item) {
             <input id="entryDate" v-model="form.entry_date" class="input" type="date" />
           </div>
 
-          <div class="form-group">
-            <label class="form-label" for="sets">{{ t('common.sets') }}</label>
-            <input id="sets" v-model="form.sets" class="input" type="number" min="1" />
-          </div>
+          <template v-if="selectedExerciseIsCardio">
+            <div class="form-group">
+              <label class="form-label" for="duration">{{ t('common.duration') }}</label>
+              <input
+                  id="duration"
+                  v-model="form.duration_minutes"
+                  class="input"
+                  type="number"
+                  min="1"
+                  :placeholder="t('common.minutesShort')"
+              />
+            </div>
 
-          <div class="form-group">
-            <label class="form-label" for="reps">{{ t('common.reps') }}</label>
-            <input id="reps" v-model="form.reps" class="input" type="number" min="1" />
-          </div>
+            <div class="form-group">
+              <label class="form-label" for="distance">{{ t('common.distance') }}</label>
+              <input
+                  id="distance"
+                  v-model="form.distance_km"
+                  class="input"
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  :placeholder="t('common.km')"
+              />
+            </div>
 
-          <div class="form-group">
-            <label class="form-label" for="weight">{{ t('common.weight') }}</label>
-            <input
-                id="weight"
-                v-model="form.weight"
-                class="input"
-                type="number"
-                min="0"
-                step="0.25"
-                :placeholder="t('common.kg')"
-            />
-          </div>
+            <div class="form-group">
+              <label class="form-label" for="level">{{ t('common.level') }}</label>
+              <input
+                  id="level"
+                  v-model="form.intensity_level"
+                  class="input"
+                  type="number"
+                  min="1"
+                  :placeholder="t('common.optional')"
+              />
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="form-group">
+              <label class="form-label" for="sets">{{ t('common.sets') }}</label>
+              <input id="sets" v-model="form.sets" class="input" type="number" min="1" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="reps">{{ t('common.reps') }}</label>
+              <input id="reps" v-model="form.reps" class="input" type="number" min="1" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="weight">{{ t('common.weight') }}</label>
+              <input
+                  id="weight"
+                  v-model="form.weight"
+                  class="input"
+                  type="number"
+                  min="0"
+                  step="0.25"
+                  :placeholder="weightUnit"
+              />
+            </div>
+          </template>
         </div>
 
         <div class="form-actions">
@@ -218,6 +746,72 @@ function volumePercent(item) {
       </div>
 
       <template v-else>
+        <section class="chart-section">
+          <div class="section-head">
+            <div>
+              <h2>{{ t('progress.chartTitle') }}</h2>
+              <p>{{ t('progress.chartSubtitle') }}</p>
+            </div>
+          </div>
+
+          <div v-if="progressCharts.length === 0" class="empty-state card">
+            <p>{{ t('progress.noChartData') }}</p>
+          </div>
+
+          <div v-else class="chart-grid">
+            <article v-for="chart in progressCharts" :key="chart.exercise_id" class="chart-card card">
+              <div class="chart-card-head">
+                <div class="chart-title-row">
+                  <span class="progress-media">
+                    <img
+                        v-if="exerciseImageSource(chart)"
+                        :src="exerciseImageSource(chart)"
+                        :alt="chart.exercise_name"
+                    />
+                    <span v-else>{{ t('exercises.noImage') }}</span>
+                  </span>
+                  <div>
+                    <h3>{{ chart.exercise_name }}</h3>
+                    <span>{{ translateMuscleGroup(chart.muscle_group) }}</span>
+                  </div>
+                </div>
+                <span class="pill">{{ chart.totalEntries }} {{ t('progress.entries') }}</span>
+              </div>
+
+              <div
+                  class="line-chart-wrap"
+                  :aria-label="`${chart.exercise_name}: ${chart.metricLabel} ${formatMetricValue(chart.latestValue, chart.metricType)}`"
+              >
+                <svg class="line-chart" viewBox="0 0 100 100" preserveAspectRatio="none">
+                  <polyline class="chart-guide" points="0,25 100,25"></polyline>
+                  <polyline class="chart-guide" points="0,50 100,50"></polyline>
+                  <polyline class="chart-guide" points="0,75 100,75"></polyline>
+                  <polyline
+                      v-if="chart.points.length > 1"
+                      class="chart-line"
+                      :points="chart.linePoints"
+                  ></polyline>
+                  <circle
+                      v-for="point in chart.points"
+                      :key="point.id"
+                      class="chart-dot"
+                      :cx="point.x"
+                      :cy="point.y"
+                      r="2.8"
+                  >
+                    <title>{{ formatDate(point.date) }}: {{ formatMetricValue(point.value, chart.metricType) }}</title>
+                  </circle>
+                </svg>
+              </div>
+
+              <div class="chart-meta">
+                <span>{{ t('progress.startValue') }} {{ chart.metricLabel }}: {{ formatMetricValue(chart.firstValue, chart.metricType) }}</span>
+                <span>{{ t('progress.currentValue') }}: {{ formatMetricValue(chart.latestValue, chart.metricType) }}</span>
+              </div>
+            </article>
+          </div>
+        </section>
+
         <section class="summary-section">
           <div class="section-head">
             <h2>{{ t('progress.summaryTitle') }}</h2>
@@ -230,16 +824,26 @@ function volumePercent(item) {
           <div v-else class="summary-grid">
             <article v-for="item in summary" :key="item.exercise_id" class="summary-card card">
               <div class="summary-top">
-                <div>
-                  <h3>{{ item.exercise_name }}</h3>
-                  <span>{{ translateMuscleGroup(item.muscle_group) }}</span>
+                <div class="summary-title-row">
+                  <span class="progress-media">
+                    <img
+                        v-if="exerciseImageSource(item)"
+                        :src="exerciseImageSource(item)"
+                        :alt="item.exercise_name"
+                    />
+                    <span v-else>{{ t('exercises.noImage') }}</span>
+                  </span>
+                  <div>
+                    <h3>{{ item.exercise_name }}</h3>
+                    <span>{{ translateMuscleGroup(item.muscle_group) }}</span>
+                  </div>
                 </div>
                 <span class="pill">{{ item.total_entries }} {{ t('progress.entries') }}</span>
               </div>
 
               <div class="metric-row">
-                <span>{{ t('progress.maxWeight') }}</span>
-                <strong>{{ formatWeight(item.max_weight) }}</strong>
+                <span>{{ summaryPrimaryLabel(item) }}</span>
+                <strong>{{ summaryPrimaryValue(item) }}</strong>
               </div>
 
               <div class="metric-row">
@@ -247,10 +851,7 @@ function volumePercent(item) {
                 <strong>{{ formatDate(item.latest_date) }}</strong>
               </div>
 
-              <div class="volume-bar" :aria-label="t('progress.maxVolume')">
-                <span :style="{ width: `${volumePercent(item)}%` }"></span>
-              </div>
-              <small>{{ t('progress.maxVolume') }}: {{ Number(item.max_volume || 0).toLocaleString(document.documentElement.lang === 'en' ? 'en-US' : 'de-CH') }}</small>
+              <small>{{ summaryDetailText(item) }}</small>
             </article>
           </div>
         </section>
@@ -266,13 +867,23 @@ function volumePercent(item) {
 
           <div v-else class="entries-list">
             <article v-for="entry in entries" :key="entry.id" class="entry-card card">
-              <div>
+              <div class="entry-main">
+                <span class="progress-media">
+                  <img
+                      v-if="exerciseImageSource(entry)"
+                      :src="exerciseImageSource(entry)"
+                      :alt="entry.exercise_name"
+                  />
+                  <span v-else>{{ t('exercises.noImage') }}</span>
+                </span>
+                <div>
                 <span class="entry-date">{{ formatDate(entry.entry_date) }}</span>
                 <h3>{{ entry.exercise_name }}</h3>
                 <p>
-                  {{ entry.sets }} × {{ entry.reps }} · {{ formatWeight(entry.weight) }}
+                  {{ formatEntryDetails(entry) }}
                 </p>
                 <small>{{ t('progress.source') }}: {{ entry.workout_title || t('progress.manualEntry') }}</small>
+                </div>
               </div>
 
               <button class="btn btn-danger" type="button" @click="deleteEntry(entry)">
@@ -284,6 +895,125 @@ function volumePercent(item) {
       </template>
     </div>
   </section>
+
+  <Teleport to="body">
+    <div
+        id="progressExercisePicker"
+        popover
+        class="modal-backdrop"
+        :class="{ 'modal-backdrop-open': exercisePickerOpen }"
+        role="presentation"
+        @toggle="exercisePickerOpen = $event.newState === 'open'"
+        @click.self="closeExercisePicker"
+    >
+      <section class="exercise-picker card" role="dialog" aria-modal="true">
+        <div class="picker-head">
+          <div>
+            <span class="eyebrow">{{ t('workouts.selectedExercise') }}</span>
+            <h2>{{ t('workouts.exercisePickerTitle') }}</h2>
+            <p>{{ t('workouts.exercisePickerSubtitle') }}</p>
+          </div>
+          <button
+              class="btn btn-secondary"
+              type="button"
+              popovertarget="progressExercisePicker"
+              popovertargetaction="hide"
+              @click="closeExercisePicker"
+          >
+            {{ t('common.close') }}
+          </button>
+        </div>
+
+        <div class="picker-toolbar">
+          <div class="form-group search-field">
+            <label class="form-label" for="progressExerciseSearch">{{ t('workouts.searchExercise') }}</label>
+            <input
+                id="progressExerciseSearch"
+                v-model="pickerSearch"
+                class="input"
+                type="search"
+                :placeholder="t('workouts.searchExercise')"
+            />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="progressPickerCategory">{{ t('exercises.category') }}</label>
+            <select
+                id="progressPickerCategory"
+                v-model="pickerCategory"
+                class="input"
+                @change="handlePickerCategoryChange"
+            >
+              <option value="">{{ t('exercises.allCategories') }}</option>
+              <option v-for="category in availablePickerCategoryOptions" :key="category" :value="category">
+                {{ translateCategory(category) }}
+              </option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="progressPickerMuscle">{{ t('exercises.muscleGroup') }}</label>
+            <select
+                id="progressPickerMuscle"
+                v-model="pickerMuscleGroup"
+                class="input"
+                @change="handlePickerMuscleGroupChange"
+            >
+              <option value="">{{ t('exercises.allMuscleGroups') }}</option>
+              <option v-for="muscle in availablePickerMuscleGroupOptions" :key="muscle" :value="muscle">
+                {{ translateMuscleGroup(muscle) }}
+              </option>
+            </select>
+          </div>
+
+          <button class="btn btn-secondary picker-reset" type="button" @click="resetPickerFilters">
+            {{ t('exercises.resetFilters') }}
+          </button>
+        </div>
+
+        <div v-if="isExerciseLoading" class="empty-state">
+          <p>{{ t('common.loading') }}</p>
+        </div>
+
+        <div v-else-if="filteredPickerExercises.length === 0" class="empty-state">
+          <p>{{ t('workouts.noExerciseMatches') }}</p>
+        </div>
+
+        <div v-else class="picker-grid">
+          <article
+              v-for="exercise in filteredPickerExercises"
+              :key="exercise.id"
+              class="picker-card"
+          >
+            <div class="picker-media">
+              <img
+                  v-if="getExerciseImage(exercise.name) || exercise.image_url"
+                  :src="getExerciseImage(exercise.name) || exercise.image_url"
+                  :alt="exercise.name"
+              />
+              <span v-else>{{ t('exercises.noImage') }}</span>
+            </div>
+
+            <div class="picker-card-body">
+              <div>
+                <h3>{{ exercise.name }}</h3>
+                <div class="exercise-tags">
+                  <span>{{ translateCategory(exercise.category) }}</span>
+                  <span>{{ translateMuscleGroup(exercise.muscle_group) }}</span>
+                </div>
+              </div>
+
+              <p>{{ exercise.user_id ? (exercise.description || t('exercises.noDescription')) : translateExerciseDescription(exercise) }}</p>
+
+              <button class="btn btn-primary" type="button" @click="chooseExercise(exercise)">
+                {{ t('workouts.chooseExercise') }}
+              </button>
+            </div>
+          </article>
+        </div>
+      </section>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -310,6 +1040,7 @@ function volumePercent(item) {
   display: grid;
   grid-template-columns: minmax(240px, 1.5fr) repeat(4, minmax(120px, 1fr));
   gap: 0.85rem;
+  align-items: end;
   margin-top: 1rem;
 }
 
@@ -319,6 +1050,83 @@ function volumePercent(item) {
   margin-top: 1rem;
 }
 
+.exercise-choice {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 74px;
+  padding: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  gap: 0.75rem;
+}
+
+.exercise-choice:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.choice-media {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 62px;
+  height: 58px;
+  flex: 0 0 62px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.choice-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 0.25rem;
+}
+
+.choice-body {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.choice-body strong,
+.choice-body small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.choice-body small {
+  color: var(--text-soft);
+  font-weight: 750;
+}
+
+.choice-action,
+.choice-empty {
+  color: var(--accent);
+  font-weight: 850;
+}
+
+.choice-empty {
+  width: 100%;
+  text-align: center;
+}
+
+.field-hint {
+  color: var(--text-muted);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.chart-section {
+  margin-top: 1.5rem;
+}
+
 .summary-section,
 .entries-section {
   margin-top: 1.5rem;
@@ -326,6 +1134,118 @@ function volumePercent(item) {
 
 .section-head {
   margin-bottom: 0.8rem;
+}
+
+.section-head p {
+  color: var(--text-soft);
+  font-size: 0.94rem;
+}
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.chart-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.chart-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.9rem;
+}
+
+.chart-title-row,
+.summary-title-row,
+.entry-main {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.progress-media {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 64px;
+  flex: 0 0 72px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.progress-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 0.25rem;
+}
+
+.chart-card h3 {
+  font-size: 1.05rem;
+  font-weight: 850;
+  line-height: 1.25;
+}
+
+.chart-card-head span:not(.pill) {
+  color: var(--text-soft);
+}
+
+.line-chart-wrap {
+  height: 170px;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+}
+
+.line-chart {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.chart-guide {
+  fill: none;
+  stroke: rgba(102, 97, 88, 0.18);
+  stroke-width: 0.7;
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3.2;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-dot {
+  fill: var(--surface);
+  stroke: var(--accent);
+  stroke-width: 2.6;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  color: var(--text-soft);
+  font-size: 0.88rem;
+  font-weight: 750;
 }
 
 .summary-grid {
@@ -340,6 +1260,7 @@ function volumePercent(item) {
 
 .summary-top {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.8rem;
   margin-bottom: 0.9rem;
@@ -366,21 +1287,6 @@ function volumePercent(item) {
   color: var(--text-soft);
 }
 
-.volume-bar {
-  height: 9px;
-  margin: 0.75rem 0 0.4rem;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--surface-soft);
-}
-
-.volume-bar span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--accent);
-}
-
 .summary-card small,
 .entry-card small {
   color: var(--text-muted);
@@ -401,6 +1307,12 @@ function volumePercent(item) {
   padding: 1rem;
 }
 
+.entry-main > div,
+.summary-title-row > div,
+.chart-title-row > div {
+  min-width: 0;
+}
+
 .entry-date {
   color: var(--accent);
   font-size: 0.86rem;
@@ -416,10 +1328,172 @@ function volumePercent(item) {
   color: var(--text-soft);
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 1rem;
+  border: 0;
+  background: rgba(36, 31, 24, 0.42);
+}
+
+.modal-backdrop:not(:popover-open):not(.modal-backdrop-open) {
+  display: none;
+}
+
+.modal-backdrop:popover-open,
+.modal-backdrop-open {
+  display: flex;
+}
+
+.modal-backdrop::backdrop {
+  background: transparent;
+}
+
+.exercise-picker {
+  display: flex;
+  flex-direction: column;
+  width: min(1080px, 100%);
+  max-height: min(820px, calc(100vh - 2rem));
+  padding: 1.2rem;
+  overflow: hidden;
+}
+
+.picker-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.picker-head h2 {
+  font-size: 1.35rem;
+  font-weight: 850;
+}
+
+.picker-head p {
+  max-width: 680px;
+  color: var(--text-soft);
+}
+
+.picker-head .btn {
+  flex: 0 0 auto;
+}
+
+.picker-toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 1.2fr) minmax(180px, 0.8fr) minmax(180px, 0.8fr) auto;
+  gap: 0.8rem;
+  align-items: end;
+  margin-bottom: 1rem;
+}
+
+.picker-reset {
+  white-space: nowrap;
+}
+
+.picker-grid {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.85rem;
+  align-content: start;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.picker-card {
+  display: flex;
+  min-height: 190px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.picker-media {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38%;
+  min-width: 120px;
+  min-height: 190px;
+  background: var(--surface-soft);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.picker-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 0.7rem;
+}
+
+.picker-card-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.85rem;
+}
+
+.picker-card h3 {
+  font-size: 1rem;
+  font-weight: 850;
+  line-height: 1.25;
+}
+
+.exercise-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+}
+
+.exercise-tags span {
+  padding: 0.26rem 0.48rem;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.picker-card p {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--text-soft);
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.picker-card-body .btn {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
 @media (max-width: 1050px) {
   .progress-form-grid,
+  .chart-grid,
   .summary-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .picker-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .exercise-select {
@@ -429,6 +1503,9 @@ function volumePercent(item) {
 
 @media (max-width: 760px) {
   .progress-form-grid,
+  .picker-toolbar,
+  .picker-grid,
+  .chart-grid,
   .summary-grid {
     grid-template-columns: 1fr;
   }
@@ -440,6 +1517,29 @@ function volumePercent(item) {
   .entry-card {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .chart-card-head,
+  .picker-head,
+  .chart-meta {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .picker-card {
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .picker-media {
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    height: 170px;
+  }
+
+  .picker-card-body .btn {
+    width: 100%;
   }
 }
 </style>

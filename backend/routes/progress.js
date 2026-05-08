@@ -2,25 +2,16 @@ const express = require("express");
 const db = require("../config/db");
 const authenticateToken = require("../middleware/authMiddleware");
 const { normalizeProgressEntry } = require("../utils/taxonomy");
+const {
+    normalizeRowForExercise,
+    normalizeTrainingRow,
+    positiveInteger
+} = require("../utils/trainingMetrics");
 
 const router = express.Router();
 
 function cleanString(value) {
     return typeof value === "string" ? value.trim() : "";
-}
-
-function positiveInteger(value) {
-    const number = Number(value);
-    return Number.isInteger(number) && number > 0 ? number : null;
-}
-
-function nullableWeight(value) {
-    if (value === "" || value === null || value === undefined) {
-        return null;
-    }
-
-    const number = Number(value);
-    return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 function normalizeDate(value) {
@@ -33,15 +24,15 @@ function normalizeDate(value) {
     return dateValue;
 }
 
-async function ensureExerciseIsAvailable(userId, exerciseId) {
+async function availableExercise(userId, exerciseId) {
     const [exercises] = await db.promise().query(
-        `SELECT id
+        `SELECT id, category
          FROM exercises
          WHERE id = ? AND (user_id = ? OR user_id IS NULL)`,
         [exerciseId, userId]
     );
 
-    return exercises.length > 0;
+    return exercises[0] || null;
 }
 
 router.get("/", authenticateToken, async (req, res) => {
@@ -54,10 +45,14 @@ router.get("/", authenticateToken, async (req, res) => {
                 pe.weight,
                 pe.reps,
                 pe.sets,
+                pe.duration_minutes,
+                pe.distance_km,
+                pe.intensity_level,
                 DATE_FORMAT(pe.entry_date, '%Y-%m-%d') AS entry_date,
                 e.name AS exercise_name,
                 e.category,
                 e.muscle_group,
+                e.image_url,
                 w.title AS workout_title
              FROM progress_entries pe
              INNER JOIN exercises e ON e.id = pe.exercise_id
@@ -82,16 +77,39 @@ router.get("/summary", authenticateToken, async (req, res) => {
                 e.name AS exercise_name,
                 e.category,
                 e.muscle_group,
+                e.image_url,
                 COUNT(pe.id) AS total_entries,
-                MAX(pe.weight) AS max_weight,
-                MAX(pe.reps) AS max_reps,
-                MAX(pe.sets) AS max_sets,
-                MAX(COALESCE(pe.weight, 0) * pe.reps * pe.sets) AS max_volume,
+                MAX(CASE WHEN e.category <> 'Cardio' THEN pe.weight END) AS max_weight,
+                MAX(CASE WHEN e.category <> 'Cardio' THEN pe.reps END) AS max_reps,
+                MAX(CASE WHEN e.category <> 'Cardio' THEN pe.sets END) AS max_sets,
+                MAX(
+                    CASE
+                        WHEN e.category = 'Cardio' THEN NULL
+                        WHEN pe.weight IS NULL OR pe.weight = 0 THEN pe.reps * pe.sets
+                        ELSE pe.weight * pe.reps * pe.sets
+                    END
+                ) AS max_volume,
+                MAX(
+                    CASE
+                        WHEN e.category <> 'Cardio' AND pe.weight > 0 THEN pe.weight * (1 + pe.reps / 30)
+                        ELSE NULL
+                    END
+                ) AS max_estimated_one_rep_max,
+                MAX(CASE WHEN e.category = 'Cardio' THEN pe.duration_minutes END) AS max_duration_minutes,
+                MAX(CASE WHEN e.category = 'Cardio' THEN pe.distance_km END) AS max_distance_km,
+                MAX(CASE WHEN e.category = 'Cardio' THEN pe.intensity_level END) AS max_intensity_level,
+                MAX(
+                    CASE
+                        WHEN e.category = 'Cardio' AND pe.duration_minutes > 0 AND pe.distance_km > 0
+                            THEN pe.distance_km / pe.duration_minutes * 60
+                        ELSE NULL
+                    END
+                ) AS max_speed_kmh,
                 DATE_FORMAT(MAX(pe.entry_date), '%Y-%m-%d') AS latest_date
              FROM progress_entries pe
              INNER JOIN exercises e ON e.id = pe.exercise_id
              WHERE pe.user_id = ?
-             GROUP BY e.id, e.name, e.category, e.muscle_group
+             GROUP BY e.id, e.name, e.category, e.muscle_group, e.image_url
              ORDER BY latest_date DESC, e.name ASC`,
             [req.user.id]
         );
@@ -103,32 +121,57 @@ router.get("/summary", authenticateToken, async (req, res) => {
 });
 
 router.post("/", authenticateToken, async (req, res) => {
-    const exerciseId = positiveInteger(req.body.exercise_id);
-    const sets = positiveInteger(req.body.sets);
-    const reps = positiveInteger(req.body.reps);
-    const weight = nullableWeight(req.body.weight);
+    const trainingRow = normalizeTrainingRow(req.body);
     const entryDate = normalizeDate(req.body.entry_date);
 
-    if (!exerciseId || !sets || !reps || !entryDate) {
+    if (!trainingRow.exercise_id || !entryDate) {
         return res.status(400).json({
-            message: "Exercise, sets, reps and entry_date are required"
+            message: "Exercise, entry_date and valid training data are required"
         });
     }
 
     try {
-        const exerciseIsAvailable = await ensureExerciseIsAvailable(
+        const exercise = await availableExercise(
             req.user.id,
-            exerciseId
+            trainingRow.exercise_id
         );
 
-        if (!exerciseIsAvailable) {
+        if (!exercise) {
             return res.status(400).json({ message: "Exercise is not available" });
         }
 
+        const validatedRow = normalizeRowForExercise(trainingRow, exercise);
+
+        if (!validatedRow) {
+            return res.status(400).json({
+                message: "Complete strength or cardio data is required"
+            });
+        }
+
         const [result] = await db.promise().query(
-            `INSERT INTO progress_entries (user_id, exercise_id, weight, reps, sets, entry_date)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [req.user.id, exerciseId, weight, reps, sets, entryDate]
+            `INSERT INTO progress_entries (
+                user_id,
+                exercise_id,
+                weight,
+                reps,
+                sets,
+                duration_minutes,
+                distance_km,
+                intensity_level,
+                entry_date
+             )
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                req.user.id,
+                validatedRow.exercise_id,
+                validatedRow.weight,
+                validatedRow.reps,
+                validatedRow.sets,
+                validatedRow.duration_minutes,
+                validatedRow.distance_km,
+                validatedRow.intensity_level,
+                entryDate
+            ]
         );
 
         res.status(201).json({
