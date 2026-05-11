@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { apiRequest } from '../utils/api'
 import { getToken } from '../utils/auth'
 import { getExerciseImage } from '../utils/exerciseImageMap'
@@ -12,7 +12,14 @@ import {
   translateMuscleGroup,
   weekdayNames,
 } from '../utils/i18n'
-import { weightUnit, formatWeightValue, normalizeWeightValue } from '../utils/units'
+import {
+  distanceUnit,
+  formatDistanceValue,
+  formatWeightValue,
+  normalizeDistanceValue,
+  normalizeWeightValue,
+  weightUnit,
+} from '../utils/units'
 import { normalizeExercise, normalizeWorkout } from '../utils/taxonomy'
 
 const workouts = ref([])
@@ -308,7 +315,7 @@ function workoutExercisePayload(row) {
     return {
       exercise_id: Number(row.exercise_id),
       duration_minutes: Number(row.duration_minutes),
-      distance_km: row.distance_km === '' ? null : Number(row.distance_km),
+      distance_km: row.distance_km === '' ? null : normalizeDistanceValue(row.distance_km),
       intensity_level: row.intensity_level === '' ? null : Number(row.intensity_level),
     }
   }
@@ -370,7 +377,10 @@ function startEditWorkout(workout) {
       reps: exercise.reps ?? 10,
       weight: exercise.weight ? formatWeightValue(exercise.weight).toFixed(1) : '',
       duration_minutes: exercise.duration_minutes ?? 30,
-      distance_km: exercise.distance_km ?? '',
+      distance_km:
+          exercise.distance_km === null || exercise.distance_km === undefined
+              ? ''
+              : formatDistanceValue(exercise.distance_km).toFixed(2),
       intensity_level: exercise.intensity_level ?? '',
     })),
   }
@@ -426,8 +436,21 @@ function formatWeight(weight) {
   return `${Number(value).toLocaleString(localeName(), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ${weightUnit.value}`
 }
 
-function formatNumber(value, maximumFractionDigits = 1) {
-  return Number(value || 0).toLocaleString(localeName(), { maximumFractionDigits })
+function formatNumber(value, maximumFractionDigits = 1, minimumFractionDigits = 0) {
+  return Number(value || 0).toLocaleString(localeName(), {
+    minimumFractionDigits,
+    maximumFractionDigits,
+  })
+}
+
+function formatDistance(distanceKm) {
+  const value = formatDistanceValue(distanceKm)
+
+  if (value === null) {
+    return '-'
+  }
+
+  return `${formatNumber(value, 2, 2)} ${distanceUnit.value}`
 }
 
 function formatCardioDetails(exercise) {
@@ -438,7 +461,7 @@ function formatCardioDetails(exercise) {
   }
 
   if (exercise.distance_km) {
-    details.push(`${formatNumber(exercise.distance_km, 2)} ${t('common.km')}`)
+    details.push(formatDistance(exercise.distance_km))
   }
 
   if (exercise.intensity_level) {
@@ -459,6 +482,18 @@ function formatWorkoutExercise(exercise) {
 
 onMounted(() => {
   loadData()
+})
+
+watch(distanceUnit, (newUnit, oldUnit) => {
+  form.value.exercises.forEach((row) => {
+    if (row.distance_km === '' || row.distance_km === null || row.distance_km === undefined) {
+      return
+    }
+
+    const distanceKm = normalizeDistanceValue(row.distance_km, oldUnit)
+    const convertedDistance = formatDistanceValue(distanceKm, newUnit)
+    row.distance_km = convertedDistance === null ? '' : convertedDistance.toFixed(2)
+  })
 })
 </script>
 
@@ -583,8 +618,8 @@ onMounted(() => {
                     class="input"
                     type="number"
                     min="0"
-                    step="0.1"
-                    :placeholder="t('common.km')"
+                    step="0.01"
+                    :placeholder="distanceUnit"
                 />
               </div>
 
@@ -1300,6 +1335,68 @@ onMounted(() => {
 
   .day-workouts span {
     display: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .workout-form,
+  .calendar-card,
+  .workout-card,
+  .exercise-picker {
+    padding: 1rem;
+  }
+
+  .header-row > .btn,
+  .form-title-row .btn,
+  .form-actions .btn,
+  .workout-actions .btn,
+  .picker-head .btn,
+  .picker-card-body .btn,
+  .row-remove {
+    width: 100%;
+  }
+
+  .calendar-controls {
+    display: grid;
+    grid-template-columns: 42px 1fr 42px;
+    width: 100%;
+  }
+
+  .calendar-controls strong {
+    align-self: center;
+    text-align: center;
+  }
+
+  .calendar-day {
+    min-height: 54px;
+    padding: 0.32rem;
+  }
+
+  .weekday-grid span,
+  .day-number {
+    font-size: 0.74rem;
+  }
+
+  .workout-exercise {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .workout-exercise span {
+    white-space: normal;
+  }
+
+  .exercise-choice {
+    align-items: flex-start;
+  }
+
+  .choice-action {
+    display: none;
+  }
+
+  .modal-backdrop {
+    padding: 0.65rem;
   }
 }
 </style>
