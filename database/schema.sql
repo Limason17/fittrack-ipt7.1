@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash VARCHAR(255) NOT NULL,
     language_preference ENUM('de', 'en') NOT NULL DEFAULT 'de',
     weight_unit ENUM('kg', 'lb') NOT NULL DEFAULT 'kg',
+    distance_unit ENUM('km', 'mi') NOT NULL DEFAULT 'km',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

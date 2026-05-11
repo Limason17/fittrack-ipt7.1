@@ -14,6 +14,7 @@ async function runMigration(sql) {
 
 async function ensureTrainingSchema() {
     const migrations = [
+        "ALTER TABLE users ADD COLUMN distance_unit ENUM('km', 'mi') NOT NULL DEFAULT 'km' AFTER weight_unit",
         "ALTER TABLE workout_exercises MODIFY sets INT NULL",
         "ALTER TABLE workout_exercises MODIFY reps INT NULL",
         "ALTER TABLE workout_exercises MODIFY weight DECIMAL(6,2) NULL",
