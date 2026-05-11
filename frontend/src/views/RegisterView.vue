@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { apiRequest } from '../utils/api'
 import { locale, t } from '../utils/i18n'
-import { weightUnit } from '../utils/units'
+import { distanceUnit, weightUnit } from '../utils/units'
 
 const router = useRouter()
 
@@ -39,6 +39,7 @@ async function handleRegister() {
         password: password.value,
         language_preference: locale.value,
         weight_unit: weightUnit.value,
+        distance_unit: distanceUnit.value,
       },
     })
 
@@ -162,5 +163,11 @@ async function handleRegister() {
 .auth-footer a {
   color: var(--accent);
   font-weight: 800;
+}
+
+@media (max-width: 560px) {
+  .auth-card {
+    padding: 1rem;
+  }
 }
 </style>

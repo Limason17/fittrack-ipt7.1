@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { saveAuth } from '../utils/auth'
 import { apiRequest } from '../utils/api'
 import { applyLanguageForUser, t } from '../utils/i18n'
-import { applyWeightUnitForUser } from '../utils/units'
+import { applyDistanceUnitForUser, applyWeightUnitForUser } from '../utils/units'
 
 const router = useRouter()
 const route = useRoute()
@@ -36,7 +36,8 @@ async function handleLogin() {
     saveAuth(data.token, data.user)
     await Promise.all([
       applyLanguageForUser(data.user),
-      applyWeightUnitForUser(data.user)
+      applyWeightUnitForUser(data.user),
+      applyDistanceUnitForUser(data.user)
     ])
 
     email.value = ''
@@ -138,5 +139,11 @@ async function handleLogin() {
 .auth-footer a {
   color: var(--accent);
   font-weight: 800;
+}
+
+@media (max-width: 560px) {
+  .auth-card {
+    padding: 1rem;
+  }
 }
 </style>
