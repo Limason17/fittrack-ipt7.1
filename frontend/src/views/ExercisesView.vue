@@ -639,4 +639,41 @@ onMounted(() => {
     justify-content: flex-start;
   }
 }
+
+@media (max-width: 560px) {
+  .toolbar,
+  .create-card,
+  .exercise-body {
+    padding: 1rem;
+  }
+
+  .toolbar-left,
+  .toolbar-actions,
+  .create-actions,
+  .card-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .filter-group {
+    min-width: 0;
+  }
+
+  .toolbar-actions .btn,
+  .create-actions .btn,
+  .card-actions .btn {
+    width: 100%;
+  }
+
+  .exercise-media {
+    height: 180px;
+  }
+
+  .exercise-top {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+}
 </style>

@@ -194,4 +194,32 @@ const quickLinks = [
     grid-template-columns: 1fr;
   }
 }
+
+@media (max-width: 560px) {
+  .hero {
+    gap: 1.25rem;
+  }
+
+  .hero-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.65rem;
+  }
+
+  .hero-actions .btn {
+    width: 100%;
+  }
+
+  .hero-panel,
+  .feature-card {
+    padding: 1rem;
+  }
+
+  .preview-item {
+    align-items: flex-start;
+    flex-direction: column;
+    min-height: auto;
+    gap: 0.25rem;
+  }
+}
 </style>
