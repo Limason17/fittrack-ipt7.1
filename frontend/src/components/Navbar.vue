@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { authToken, authUser, logout } from '../utils/auth'
 import { locale, t, toggleLanguage } from '../utils/i18n'
-import { weightUnit, toggleWeightUnit } from '../utils/units'
+import { distanceUnit, toggleDistanceUnit, weightUnit, toggleWeightUnit } from '../utils/units'
 import fitTrackLogo from '../assets/FitTrack Logo/FitTrack Logo.png'
 
 const router = useRouter()
@@ -71,9 +71,19 @@ const ExercisesIcon = `
 
         <!-- Action Section -->
         <div class="ft-actions">
-          <div class="ft-toggles">
-            <button class="ft-toggle-btn" @click="toggleLanguage">{{ locale.toUpperCase() }}</button>
-            <button class="ft-toggle-btn" @click="toggleWeightUnit">{{ weightUnit.toUpperCase() }}</button>
+          <div class="ft-toggles" aria-label="Preferences">
+            <button class="ft-toggle-btn" type="button" title="Language" @click="toggleLanguage">
+              <span>Lang</span>
+              <strong>{{ locale.toUpperCase() }}</strong>
+            </button>
+            <button class="ft-toggle-btn" type="button" title="Weight unit" @click="toggleWeightUnit">
+              <span>Load</span>
+              <strong>{{ weightUnit.toUpperCase() }}</strong>
+            </button>
+            <button class="ft-toggle-btn" type="button" title="Distance unit" @click="toggleDistanceUnit">
+              <span>Dist</span>
+              <strong>{{ distanceUnit.toUpperCase() }}</strong>
+            </button>
           </div>
 
           <template v-if="loggedIn">
@@ -151,18 +161,20 @@ const ExercisesIcon = `
   position: sticky;
   top: 0;
   z-index: 1000;
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid #eeeeee;
-  height: 64px;
+  background: rgba(251, 250, 247, 0.94);
+  backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(214, 208, 199, 0.78);
+  height: 72px;
   display: flex;
   align-items: center;
+  box-shadow: 0 10px 30px rgba(34, 32, 28, 0.05);
 }
 
 .ft-nav-inner {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 1rem;
 }
 
 .ft-logo-img {
@@ -174,7 +186,7 @@ const ExercisesIcon = `
 .ft-links {
   display: flex;
   align-items: center;
-  gap: 1.5rem;
+  gap: clamp(0.85rem, 2vw, 1.5rem);
 }
 
 .ft-link {
@@ -201,25 +213,61 @@ const ExercisesIcon = `
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  flex-shrink: 0;
 }
 
 .ft-toggles {
   display: flex;
-  gap: 0.35rem;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border: 1px solid rgba(214, 208, 199, 0.88);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(242, 238, 232, 0.82));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 10px 24px rgba(34, 32, 28, 0.06);
 }
 
 .ft-toggle-btn {
-  font-size: 0.7rem;
-  font-weight: 700;
-  color: #333;
-  background: #f5f5f5;
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-  transition: background 0.2s;
+  min-width: 54px;
+  min-height: 42px;
+  display: grid;
+  place-items: center;
+  gap: 0.05rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  color: var(--text);
+  background: transparent;
+  transition:
+    background 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
 }
 
 .ft-toggle-btn:hover {
-  background: #eeeeee;
+  background: #ffffff;
+  box-shadow: 0 8px 18px rgba(34, 32, 28, 0.07);
+  transform: translateY(-1px);
+}
+
+.ft-toggle-btn span {
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  font-weight: 850;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.ft-toggle-btn strong {
+  color: var(--accent-hover);
+  font-size: 0.88rem;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0;
 }
 
 .ft-user-info {
@@ -381,7 +429,79 @@ const ExercisesIcon = `
   .mobile-only { display: flex; }
   
   .ft-nav {
-    height: 60px;
+    height: 68px;
+  }
+
+  .ft-nav .page-container {
+    padding: 0 0.8rem;
+  }
+
+  .ft-nav-inner {
+    gap: 0.65rem;
+  }
+
+  .ft-actions {
+    gap: 0.45rem;
+  }
+
+  .ft-toggles {
+    gap: 0.18rem;
+    padding: 0.18rem;
+  }
+
+  .ft-toggle-btn {
+    min-width: 44px;
+    min-height: 38px;
+    padding: 0.28rem 0.45rem;
+  }
+
+  .ft-toggle-btn span {
+    display: none;
+  }
+
+  .ft-toggle-btn strong {
+    font-size: 0.78rem;
+  }
+
+  .ft-auth-btns {
+    gap: 0.5rem;
+  }
+
+  .ft-btn-link {
+    display: none;
+  }
+
+  .ft-btn-solid {
+    min-height: 38px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0.45rem 0.75rem;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 430px) {
+  .ft-logo-img {
+    height: 28px;
+  }
+
+  .ft-avatar {
+    display: none;
+  }
+
+  .ft-user-info {
+    display: none;
+  }
+
+  .ft-toggle-btn {
+    min-width: 39px;
+    padding-inline: 0.35rem;
+  }
+}
+
+@media (max-width: 360px) {
+  .ft-btn-solid {
+    display: none;
   }
 }
 
