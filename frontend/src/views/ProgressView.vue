@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { apiRequest } from '../utils/api'
 import { getToken } from '../utils/auth'
 import { getExerciseImage } from '../utils/exerciseImageMap'
@@ -11,7 +11,15 @@ import {
   translateExerciseDescription,
   translateMuscleGroup,
 } from '../utils/i18n'
-import { weightUnit, formatWeightValue, normalizeWeightValue } from '../utils/units'
+import {
+  distanceUnit,
+  formatDistanceValue,
+  formatSpeedValue,
+  formatWeightValue,
+  normalizeDistanceValue,
+  normalizeWeightValue,
+  weightUnit,
+} from '../utils/units'
 import {
   normalizeExercise,
   normalizeProgressEntry,
@@ -276,10 +284,6 @@ function exerciseImageSource(item) {
 }
 
 function closeExercisePicker() {
-  if (typeof document !== 'undefined') {
-    document.getElementById('progressExercisePicker')?.hidePopover?.()
-  }
-
   exercisePickerOpen.value = false
 }
 
@@ -340,7 +344,7 @@ function entryPayload() {
       exercise_id: Number(form.value.exercise_id),
       entry_date: form.value.entry_date,
       duration_minutes: Number(form.value.duration_minutes),
-      distance_km: form.value.distance_km === '' ? null : Number(form.value.distance_km),
+      distance_km: form.value.distance_km === '' ? null : normalizeDistanceValue(form.value.distance_km),
       intensity_level: form.value.intensity_level === '' ? null : Number(form.value.intensity_level),
     }
   }
@@ -417,14 +421,17 @@ function hasMetricValue(value) {
   return number !== null && number > 0
 }
 
-function formatNumber(value, maximumFractionDigits = 1) {
+function formatNumber(value, maximumFractionDigits = 1, minimumFractionDigits = 0) {
   const number = numericValue(value)
 
   if (number === null) {
     return '-'
   }
 
-  return number.toLocaleString(localeName(), { maximumFractionDigits })
+  return number.toLocaleString(localeName(), {
+    minimumFractionDigits,
+    maximumFractionDigits,
+  })
 }
 
 function formatWeight(weight) {
@@ -449,7 +456,7 @@ function formatDistance(value) {
     return '-'
   }
 
-  return `${formatNumber(value, 2)} ${t('common.km')}`
+  return `${formatNumber(formatDistanceValue(value), 2, 2)} ${distanceUnit.value}`
 }
 
 function formatLevel(value) {
@@ -465,7 +472,9 @@ function formatSpeed(value) {
     return '-'
   }
 
-  return `${formatNumber(value, 1)} ${t('common.kmh')}`
+  return `${formatNumber(formatSpeedValue(value), 2, 2)} ${
+      distanceUnit.value === 'mi' ? t('common.mph') : t('common.kmh')
+  }`
 }
 
 function formatTrainingLoad(value) {
@@ -606,6 +615,20 @@ function summaryDetailText(item) {
 onMounted(() => {
   loadData()
 })
+
+watch(distanceUnit, (newUnit, oldUnit) => {
+  if (
+      form.value.distance_km === '' ||
+      form.value.distance_km === null ||
+      form.value.distance_km === undefined
+  ) {
+    return
+  }
+
+  const distanceKm = normalizeDistanceValue(form.value.distance_km, oldUnit)
+  const convertedDistance = formatDistanceValue(distanceKm, newUnit)
+  form.value.distance_km = convertedDistance === null ? '' : convertedDistance.toFixed(2)
+})
 </script>
 
 <template>
@@ -631,7 +654,6 @@ onMounted(() => {
             <button
                 class="exercise-choice"
                 type="button"
-                popovertarget="progressExercisePicker"
                 @click="openExercisePicker"
             >
               <template v-if="selectedExercise">
@@ -690,8 +712,8 @@ onMounted(() => {
                   class="input"
                   type="number"
                   min="0"
-                  step="0.1"
-                  :placeholder="t('common.km')"
+                  step="0.01"
+                  :placeholder="distanceUnit"
               />
             </div>
 
@@ -898,12 +920,9 @@ onMounted(() => {
 
   <Teleport to="body">
     <div
-        id="progressExercisePicker"
-        popover
+        v-if="exercisePickerOpen"
         class="modal-backdrop"
-        :class="{ 'modal-backdrop-open': exercisePickerOpen }"
         role="presentation"
-        @toggle="exercisePickerOpen = $event.newState === 'open'"
         @click.self="closeExercisePicker"
     >
       <section class="exercise-picker card" role="dialog" aria-modal="true">
@@ -916,8 +935,6 @@ onMounted(() => {
           <button
               class="btn btn-secondary"
               type="button"
-              popovertarget="progressExercisePicker"
-              popovertargetaction="hide"
               @click="closeExercisePicker"
           >
             {{ t('common.close') }}
@@ -1332,27 +1349,13 @@ onMounted(() => {
   position: fixed;
   inset: 0;
   z-index: 2000;
+  display: flex;
   align-items: center;
   justify-content: center;
-  width: auto;
-  height: auto;
-  margin: 0;
   padding: 1rem;
-  border: 0;
+  overflow-y: auto;
   background: rgba(36, 31, 24, 0.42);
-}
-
-.modal-backdrop:not(:popover-open):not(.modal-backdrop-open) {
-  display: none;
-}
-
-.modal-backdrop:popover-open,
-.modal-backdrop-open {
-  display: flex;
-}
-
-.modal-backdrop::backdrop {
-  background: transparent;
+  -webkit-overflow-scrolling: touch;
 }
 
 .exercise-picker {
@@ -1360,6 +1363,7 @@ onMounted(() => {
   flex-direction: column;
   width: min(1080px, 100%);
   max-height: min(820px, calc(100vh - 2rem));
+  max-height: min(820px, calc(100dvh - 2rem));
   padding: 1.2rem;
   overflow: hidden;
 }
@@ -1502,6 +1506,15 @@ onMounted(() => {
 }
 
 @media (max-width: 760px) {
+  .modal-backdrop {
+    align-items: flex-start;
+  }
+
+  .exercise-picker {
+    max-height: none;
+    overflow: visible;
+  }
+
   .progress-form-grid,
   .picker-toolbar,
   .picker-grid,
@@ -1531,6 +1544,12 @@ onMounted(() => {
     min-height: 0;
   }
 
+  .picker-grid {
+    flex: 0 0 auto;
+    overflow: visible;
+    padding-right: 0;
+  }
+
   .picker-media {
     width: 100%;
     min-width: 0;
@@ -1540,6 +1559,56 @@ onMounted(() => {
 
   .picker-card-body .btn {
     width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  .progress-form,
+  .chart-card,
+  .summary-card,
+  .entry-card,
+  .exercise-picker {
+    padding: 1rem;
+  }
+
+  .form-actions .btn,
+  .picker-head .btn,
+  .picker-card-body .btn,
+  .entry-card .btn {
+    width: 100%;
+  }
+
+  .summary-top,
+  .metric-row,
+  .chart-title-row,
+  .summary-title-row,
+  .entry-main {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .progress-media {
+    width: 100%;
+    height: 150px;
+    flex-basis: auto;
+  }
+
+  .line-chart-wrap {
+    height: 150px;
+  }
+
+  .summary-card small,
+  .entry-card p,
+  .chart-meta span {
+    overflow-wrap: anywhere;
+  }
+
+  .choice-action {
+    display: none;
+  }
+
+  .modal-backdrop {
+    padding: 0.65rem;
   }
 }
 </style>
