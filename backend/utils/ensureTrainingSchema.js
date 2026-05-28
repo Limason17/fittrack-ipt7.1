@@ -1,6 +1,6 @@
 const db = require("../config/db");
 
-const ignoredMigrationErrors = new Set(["ER_DUP_FIELDNAME"]);
+const ignoredMigrationErrors = new Set(["ER_DUP_FIELDNAME", "ER_DUP_KEYNAME"]);
 
 async function runMigration(sql) {
     try {
@@ -14,6 +14,8 @@ async function runMigration(sql) {
 
 async function ensureTrainingSchema() {
     const migrations = [
+        "ALTER TABLE users ADD COLUMN language_preference ENUM('de', 'en') NOT NULL DEFAULT 'de' AFTER password_hash",
+        "ALTER TABLE users ADD COLUMN weight_unit ENUM('kg', 'lb') NOT NULL DEFAULT 'kg' AFTER language_preference",
         "ALTER TABLE users ADD COLUMN distance_unit ENUM('km', 'mi') NOT NULL DEFAULT 'km' AFTER weight_unit",
         "ALTER TABLE workout_exercises MODIFY sets INT NULL",
         "ALTER TABLE workout_exercises MODIFY reps INT NULL",
@@ -21,12 +23,17 @@ async function ensureTrainingSchema() {
         "ALTER TABLE workout_exercises ADD COLUMN duration_minutes INT NULL AFTER weight",
         "ALTER TABLE workout_exercises ADD COLUMN distance_km DECIMAL(7,2) NULL AFTER duration_minutes",
         "ALTER TABLE workout_exercises ADD COLUMN intensity_level INT NULL AFTER distance_km",
+        "ALTER TABLE progress_entries ADD COLUMN workout_id INT NULL AFTER user_id",
         "ALTER TABLE progress_entries MODIFY sets INT NULL",
         "ALTER TABLE progress_entries MODIFY reps INT NULL",
         "ALTER TABLE progress_entries MODIFY weight DECIMAL(6,2) NULL",
         "ALTER TABLE progress_entries ADD COLUMN duration_minutes INT NULL AFTER sets",
         "ALTER TABLE progress_entries ADD COLUMN distance_km DECIMAL(7,2) NULL AFTER duration_minutes",
-        "ALTER TABLE progress_entries ADD COLUMN intensity_level INT NULL AFTER distance_km"
+        "ALTER TABLE progress_entries ADD COLUMN intensity_level INT NULL AFTER distance_km",
+        `ALTER TABLE progress_entries
+         ADD CONSTRAINT fk_progress_workout
+         FOREIGN KEY (workout_id) REFERENCES workouts(id)
+         ON DELETE CASCADE`
     ];
 
     for (const migration of migrations) {

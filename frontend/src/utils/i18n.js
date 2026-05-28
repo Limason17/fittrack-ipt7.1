@@ -55,6 +55,9 @@ export const messages = {
             languageTitle: 'Sprache wechseln',
             languageLabel: 'Aktuelle Sprache: Deutsch',
         },
+        footer: {
+            hostingDisclaimerLink: 'Haftungsausschluss für bbzwinf.ch-Subdomains',
+        },
         common: {
             add: 'Hinzufügen',
             cancel: 'Abbrechen',
@@ -319,6 +322,9 @@ export const messages = {
             loggedIn: 'Signed in',
             languageTitle: 'Switch language',
             languageLabel: 'Current language: English',
+        },
+        footer: {
+            hostingDisclaimerLink: 'Disclaimer for bbzwinf.ch subdomains',
         },
         common: {
             add: 'Add',

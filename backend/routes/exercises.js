@@ -45,9 +45,9 @@ router.get("/", authenticateToken, (req, res) => {
 
     db.query(sql, queryParams, (err, results) => {
         if (err) {
+            console.error("Loading exercises failed:", err.message);
             return res.status(500).json({
-                message: "Error loading exercises",
-                error: err
+                message: "Error loading exercises"
             });
         }
 
@@ -85,9 +85,9 @@ router.post("/", authenticateToken, (req, res) => {
         ],
         (err, result) => {
             if (err) {
+                console.error("Creating exercise failed:", err.message);
                 return res.status(500).json({
-                    message: "Error creating exercise",
-                    error: err
+                    message: "Error creating exercise"
                 });
             }
 
@@ -136,9 +136,9 @@ router.put("/:id", authenticateToken, (req, res) => {
         ],
         (err, result) => {
             if (err) {
+                console.error("Updating exercise failed:", err.message);
                 return res.status(500).json({
-                    message: "Error updating exercise",
-                    error: err
+                    message: "Error updating exercise"
                 });
             }
 
@@ -163,9 +163,9 @@ router.delete("/:id", authenticateToken, (req, res) => {
         [exerciseId, req.user.id],
         (err, result) => {
             if (err) {
+                console.error("Deleting exercise failed:", err.message);
                 return res.status(409).json({
-                    message: "Exercise is already used in workouts or progress entries",
-                    error: err
+                    message: "Exercise is already used in workouts or progress entries"
                 });
             }
 

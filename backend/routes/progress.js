@@ -65,7 +65,8 @@ router.get("/", authenticateToken, async (req, res) => {
 
         res.json(rows.map(normalizeProgressEntry));
     } catch (error) {
-        res.status(500).json({ message: "Error loading progress", error });
+        console.error("Loading progress failed:", error.message);
+        res.status(500).json({ message: "Error loading progress" });
     }
 });
 
@@ -116,7 +117,8 @@ router.get("/summary", authenticateToken, async (req, res) => {
 
         res.json(rows.map(normalizeProgressEntry));
     } catch (error) {
-        res.status(500).json({ message: "Error loading progress summary", error });
+        console.error("Loading progress summary failed:", error.message);
+        res.status(500).json({ message: "Error loading progress summary" });
     }
 });
 
@@ -179,7 +181,8 @@ router.post("/", authenticateToken, async (req, res) => {
             progressId: result.insertId
         });
     } catch (error) {
-        res.status(500).json({ message: "Error creating progress entry", error });
+        console.error("Creating progress entry failed:", error.message);
+        res.status(500).json({ message: "Error creating progress entry" });
     }
 });
 
@@ -202,7 +205,8 @@ router.delete("/:id", authenticateToken, async (req, res) => {
 
         res.json({ message: "Progress entry deleted successfully" });
     } catch (error) {
-        res.status(500).json({ message: "Error deleting progress entry", error });
+        console.error("Deleting progress entry failed:", error.message);
+        res.status(500).json({ message: "Error deleting progress entry" });
     }
 });
 

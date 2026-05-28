@@ -1,3 +1,5 @@
+import { logout } from './auth'
+
 export const API_BASE_URL =
     import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api'
 
@@ -33,6 +35,15 @@ export async function apiRequest(path, options = {}) {
     }
 
     if (!response.ok) {
+        if (token && (response.status === 401 || response.status === 403)) {
+            logout()
+
+            if (typeof window !== 'undefined') {
+                const redirect = encodeURIComponent(`${window.location.pathname}${window.location.search}`)
+                window.location.assign(`/login?redirect=${redirect}`)
+            }
+        }
+
         const error = new Error(data?.message || response.statusText)
         error.status = response.status
         error.data = data

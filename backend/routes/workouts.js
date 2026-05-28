@@ -186,7 +186,8 @@ router.get("/", authenticateToken, async (req, res) => {
 
         res.json(groupWorkoutRows(rows));
     } catch (error) {
-        res.status(500).json({ message: "Error loading workouts", error });
+        console.error("Loading workouts failed:", error.message);
+        res.status(500).json({ message: "Error loading workouts" });
     }
 });
 
@@ -229,9 +230,9 @@ router.post("/", authenticateToken, async (req, res) => {
         });
     } catch (error) {
         await connection.rollback();
+        console.error("Creating workout failed:", error.message);
         res.status(error.status || 500).json({
-            message: error.message || "Error creating workout",
-            error
+            message: error.message || "Error creating workout"
         });
     } finally {
         connection.release();
@@ -296,9 +297,9 @@ router.put("/:id", authenticateToken, async (req, res) => {
         res.json({ message: "Workout updated successfully" });
     } catch (error) {
         await connection.rollback();
+        console.error("Updating workout failed:", error.message);
         res.status(error.status || 500).json({
-            message: error.message || "Error updating workout",
-            error
+            message: error.message || "Error updating workout"
         });
     } finally {
         connection.release();
@@ -324,7 +325,8 @@ router.delete("/:id", authenticateToken, async (req, res) => {
 
         res.json({ message: "Workout deleted successfully" });
     } catch (error) {
-        res.status(500).json({ message: "Error deleting workout", error });
+        console.error("Deleting workout failed:", error.message);
+        res.status(500).json({ message: "Error deleting workout" });
     }
 });
 

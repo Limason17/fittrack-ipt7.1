@@ -31,9 +31,10 @@ Dieses Projekt wurde im Rahmen von IPT 7.1 erstellt.
 1. Im `backend`-Ordner `npm install` ausführen
 2. Im `frontend`-Ordner `npm install` ausführen
 3. `backend/.env.example` zu `backend/.env` kopieren
-4. Im Hauptordner `docker compose up -d` ausführen
-5. Backend starten: im `backend`-Ordner `npm run dev` oder `npm start`
-6. Frontend starten: im `frontend`-Ordner `npm run dev`
+4. Optional `frontend/.env.example` zu `frontend/.env` kopieren
+5. Im Hauptordner `docker compose up -d` ausführen
+6. Backend starten: im `backend`-Ordner `npm run dev` oder `npm start`
+7. Frontend starten: im `frontend`-Ordner `npm run dev`
 
 Wenn bereits ein alter Docker-Volume mit einer früheren Datenbankstruktur existiert, muss die Datenbank neu initialisiert oder das Schema manuell aktualisiert werden. Für eine frische lokale Testdatenbank kann `docker compose down -v` und danach `docker compose up -d` verwendet werden.
 
@@ -47,6 +48,7 @@ DB_NAME=fittrack
 DB_PORT=3306
 PORT=3001
 JWT_SECRET=change-this-secret
+CORS_ORIGIN=http://localhost:5173
 ```
 
 Optional kann im Frontend eine eigene API-URL gesetzt werden:
@@ -54,3 +56,7 @@ Optional kann im Frontend eine eigene API-URL gesetzt werden:
 ```env
 VITE_API_BASE_URL=http://localhost:3001/api
 ```
+
+## Deployment
+
+Die Deployment-Checkliste befindet sich in `docs/DEPLOYMENT.md`. Wichtig: `database/schema.sql` ist für lokale Neuinitialisierung gedacht und darf nicht unkontrolliert auf produktive Daten ausgeführt werden.

@@ -78,7 +78,8 @@ router.post("/register", async (req, res) => {
             userId: result.insertId
         });
     } catch (error) {
-        res.status(500).json({ message: "Server error", error });
+        console.error("Registration failed:", error.message);
+        res.status(500).json({ message: "Server error" });
     }
 });
 
@@ -123,7 +124,8 @@ router.post("/login", async (req, res) => {
             user: publicUser(user)
         });
     } catch (error) {
-        res.status(500).json({ message: "Server error", error });
+        console.error("Login failed:", error.message);
+        res.status(500).json({ message: "Server error" });
     }
 });
 
@@ -140,7 +142,8 @@ router.get("/me", authenticateToken, async (req, res) => {
 
         res.json(publicUser(users[0]));
     } catch (error) {
-        res.status(500).json({ message: "Server error", error });
+        console.error("Loading current user failed:", error.message);
+        res.status(500).json({ message: "Server error" });
     }
 });
 
@@ -160,7 +163,8 @@ router.put("/language", authenticateToken, async (req, res) => {
             language_preference: languagePreference
         });
     } catch (error) {
-        res.status(500).json({ message: "Server error", error });
+        console.error("Updating language failed:", error.message);
+        res.status(500).json({ message: "Server error" });
     }
 });
 
@@ -178,7 +182,8 @@ router.put("/weight-unit", authenticateToken, async (req, res) => {
             weight_unit: weightUnit
         });
     } catch (error) {
-        res.status(500).json({ message: "Server error", error });
+        console.error("Updating weight unit failed:", error.message);
+        res.status(500).json({ message: "Server error" });
     }
 });
 
@@ -196,7 +201,8 @@ router.put("/distance-unit", authenticateToken, async (req, res) => {
             distance_unit: distanceUnit
         });
     } catch (error) {
-        res.status(500).json({ message: "Server error", error });
+        console.error("Updating distance unit failed:", error.message);
+        res.status(500).json({ message: "Server error" });
     }
 });
 
