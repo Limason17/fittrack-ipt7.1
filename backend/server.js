@@ -21,24 +21,31 @@ function allowedOrigins() {
 
 const configuredOrigins = allowedOrigins();
 
-if (process.env.NODE_ENV === "production" && configuredOrigins.length === 0) {
-    throw new Error("CORS_ORIGIN must be set in production.");
-}
-
 app.disable("x-powered-by");
-app.use(cors({
-    origin(origin, callback) {
-        const requestOrigin = origin?.toLowerCase();
+app.use(cors((req, callback) => {
+    const origin = req.headers.origin;
+    const requestOrigin = origin?.toLowerCase();
+    const requestHost = req.headers.host?.toLowerCase();
 
-        if (configuredOrigins.length === 0 || !requestOrigin || configuredOrigins.includes(requestOrigin)) {
-            callback(null, true);
+    if (!requestOrigin) {
+        callback(null, { origin: true });
+        return;
+    }
+
+    try {
+        const originHost = new URL(requestOrigin).host;
+        const isSameHost = requestHost && originHost === requestHost;
+
+        if (isSameHost || configuredOrigins.includes(requestOrigin)) {
+            callback(null, { origin: true });
             return;
         }
-
-        const error = new Error("Not allowed by CORS");
-        error.status = 403;
+    } catch (error) {
         callback(error);
+        return;
     }
+
+    callback(null, { origin: false });
 }));
 app.use(express.json({ limit: "1mb" }));
 
