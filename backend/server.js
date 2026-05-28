@@ -15,6 +15,7 @@ function allowedOrigins() {
     return (process.env.CORS_ORIGIN || "")
         .split(",")
         .map((origin) => origin.trim())
+        .map((origin) => origin.toLowerCase())
         .filter(Boolean);
 }
 
@@ -27,7 +28,9 @@ if (process.env.NODE_ENV === "production" && configuredOrigins.length === 0) {
 app.disable("x-powered-by");
 app.use(cors({
     origin(origin, callback) {
-        if (configuredOrigins.length === 0 || !origin || configuredOrigins.includes(origin)) {
+        const requestOrigin = origin?.toLowerCase();
+
+        if (configuredOrigins.length === 0 || !requestOrigin || configuredOrigins.includes(requestOrigin)) {
             callback(null, true);
             return;
         }
