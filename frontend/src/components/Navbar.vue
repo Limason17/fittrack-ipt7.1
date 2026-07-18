@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { authToken, authUser, logout } from '../utils/auth'
 import { locale, t, toggleLanguage } from '../utils/i18n'
@@ -8,6 +8,8 @@ import fitTrackLogo from '../assets/FitTrack Logo/FitTrack Logo.png'
 
 const router = useRouter()
 const isMenuOpen = ref(false)
+const menuButtonRef = ref(null)
+const mobileMenuRef = ref(null)
 
 const loggedIn = computed(() => !!authToken.value)
 const user = computed(() => authUser.value)
@@ -18,13 +20,31 @@ function handleLogout() {
   router.push('/login')
 }
 
-function toggleMenu() {
+async function toggleMenu() {
   isMenuOpen.value = !isMenuOpen.value
+  if (isMenuOpen.value) {
+    await nextTick()
+    mobileMenuRef.value?.querySelector('[role="menuitem"]')?.focus()
+  }
 }
 
 function closeMenu() {
   isMenuOpen.value = false
 }
+
+async function closeMenuAndRestoreFocus() {
+  if (!isMenuOpen.value) return
+  closeMenu()
+  await nextTick()
+  menuButtonRef.value?.focus()
+}
+
+function handleDocumentKeydown(event) {
+  if (event.key === 'Escape') closeMenuAndRestoreFocus()
+}
+
+onMounted(() => document.addEventListener('keydown', handleDocumentKeydown))
+onBeforeUnmount(() => document.removeEventListener('keydown', handleDocumentKeydown))
 
 // Global Exercises Icon (New Dumbbell)
 const ExercisesIcon = `
@@ -37,7 +57,7 @@ const ExercisesIcon = `
 </script>
 
 <template>
-  <nav class="ft-nav">
+  <nav class="ft-nav" :aria-label="t('routing.mainNavigation')">
     <div class="page-container">
       <div class="ft-nav-inner">
         <!-- Logo Section -->
@@ -71,16 +91,34 @@ const ExercisesIcon = `
 
         <!-- Action Section -->
         <div class="ft-actions">
-          <div class="ft-toggles" aria-label="Preferences">
-            <button class="ft-toggle-btn" type="button" title="Language" @click="toggleLanguage">
+          <div class="ft-toggles" role="group" :aria-label="t('routing.preferences')">
+            <button
+                class="ft-toggle-btn"
+                type="button"
+                title="Language"
+                :aria-label="`${t('routing.language')}: ${locale.toUpperCase()}`"
+                @click="toggleLanguage"
+            >
               <span>Lang</span>
               <strong>{{ locale.toUpperCase() }}</strong>
             </button>
-            <button class="ft-toggle-btn" type="button" title="Weight unit" @click="toggleWeightUnit">
+            <button
+                class="ft-toggle-btn"
+                type="button"
+                title="Weight unit"
+                :aria-label="`${t('routing.weightUnit')}: ${weightUnit.toUpperCase()}`"
+                @click="toggleWeightUnit"
+            >
               <span>Load</span>
               <strong>{{ weightUnit.toUpperCase() }}</strong>
             </button>
-            <button class="ft-toggle-btn" type="button" title="Distance unit" @click="toggleDistanceUnit">
+            <button
+                class="ft-toggle-btn"
+                type="button"
+                title="Distance unit"
+                :aria-label="`${t('routing.distanceUnit')}: ${distanceUnit.toUpperCase()}`"
+                @click="toggleDistanceUnit"
+            >
               <span>Dist</span>
               <strong>{{ distanceUnit.toUpperCase() }}</strong>
             </button>
@@ -89,7 +127,7 @@ const ExercisesIcon = `
           <template v-if="loggedIn">
             <div class="ft-user-info">
               <div class="ft-avatar">{{ user?.username?.charAt(0).toUpperCase() }}</div>
-              <button class="ft-logout-small desktop-only" @click="handleLogout" title="Logout">
+              <button class="ft-logout-small desktop-only" type="button" @click="handleLogout" title="Logout" :aria-label="t('nav.logout')">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
                   <polyline points="16 17 21 12 16 7"></polyline>
@@ -97,7 +135,16 @@ const ExercisesIcon = `
                 </svg>
               </button>
             </div>
-            <button class="ft-burger mobile-only" @click="toggleMenu" :class="{ 'active': isMenuOpen }" aria-label="Menu">
+            <button
+                ref="menuButtonRef"
+                class="ft-burger mobile-only"
+                type="button"
+                @click="toggleMenu"
+                :class="{ 'active': isMenuOpen }"
+                :aria-label="t(isMenuOpen ? 'routing.closeMenu' : 'routing.openMenu')"
+                :aria-expanded="isMenuOpen"
+                aria-controls="mobile-navigation-menu"
+            >
               <div class="burger-bar"></div>
               <div class="burger-bar"></div>
               <div class="burger-bar"></div>
@@ -115,16 +162,23 @@ const ExercisesIcon = `
 
       <!-- Mobile Popover Menu -->
       <transition name="pop">
-        <div v-if="isMenuOpen && loggedIn" class="ft-popover mobile-only">
+        <div
+            v-if="isMenuOpen && loggedIn"
+            id="mobile-navigation-menu"
+            ref="mobileMenuRef"
+            class="ft-popover mobile-only"
+            role="menu"
+            :aria-label="t('routing.mobileNavigation')"
+        >
           <div class="ft-popover-inner">
             <div class="ft-popover-header">
               <span class="ft-popover-user">{{ user?.username }}</span>
             </div>
-            <RouterLink to="/exercises" class="ft-popover-item" @click="closeMenu">
+            <RouterLink to="/exercises" class="ft-popover-item" role="menuitem" @click="closeMenu">
               <svg class="ft-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="ExercisesIcon"></svg>
               <span>{{ t('nav.exercises') }}</span>
             </RouterLink>
-            <RouterLink to="/workouts" class="ft-popover-item" @click="closeMenu">
+            <RouterLink to="/workouts" class="ft-popover-item" role="menuitem" @click="closeMenu">
               <svg class="ft-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
                 <line x1="16" y1="2" x2="16" y2="6"></line>
@@ -133,7 +187,7 @@ const ExercisesIcon = `
               </svg>
               <span>{{ t('nav.workouts') }}</span>
             </RouterLink>
-            <RouterLink to="/progress" class="ft-popover-item" @click="closeMenu">
+            <RouterLink to="/progress" class="ft-popover-item" role="menuitem" @click="closeMenu">
               <svg class="ft-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline>
                 <polyline points="17 6 23 6 23 12"></polyline>
@@ -141,7 +195,7 @@ const ExercisesIcon = `
               <span>{{ t('nav.progress') }}</span>
             </RouterLink>
             <div class="ft-divider"></div>
-            <button class="ft-popover-item ft-logout-text" @click="handleLogout">
+            <button class="ft-popover-item ft-logout-text" type="button" role="menuitem" @click="handleLogout">
               <svg class="ft-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
                 <polyline points="16 17 21 12 16 7"></polyline>

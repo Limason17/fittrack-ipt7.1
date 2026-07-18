@@ -92,6 +92,7 @@ export default defineConfig(({ mode }) => {
     },
     test: {
       environment: 'jsdom',
+      include: ['src/**/*.test.js', 'vite.config.test.js'],
       restoreMocks: true,
     },
   }

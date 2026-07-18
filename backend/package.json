@@ -12,6 +12,8 @@
     "db:restore:test": "node scripts/dbRestore.js",
     "db:dev:init": "node scripts/devInit.js",
     "db:test:reset": "node scripts/testDbReset.js",
+    "db:test:drop": "node scripts/testDbDrop.js",
+    "e2e:server": "node scripts/e2eServer.js",
     "test": "npm run test:unit && npm run test:integration && npm run test:migrations && npm run test:syntax",
     "test:unit": "node --test test/unit/*.test.js test/startupHealth.test.js",
     "test:integration": "node --test --test-concurrency=1 test/integration/*.test.js",

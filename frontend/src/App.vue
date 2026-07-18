@@ -6,8 +6,9 @@ import { t } from './utils/i18n'
 
 <template>
   <div class="app-shell">
+    <a class="skip-link" href="#main-content">{{ t('routing.skipToContent') }}</a>
     <Navbar />
-    <main>
+    <main id="main-content" tabindex="-1">
       <RouterView />
     </main>
     <footer class="site-footer">

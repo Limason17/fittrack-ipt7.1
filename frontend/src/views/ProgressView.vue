@@ -21,6 +21,7 @@ import {
   weightUnit,
 } from '../utils/units'
 import { convertWeightInputValue, estimateOneRepMax } from '../utils/measurements'
+import { useModalFocus } from '../utils/modalFocus'
 import {
   normalizeExercise,
   normalizeProgressEntry,
@@ -36,9 +37,16 @@ const isSaving = ref(false)
 const errorMessage = ref('')
 const successMessage = ref('')
 const exercisePickerOpen = ref(false)
+const exercisePickerRef = ref(null)
 const pickerSearch = ref('')
 const pickerCategory = ref('')
 const pickerMuscleGroup = ref('')
+
+const { handleModalKeydown } = useModalFocus({
+  isOpen: exercisePickerOpen,
+  dialogRef: exercisePickerRef,
+  close: closeExercisePicker,
+})
 
 const categoryOptions = [
   'Brust',
@@ -648,10 +656,10 @@ watch(weightUnit, (newUnit, oldUnit) => {
         </p>
       </div>
 
-      <p v-if="errorMessage" class="message message-error">{{ errorMessage }}</p>
-      <p v-if="successMessage" class="message message-success">{{ successMessage }}</p>
+      <p v-if="errorMessage" class="message message-error" role="alert">{{ errorMessage }}</p>
+      <p v-if="successMessage" class="message message-success" role="status">{{ successMessage }}</p>
 
-      <div class="progress-form card">
+      <form class="progress-form card" @submit.prevent="saveEntry">
         <h2>{{ t('progress.formTitle') }}</h2>
 
         <div class="progress-form-grid">
@@ -763,11 +771,11 @@ watch(weightUnit, (newUnit, oldUnit) => {
         </div>
 
         <div class="form-actions">
-          <button class="btn btn-primary" type="button" :disabled="isSaving" @click="saveEntry">
+          <button class="btn btn-primary" type="submit" :disabled="isSaving">
             {{ isSaving ? t('common.saving') : t('progress.saveEntry') }}
           </button>
         </div>
-      </div>
+      </form>
 
       <div v-if="isLoading" class="empty-state card">
         <p>{{ t('common.loading') }}</p>
@@ -808,6 +816,7 @@ watch(weightUnit, (newUnit, oldUnit) => {
 
               <div
                   class="line-chart-wrap"
+                  role="img"
                   :aria-label="`${chart.exercise_name}: ${chart.metricLabel} ${formatMetricValue(chart.latestValue, chart.metricType)}`"
               >
                 <svg class="line-chart" viewBox="0 0 100 100" preserveAspectRatio="none">
@@ -914,7 +923,12 @@ watch(weightUnit, (newUnit, oldUnit) => {
                 </div>
               </div>
 
-              <button class="btn btn-danger" type="button" @click="deleteEntry(entry)">
+              <button
+                  v-if="entry.source_type === 'manual'"
+                  class="btn btn-danger"
+                  type="button"
+                  @click="deleteEntry(entry)"
+              >
                 {{ t('common.delete') }}
               </button>
             </article>
@@ -931,11 +945,19 @@ watch(weightUnit, (newUnit, oldUnit) => {
         role="presentation"
         @click.self="closeExercisePicker"
     >
-      <section class="exercise-picker card" role="dialog" aria-modal="true">
+      <section
+          ref="exercisePickerRef"
+          class="exercise-picker card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="progress-exercise-picker-title"
+          tabindex="-1"
+          @keydown="handleModalKeydown"
+      >
         <div class="picker-head">
           <div>
             <span class="eyebrow">{{ t('workouts.selectedExercise') }}</span>
-            <h2>{{ t('workouts.exercisePickerTitle') }}</h2>
+            <h2 id="progress-exercise-picker-title">{{ t('workouts.exercisePickerTitle') }}</h2>
             <p>{{ t('workouts.exercisePickerSubtitle') }}</p>
           </div>
           <button
@@ -952,6 +974,7 @@ watch(weightUnit, (newUnit, oldUnit) => {
             <label class="form-label" for="progressExerciseSearch">{{ t('workouts.searchExercise') }}</label>
             <input
                 id="progressExerciseSearch"
+                data-autofocus
                 v-model="pickerSearch"
                 class="input"
                 type="search"

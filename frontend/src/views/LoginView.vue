@@ -74,6 +74,8 @@ async function handleLogin() {
                 class="input"
                 placeholder="deine@email.ch"
                 autocomplete="email"
+                :aria-invalid="Boolean(errorMessage)"
+                :aria-describedby="errorMessage ? 'login-error' : undefined"
             />
           </div>
 
@@ -86,10 +88,12 @@ async function handleLogin() {
                 class="input"
                 :placeholder="t('auth.password')"
                 autocomplete="current-password"
+                :aria-invalid="Boolean(errorMessage)"
+                :aria-describedby="errorMessage ? 'login-error' : undefined"
             />
           </div>
 
-          <p v-if="errorMessage" class="message message-error">
+          <p v-if="errorMessage" id="login-error" class="message message-error" role="alert">
             {{ errorMessage }}
           </p>
 

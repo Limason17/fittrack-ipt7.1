@@ -21,6 +21,7 @@ import {
   weightUnit,
 } from '../utils/units'
 import { convertWeightInputValue } from '../utils/measurements'
+import { useModalFocus } from '../utils/modalFocus'
 import { normalizeExercise, normalizeWorkout } from '../utils/taxonomy'
 
 const workouts = ref([])
@@ -35,10 +36,17 @@ const editingWorkoutId = ref(null)
 const selectedMonth = ref(new Date(new Date().getFullYear(), new Date().getMonth(), 1))
 
 const exercisePickerOpen = ref(false)
+const exercisePickerRef = ref(null)
 const pickerRowIndex = ref(null)
 const pickerSearch = ref('')
 const pickerCategory = ref('')
 const pickerMuscleGroup = ref('')
+
+const { handleModalKeydown } = useModalFocus({
+  isOpen: exercisePickerOpen,
+  dialogRef: exercisePickerRef,
+  close: closeExercisePicker,
+})
 
 const categoryOptions = [
   'Brust',
@@ -561,10 +569,10 @@ watch(weightUnit, (newUnit, oldUnit) => {
         </button>
       </div>
 
-      <p v-if="errorMessage" class="message message-error">{{ errorMessage }}</p>
-      <p v-if="successMessage" class="message message-success">{{ successMessage }}</p>
+      <p v-if="errorMessage" class="message message-error" role="alert">{{ errorMessage }}</p>
+      <p v-if="successMessage" class="message message-success" role="status">{{ successMessage }}</p>
 
-      <div v-if="showForm" ref="workoutFormRef" class="workout-form card">
+      <form v-if="showForm" ref="workoutFormRef" class="workout-form card" @submit.prevent="saveWorkout">
         <div class="form-title-row">
           <h2>{{ editingWorkoutId ? t('workouts.formEditTitle') : t('workouts.formCreateTitle') }}</h2>
           <button class="btn btn-secondary" type="button" @click="closeForm">
@@ -718,11 +726,11 @@ watch(weightUnit, (newUnit, oldUnit) => {
           <button class="btn btn-secondary" type="button" @click="addExerciseRow">
             {{ t('workouts.addExercise') }}
           </button>
-          <button class="btn btn-primary" type="button" :disabled="isSaving" @click="saveWorkout">
+          <button class="btn btn-primary" type="submit" :disabled="isSaving">
             {{ isSaving ? t('common.saving') : (editingWorkoutId ? t('workouts.updateWorkout') : t('workouts.saveWorkout')) }}
           </button>
         </div>
-      </div>
+      </form>
 
       <div v-if="isLoading" class="empty-state card">
         <p>{{ t('common.loading') }}</p>
@@ -818,11 +826,19 @@ watch(weightUnit, (newUnit, oldUnit) => {
         role="presentation"
         @click.self="closeExercisePicker"
     >
-      <section class="exercise-picker card" role="dialog" aria-modal="true">
+      <section
+          ref="exercisePickerRef"
+          class="exercise-picker card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="workout-exercise-picker-title"
+          tabindex="-1"
+          @keydown="handleModalKeydown"
+      >
         <div class="picker-head">
           <div>
             <span class="eyebrow">{{ t('workouts.selectedExercise') }}</span>
-            <h2>{{ t('workouts.exercisePickerTitle') }}</h2>
+            <h2 id="workout-exercise-picker-title">{{ t('workouts.exercisePickerTitle') }}</h2>
             <p>{{ t('workouts.exercisePickerSubtitle') }}</p>
           </div>
           <button class="btn btn-secondary" type="button" @click="closeExercisePicker">
@@ -835,6 +851,7 @@ watch(weightUnit, (newUnit, oldUnit) => {
             <label class="form-label" for="exerciseSearch">{{ t('workouts.searchExercise') }}</label>
             <input
                 id="exerciseSearch"
+                data-autofocus
                 v-model="pickerSearch"
                 class="input"
                 type="search"

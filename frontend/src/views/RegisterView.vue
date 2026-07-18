@@ -82,6 +82,8 @@ async function handleRegister() {
                 class="input"
                 :placeholder="t('auth.username')"
                 autocomplete="username"
+                :aria-invalid="Boolean(errorMessage)"
+                :aria-describedby="errorMessage ? 'register-error' : undefined"
             />
           </div>
 
@@ -94,6 +96,8 @@ async function handleRegister() {
                 class="input"
                 placeholder="deine@email.ch"
                 autocomplete="email"
+                :aria-invalid="Boolean(errorMessage)"
+                :aria-describedby="errorMessage ? 'register-error' : undefined"
             />
           </div>
 
@@ -106,14 +110,16 @@ async function handleRegister() {
                 class="input"
                 :placeholder="t('auth.passwordPlaceholder')"
                 autocomplete="new-password"
+                :aria-invalid="Boolean(errorMessage)"
+                :aria-describedby="errorMessage ? 'register-error' : undefined"
             />
           </div>
 
-          <p v-if="errorMessage" class="message message-error">
+          <p v-if="errorMessage" id="register-error" class="message message-error" role="alert">
             {{ errorMessage }}
           </p>
 
-          <p v-if="successMessage" class="message message-success">
+          <p v-if="successMessage" class="message message-success" role="status">
             {{ successMessage }}
           </p>
 
