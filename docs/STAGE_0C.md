@@ -1,6 +1,6 @@
 # FitTrack Stufe 0C – Remote-CI, Backup-Automatisierung und Migrationssicherheit
 
-Stand dieses Dokuments vor dem ersten Stage-0C-Remote-Lauf: 18. Juli 2026. Dieses Dokument ist der kanonische technische Nachweis für Stufe 0C. Deploymentdetails stehen in [DEPLOYMENT.md](DEPLOYMENT.md), Backup-/Restore-Betrieb in [BACKUP_RESTORE.md](BACKUP_RESTORE.md) und Dirty-Recovery in [MIGRATION_RECOVERY.md](MIGRATION_RECOVERY.md).
+Stand nach dem erfolgreichen Stage-0C-Remote-Lauf: 18. Juli 2026. Dieses Dokument ist der kanonische technische Nachweis für Stufe 0C. Deploymentdetails stehen in [DEPLOYMENT.md](DEPLOYMENT.md), Backup-/Restore-Betrieb in [BACKUP_RESTORE.md](BACKUP_RESTORE.md) und Dirty-Recovery in [MIGRATION_RECOVERY.md](MIGRATION_RECOVERY.md).
 
 Kennzeichnung:
 
@@ -36,8 +36,9 @@ Der zweite Lauf [29650890444](https://github.com/Limason17/fittrack-ipt7.1/actio
 
 - `91d259b` – `Add migration recovery diagnostics`
 - `33de6fd` – `Add pilot backup automation and status checks`
+- `c8290b2` – `Extend remote CI and Stage 0C operations guide`
 
-Die CI-/Betriebsdokumentation wird in einem getrennten Commit ergänzt. Stage-0C wird nicht direkt nach `main` gepusht und nicht automatisch gemergt.
+Stage-0C wurde nicht direkt nach `main` gepusht und nicht automatisch gemergt.
 
 ## 5. Auto-Migrationsanalyse und wahrscheinlichste frühere Ursache
 
@@ -174,11 +175,18 @@ Der erste lokale Chromium-Versuch konnte das nicht installierte gebündelte `chr
 
 Dirty-/Drift-/Partial- und Backupfehler werden durch die neue Testlogik simuliert; die vollständigen bestehenden Backend-, Frontend-, Build-, Audit- und Chromium/Axe-Gates bleiben erhalten.
 
-## 16. Remote-Status von Stufe 0C – vor Push ausdrücklich ausstehend
+## 16. Remote-Status von Stufe 0C
 
-**Offen zum Zeitpunkt dieses Commits:** `stabilization/stage-0c` wurde noch nicht gepusht, ein eigener Stage-0C-PR wurde noch nicht erstellt und die erweiterte CI wurde noch nicht auf GitHub ausgeführt. Hier werden erst nach tatsächlicher Ausführung Commit-SHA, PR und Run-URL ergänzt. Dieser Absatz ist kein Erfolgsnachweis.
+**Ausgeführt:** `stabilization/stage-0c` wurde ohne Force-Push mit Upstream gepusht. Pull Request [#2](https://github.com/Limason17/fittrack-ipt7.1/pull/2) ist als klarer Stack von `stabilization/stage-0c` nach `stabilization/stage-0b` offen. Er ist kein Draft, nicht gemergt und wurde von GitHub als mergebar mit Zustand `clean` gemeldet. PR #1 bleibt unabhängig davon offen und ungemergt; es gab keinen Push nach `main`.
 
-Geplante klare Stack-Strategie: Stage-0C-PR von `stabilization/stage-0c` nach `stabilization/stage-0b`; PR #1 bleibt davon unabhängig offen und ungemergt. Kein Push oder Merge nach `main`, kein Force-Push.
+**Ausgeführt:** GitHub-Actions-Run [29652881622](https://github.com/Limason17/fittrack-ipt7.1/actions/runs/29652881622) verwendete exakt Implementierungscommit `c8290b265fb656bc64fb46c793714a11d128c242` und endete vollständig mit `success`:
+
+- Backend/MySQL/Migrationen: MySQL-Service, Install, Syntax, Audit, geschützter Reset, expliziter No-op, Status, Migration Doctor, neues gzip-Wegwerf-Backup samt Hash/Status, vollständige Backend-Suite und Coverage erfolgreich;
+- Frontend: Install, Audit, 53 Tests und Produktionsbuild erfolgreich;
+- Browser: Playwright-Installation und 9 Chromium-E2E-/Axe-Tests erfolgreich;
+- Fehlerartefakt-Upload wurde übersprungen; die Run-Artefaktliste enthielt 0 Artefakte.
+
+Der vorliegende Nachtrag ändert nur den dokumentierten Remote-Nachweis. Sein nachfolgender, unveränderter CI-Lauf wird im PR und Abschlussbericht festgehalten, damit nicht durch jeden reinen Ergebnis-Nachtrag eine endlose Folge weiterer Nachtragscommits entsteht.
 
 ## 17. Cleanup, Tracking und lokale Konfiguration
 
@@ -188,7 +196,7 @@ Geplante klare Stack-Strategie: Stage-0C-PR von `stabilization/stage-0c` nach `s
 
 ## 18. Verbleibende Risiken
 
-- Stage-0C-Remote-CI und eigener PR sind bis zum Nachtrag in Abschnitt 16 offen.
+- PR #1 und PR #2 bleiben absichtlich offen und ungemergt; Review und geordnete Integration stehen noch aus.
 - Scheduler, Off-host-Upload, Alarmzustellung und deren Betriebs-Owner sind dokumentiert, aber nicht auf einer Pilotplattform eingerichtet.
 - Compose-Hash und alte Init-Bind-Mounts bleiben bis zum kontrollierten Wartungs-Recreate bestehen; ein Healthcheck fehlt.
 - Firefox, WebKit und ein vollständiger manueller Screenreader-Test wurden nicht ausgeführt. Chromium/Axe bleibt das verbindliche Gate.
@@ -196,8 +204,8 @@ Geplante klare Stack-Strategie: Stage-0C-PR von `stabilization/stage-0c` nach `s
 - MySQL-DDL bleibt nicht vollständig transaktional; Recovery ist bewusst manuell und reviewpflichtig.
 - Runtime- und Migrationsnutzer sind betrieblich zu trennen; die Anwendung erzwingt diese Infrastrukturrolle nicht selbst.
 
-## 19. Vorläufige Freigabeempfehlung
+## 19. Freigabeempfehlung
 
-Lokal sind die technischen Abnahmekriterien von Stufe 0C erfüllt. Die endgültige Freigabe für Stufe 1A darf erst erfolgen, wenn der Stage-0C-Branch normal gepusht, der separate PR offen und ungemergt vorhanden, die erweiterte GitHub-Actions-Pipeline für den finalen Remote-Commit vollständig grün und der Remote-Nachtrag in Abschnitt 16 committed ist.
+Die lokalen technischen Abnahmekriterien und der verbindliche Stage-0C-Remote-Lauf sind erfüllt. Nach grünem CI-Lauf des reinen Remote-Nachtrags ist die technische Grundlage aus Sicht von Stufe 0C ausreichend stabil für die Planung von Stufe 1A. PR #1 und danach PR #2 müssen weiterhin reviewt und in dieser Reihenfolge kontrolliert integriert werden; dieses Dokument autorisiert keinen Merge.
 
-Bis dahin und auch nach Abschluss dieser Phase gilt die Stop-Bedingung: keine Studio-, Tenant-, Rollen- oder sonstige SaaS-Implementierung ohne ausdrückliche Freigabe.
+Auch nach Abschluss dieser Phase gilt die Stop-Bedingung: keine Studio-, Tenant-, Rollen- oder sonstige SaaS-Implementierung ohne ausdrückliche Freigabe.
