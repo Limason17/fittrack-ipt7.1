@@ -10,4 +10,3 @@ test("only an exact Bearer authorization scheme is accepted", () => {
     assert.equal(authenticateToken.extractBearerToken("Bearer"), null);
     assert.equal(authenticateToken.extractBearerToken("Bearer one two"), null);
 });
-

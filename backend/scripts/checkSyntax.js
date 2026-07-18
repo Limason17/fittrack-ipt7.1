@@ -33,4 +33,3 @@ for (const file of files) {
 }
 
 process.stdout.write(`Syntax check passed for ${files.length} JavaScript files.\n`);
-

@@ -30,4 +30,3 @@ test("FT-03: the real process exits non-zero without listening when the DB is un
     assert.doesNotMatch(output, new RegExp(secretMarker));
     assert.match(output, /process_start_failed/);
 });
-

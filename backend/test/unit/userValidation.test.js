@@ -21,7 +21,6 @@ test("registration normalizes valid e-mail addresses and applies safe limits", (
     assert.equal(value.email, "liam@example.ch");
     assert.equal(value.password, "correct horse battery staple");
 });
-
 test("registration rejects malformed e-mail and overlong passwords", () => {
     assert.throws(
         () => validateRegistrationPayload({ username: "Liam", email: "bad", password: "password" }),
@@ -38,4 +37,3 @@ test("registration rejects malformed e-mail and overlong passwords", () => {
 test("login rejects non-string credentials rather than coercing them", () => {
     assert.throws(() => validateLoginPayload({ email: ["liam@example.ch"], password: true }), ValidationError);
 });
-

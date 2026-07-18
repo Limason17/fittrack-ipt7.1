@@ -9,7 +9,6 @@ test("production database settings must be explicit", () => {
         (error) => error.code === "INVALID_DATABASE_CONFIG"
     );
 });
-
 test("database names and numeric settings are validated", () => {
     assert.throws(
         () => readDatabaseConfig({ DB_NAME: "fittrack;DROP", DB_PORT: "3306" }),
@@ -27,4 +26,3 @@ test("development defaults remain reproducible", () => {
     assert.equal(config.host, "localhost");
     assert.equal(config.port, 3306);
 });
-

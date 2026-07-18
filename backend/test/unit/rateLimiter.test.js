@@ -30,4 +30,3 @@ test("rate limiter allows the configured number and rejects the next request", (
     limiter(request(), res, (error) => outcomes.push(error || null));
     assert.equal(outcomes[3], null);
 });
-

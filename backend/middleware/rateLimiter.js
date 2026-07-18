@@ -50,4 +50,3 @@ function createFixedWindowRateLimiter({
 }
 
 module.exports = { createFixedWindowRateLimiter };
-
