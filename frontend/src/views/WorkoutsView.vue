@@ -20,6 +20,8 @@ import {
   normalizeWeightValue,
   weightUnit,
 } from '../utils/units'
+import { convertWeightInputValue } from '../utils/measurements'
+import { useModalFocus } from '../utils/modalFocus'
 import { normalizeExercise, normalizeWorkout } from '../utils/taxonomy'
 
 const workouts = ref([])
@@ -34,10 +36,17 @@ const editingWorkoutId = ref(null)
 const selectedMonth = ref(new Date(new Date().getFullYear(), new Date().getMonth(), 1))
 
 const exercisePickerOpen = ref(false)
+const exercisePickerRef = ref(null)
 const pickerRowIndex = ref(null)
 const pickerSearch = ref('')
 const pickerCategory = ref('')
 const pickerMuscleGroup = ref('')
+
+const { handleModalKeydown } = useModalFocus({
+  isOpen: exercisePickerOpen,
+  dialogRef: exercisePickerRef,
+  close: closeExercisePicker,
+})
 
 const categoryOptions = [
   'Brust',
@@ -68,7 +77,13 @@ function dateInputValue(date = new Date()) {
 
 function emptyWorkoutExercise() {
   return {
+    workout_exercise_id: null,
     exercise_id: '',
+    preserve_snapshot: false,
+    exercise_name_snapshot: null,
+    exercise_category_snapshot: null,
+    exercise_muscle_group_snapshot: null,
+    exercise_image_url_snapshot: null,
     sets: 3,
     reps: 10,
     weight: '',
@@ -200,7 +215,7 @@ function openCreateForm() {
 
 function scrollToWorkoutForm() {
   nextTick(() => {
-    workoutFormRef.value?.scrollIntoView({
+    workoutFormRef.value?.scrollIntoView?.({
       behavior: 'smooth',
       block: 'start',
     })
@@ -230,12 +245,26 @@ function selectedExerciseById(exerciseId) {
   return exercises.value.find((exercise) => Number(exercise.id) === Number(exerciseId))
 }
 
+function displayExerciseForRow(row) {
+  if (row.preserve_snapshot && row.exercise_name_snapshot) {
+    return {
+      id: row.exercise_id,
+      name: row.exercise_name_snapshot,
+      category: row.exercise_category_snapshot,
+      muscle_group: row.exercise_muscle_group_snapshot,
+      image_url: row.exercise_image_url_snapshot,
+    }
+  }
+
+  return selectedExerciseById(row.exercise_id)
+}
+
 function isCardioExercise(exercise) {
   return exercise?.category === 'Cardio'
 }
 
 function isCardioRow(row) {
-  return isCardioExercise(selectedExerciseById(row.exercise_id))
+  return isCardioExercise(displayExerciseForRow(row))
 }
 
 function openExercisePicker(index) {
@@ -254,7 +283,9 @@ function chooseExercise(exercise) {
   }
 
   const row = form.value.exercises[pickerRowIndex.value]
+  row.workout_exercise_id = null
   row.exercise_id = exercise.id
+  row.preserve_snapshot = false
 
   if (isCardioExercise(exercise)) {
     row.duration_minutes = row.duration_minutes || 30
@@ -311,8 +342,16 @@ function validWorkoutForm() {
 }
 
 function workoutExercisePayload(row) {
+  const identity = {
+    workout_exercise_id:
+        row.workout_exercise_id === null || row.workout_exercise_id === undefined
+            ? null
+            : Number(row.workout_exercise_id),
+  }
+
   if (isCardioRow(row)) {
     return {
+      ...identity,
       exercise_id: Number(row.exercise_id),
       duration_minutes: Number(row.duration_minutes),
       distance_km: row.distance_km === '' ? null : normalizeDistanceValue(row.distance_km),
@@ -321,6 +360,7 @@ function workoutExercisePayload(row) {
   }
 
   return {
+    ...identity,
     exercise_id: Number(row.exercise_id),
     sets: Number(row.sets),
     reps: Number(row.reps),
@@ -372,10 +412,19 @@ function startEditWorkout(workout) {
     workout_date: workout.workout_date || dateInputValue(),
     notes: workout.notes || '',
     exercises: workout.exercises.map((exercise) => ({
+      workout_exercise_id: exercise.id ?? null,
       exercise_id: exercise.exercise_id,
+      preserve_snapshot: true,
+      exercise_name_snapshot: exercise.name,
+      exercise_category_snapshot: exercise.category,
+      exercise_muscle_group_snapshot: exercise.muscle_group,
+      exercise_image_url_snapshot: exercise.image_url,
       sets: exercise.sets ?? 3,
       reps: exercise.reps ?? 10,
-      weight: exercise.weight ? formatWeightValue(exercise.weight).toFixed(1) : '',
+      weight:
+          exercise.weight === null || exercise.weight === undefined
+              ? ''
+              : convertWeightInputValue(exercise.weight, 'kg', weightUnit.value),
       duration_minutes: exercise.duration_minutes ?? 30,
       distance_km:
           exercise.distance_km === null || exercise.distance_km === undefined
@@ -495,6 +544,12 @@ watch(distanceUnit, (newUnit, oldUnit) => {
     row.distance_km = convertedDistance === null ? '' : convertedDistance.toFixed(2)
   })
 })
+
+watch(weightUnit, (newUnit, oldUnit) => {
+  form.value.exercises.forEach((row) => {
+    row.weight = convertWeightInputValue(row.weight, oldUnit, newUnit)
+  })
+})
 </script>
 
 <template>
@@ -514,10 +569,10 @@ watch(distanceUnit, (newUnit, oldUnit) => {
         </button>
       </div>
 
-      <p v-if="errorMessage" class="message message-error">{{ errorMessage }}</p>
-      <p v-if="successMessage" class="message message-success">{{ successMessage }}</p>
+      <p v-if="errorMessage" class="message message-error" role="alert">{{ errorMessage }}</p>
+      <p v-if="successMessage" class="message message-success" role="status">{{ successMessage }}</p>
 
-      <div v-if="showForm" ref="workoutFormRef" class="workout-form card">
+      <form v-if="showForm" ref="workoutFormRef" class="workout-form card" @submit.prevent="saveWorkout">
         <div class="form-title-row">
           <h2>{{ editingWorkoutId ? t('workouts.formEditTitle') : t('workouts.formCreateTitle') }}</h2>
           <button class="btn btn-secondary" type="button" @click="closeForm">
@@ -572,20 +627,20 @@ watch(distanceUnit, (newUnit, oldUnit) => {
                   type="button"
                   @click="openExercisePicker(index)"
               >
-                <template v-if="selectedExerciseById(row.exercise_id)">
+                <template v-if="displayExerciseForRow(row)">
                   <span class="choice-media">
                     <img
-                        v-if="getExerciseImage(selectedExerciseById(row.exercise_id).name) || selectedExerciseById(row.exercise_id).image_url"
-                        :src="getExerciseImage(selectedExerciseById(row.exercise_id).name) || selectedExerciseById(row.exercise_id).image_url"
-                        :alt="selectedExerciseById(row.exercise_id).name"
+                        v-if="getExerciseImage(displayExerciseForRow(row).name) || displayExerciseForRow(row).image_url"
+                        :src="getExerciseImage(displayExerciseForRow(row).name) || displayExerciseForRow(row).image_url"
+                        :alt="displayExerciseForRow(row).name"
                     />
                   </span>
                   <span class="choice-body">
-                    <strong>{{ selectedExerciseById(row.exercise_id).name }}</strong>
+                    <strong>{{ displayExerciseForRow(row).name }}</strong>
                     <small>
-                      {{ translateCategory(selectedExerciseById(row.exercise_id).category) }}
+                      {{ translateCategory(displayExerciseForRow(row).category) }}
                       -
-                      {{ translateMuscleGroup(selectedExerciseById(row.exercise_id).muscle_group) }}
+                      {{ translateMuscleGroup(displayExerciseForRow(row).muscle_group) }}
                     </small>
                   </span>
                   <span class="choice-action">{{ t('workouts.changeExercise') }}</span>
@@ -655,7 +710,7 @@ watch(distanceUnit, (newUnit, oldUnit) => {
                     class="input"
                     type="number"
                     min="0"
-                    step="0.25"
+                    step="0.0001"
                     :placeholder="weightUnit"
                 />
               </div>
@@ -671,11 +726,11 @@ watch(distanceUnit, (newUnit, oldUnit) => {
           <button class="btn btn-secondary" type="button" @click="addExerciseRow">
             {{ t('workouts.addExercise') }}
           </button>
-          <button class="btn btn-primary" type="button" :disabled="isSaving" @click="saveWorkout">
+          <button class="btn btn-primary" type="submit" :disabled="isSaving">
             {{ isSaving ? t('common.saving') : (editingWorkoutId ? t('workouts.updateWorkout') : t('workouts.saveWorkout')) }}
           </button>
         </div>
-      </div>
+      </form>
 
       <div v-if="isLoading" class="empty-state card">
         <p>{{ t('common.loading') }}</p>
@@ -771,11 +826,19 @@ watch(distanceUnit, (newUnit, oldUnit) => {
         role="presentation"
         @click.self="closeExercisePicker"
     >
-      <section class="exercise-picker card" role="dialog" aria-modal="true">
+      <section
+          ref="exercisePickerRef"
+          class="exercise-picker card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="workout-exercise-picker-title"
+          tabindex="-1"
+          @keydown="handleModalKeydown"
+      >
         <div class="picker-head">
           <div>
             <span class="eyebrow">{{ t('workouts.selectedExercise') }}</span>
-            <h2>{{ t('workouts.exercisePickerTitle') }}</h2>
+            <h2 id="workout-exercise-picker-title">{{ t('workouts.exercisePickerTitle') }}</h2>
             <p>{{ t('workouts.exercisePickerSubtitle') }}</p>
           </div>
           <button class="btn btn-secondary" type="button" @click="closeExercisePicker">
@@ -788,6 +851,7 @@ watch(distanceUnit, (newUnit, oldUnit) => {
             <label class="form-label" for="exerciseSearch">{{ t('workouts.searchExercise') }}</label>
             <input
                 id="exerciseSearch"
+                data-autofocus
                 v-model="pickerSearch"
                 class="input"
                 type="search"

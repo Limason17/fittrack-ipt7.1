@@ -1,5 +1,7 @@
 const { normalizeText } = require("./taxonomy");
 
+const MAX_EPLEY_REPS = 100;
+
 function isCardioCategory(category) {
     return normalizeText(category) === "Cardio";
 }
@@ -9,17 +11,28 @@ function isCardioExercise(exercise) {
 }
 
 function positiveInteger(value) {
-    const number = Number(value);
-    return Number.isInteger(number) && number > 0 ? number : null;
-}
+    if (typeof value !== "number" && typeof value !== "string") {
+        return null;
+    }
 
-function nullableNonNegativeNumber(value) {
-    if (value === "" || value === null || value === undefined) {
+    if (typeof value === "string" && !/^[1-9]\d*$/.test(value)) {
         return null;
     }
 
     const number = Number(value);
-    return Number.isFinite(number) && number >= 0 ? number : null;
+    return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function nullableNonNegativeNumber(value) {
+    if (value === null || value === undefined) {
+        return null;
+    }
+
+    if (typeof value !== "number") {
+        return null;
+    }
+
+    return Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 function nullablePositiveInteger(value) {
@@ -31,6 +44,10 @@ function nullablePositiveInteger(value) {
 }
 
 function normalizeTrainingRow(row) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+        return null;
+    }
+
     return {
         exercise_id: positiveInteger(row.exercise_id),
         sets: positiveInteger(row.sets),
@@ -48,7 +65,7 @@ function normalizeTrainingRows(rows) {
     }
 
     const normalizedRows = rows.map(normalizeTrainingRow);
-    const hasInvalidExercise = normalizedRows.some((row) => !row.exercise_id);
+    const hasInvalidExercise = normalizedRows.some((row) => !row || !row.exercise_id);
 
     return hasInvalidExercise ? null : normalizedRows;
 }
@@ -79,7 +96,22 @@ function normalizeRowForExercise(row, exercise) {
     };
 }
 
+// Epley formula. Very high repetition counts are intentionally rejected because
+// they do not produce a useful one-repetition estimate and magnify bad input.
+function estimateOneRepMax(weight, reps) {
+    if (
+        typeof weight !== "number" || !Number.isFinite(weight) || weight <= 0 ||
+        typeof reps !== "number" || !Number.isFinite(reps) || reps <= 0 ||
+        reps > MAX_EPLEY_REPS
+    ) {
+        return null;
+    }
+    return weight * (1 + reps / 30);
+}
+
 module.exports = {
+    MAX_EPLEY_REPS,
+    estimateOneRepMax,
     isCardioCategory,
     isCardioExercise,
     normalizeRowForExercise,

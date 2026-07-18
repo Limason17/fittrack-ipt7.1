@@ -4,12 +4,24 @@ const jwt = require("jsonwebtoken");
 const db = require("../config/db");
 const { JWT_SECRET } = require("../config/auth");
 const authenticateToken = require("../middleware/authMiddleware");
+const { createAuthRateLimiters } = require("../middleware/rateLimiter");
+const {
+    AuthenticationError,
+    ConflictError,
+    NotFoundError,
+    ValidationError
+} = require("../errors/AppError");
+const {
+    validateLoginPayload,
+    validateRegistrationPayload
+} = require("../validation/userValidation");
 
 const router = express.Router();
 
-function cleanString(value) {
-    return typeof value === "string" ? value.trim() : "";
-}
+const {
+    login: loginRateLimiter,
+    registration: registrationRateLimiter
+} = createAuthRateLimiters();
 
 function normalizeLanguage(value) {
     return value === "en" ? "en" : "de";
@@ -34,43 +46,32 @@ function publicUser(user) {
     };
 }
 
-router.post("/register", async (req, res) => {
-    const username = cleanString(req.body.username);
-    const email = cleanString(req.body.email).toLowerCase();
-    const password = req.body.password;
-    const languagePreference = normalizeLanguage(
-        req.body.language_preference || req.body.language
+router.post("/register", registrationRateLimiter, async (req, res) => {
+    const input = validateRegistrationPayload(req.body);
+
+    const [existingUsers] = await db.promise().query(
+        "SELECT id FROM users WHERE email = ? OR username = ?",
+        [input.email, input.username]
     );
 
-    const weightUnit = normalizeWeightUnit(req.body.weight_unit);
-    const distanceUnit = normalizeDistanceUnit(req.body.distance_unit);
-    
-    if (!username || !email || !password) {
-        return res.status(400).json({ message: "Please fill in all fields" });
+    if (existingUsers.length > 0) {
+        throw new ConflictError("User already exists.", "USER_ALREADY_EXISTS");
     }
 
-    if (password.length < 6) {
-        return res.status(400).json({
-            message: "Password must be at least 6 characters long"
-        });
-    }
+    const hashedPassword = await bcrypt.hash(input.password, 10);
 
     try {
-        const [existingUsers] = await db.promise().query(
-            "SELECT id FROM users WHERE email = ? OR username = ?",
-            [email, username]
-        );
-
-        if (existingUsers.length > 0) {
-            return res.status(409).json({ message: "User already exists" });
-        }
-
-        const hashedPassword = await bcrypt.hash(password, 10);
-
         const [result] = await db.promise().query(
             `INSERT INTO users (username, email, password_hash, language_preference, weight_unit, distance_unit)
              VALUES (?, ?, ?, ?, ?, ?)`,
-            [username, email, hashedPassword, languagePreference, weightUnit, distanceUnit]
+            [
+                input.username,
+                input.email,
+                hashedPassword,
+                input.language_preference,
+                input.weight_unit,
+                input.distance_unit
+            ]
         );
 
         res.status(201).json({
@@ -78,132 +79,107 @@ router.post("/register", async (req, res) => {
             userId: result.insertId
         });
     } catch (error) {
-        console.error("Registration failed:", error.message);
-        res.status(500).json({ message: "Server error" });
+        if (error.code === "ER_DUP_ENTRY") {
+            throw new ConflictError("User already exists.", "USER_ALREADY_EXISTS");
+        }
+        throw error;
     }
 });
 
-router.post("/login", async (req, res) => {
-    const email = cleanString(req.body.email).toLowerCase();
-    const password = req.body.password;
+router.post("/login", loginRateLimiter, async (req, res) => {
+    const input = validateLoginPayload(req.body);
+    const [users] = await db.promise().query(
+        "SELECT * FROM users WHERE email = ?",
+        [input.email]
+    );
 
-    if (!email || !password) {
-        return res.status(400).json({ message: "Please fill in all fields" });
+    if (users.length === 0) {
+        throw new AuthenticationError("Invalid email or password.");
     }
 
-    try {
-        const [users] = await db.promise().query(
-            "SELECT * FROM users WHERE email = ?",
-            [email]
-        );
+    const user = users[0];
+    const isMatch = await bcrypt.compare(input.password, user.password_hash);
 
-        if (users.length === 0) {
-            return res.status(401).json({ message: "Invalid email or password" });
-        }
-
-        const user = users[0];
-        const isMatch = await bcrypt.compare(password, user.password_hash);
-
-        if (!isMatch) {
-            return res.status(401).json({ message: "Invalid email or password" });
-        }
-
-        const token = jwt.sign(
-            {
-                id: user.id,
-                username: user.username,
-                email: user.email
-            },
-            JWT_SECRET,
-            { expiresIn: "8h" }
-        );
-
-        res.json({
-            message: "Login successful",
-            token,
-            user: publicUser(user)
-        });
-    } catch (error) {
-        console.error("Login failed:", error.message);
-        res.status(500).json({ message: "Server error" });
+    if (!isMatch) {
+        throw new AuthenticationError("Invalid email or password.");
     }
+
+    const token = jwt.sign(
+        { id: user.id },
+        JWT_SECRET,
+        { algorithm: "HS256", expiresIn: "8h" }
+    );
+
+    res.json({
+        message: "Login successful",
+        token,
+        user: publicUser(user)
+    });
 });
 
 router.get("/me", authenticateToken, async (req, res) => {
-    try {
-        const [users] = await db.promise().query(
-            "SELECT id, username, email, language_preference, weight_unit, distance_unit FROM users WHERE id = ?",
-            [req.user.id]
-        );
-
-        if (users.length === 0) {
-            return res.status(404).json({ message: "User not found" });
-        }
-
-        res.json(publicUser(users[0]));
-    } catch (error) {
-        console.error("Loading current user failed:", error.message);
-        res.status(500).json({ message: "Server error" });
-    }
-});
-
-router.put("/language", authenticateToken, async (req, res) => {
-    const languagePreference = normalizeLanguage(
-        req.body.language_preference || req.body.language
+    const [users] = await db.promise().query(
+        "SELECT id, username, email, language_preference, weight_unit, distance_unit FROM users WHERE id = ?",
+        [req.user.id]
     );
 
-    try {
-        await db.promise().query(
-            "UPDATE users SET language_preference = ? WHERE id = ?",
-            [languagePreference, req.user.id]
-        );
-
-        res.json({
-            message: "Language updated successfully",
-            language_preference: languagePreference
-        });
-    } catch (error) {
-        console.error("Updating language failed:", error.message);
-        res.status(500).json({ message: "Server error" });
+    if (users.length === 0) {
+        throw new NotFoundError("User not found.");
     }
+
+    res.json(publicUser(users[0]));
+});
+
+function validatePreference(value, field, allowed) {
+    if (typeof value !== "string" || !allowed.includes(value)) {
+        throw new ValidationError({
+            [field]: `Allowed values are: ${allowed.join(", ")}.`
+        });
+    }
+    return value;
+}
+
+router.put("/language", authenticateToken, async (req, res) => {
+    const languagePreference = validatePreference(
+        req.body.language_preference ?? req.body.language,
+        "language_preference",
+        ["de", "en"]
+    );
+    const [result] = await db.promise().query(
+        "UPDATE users SET language_preference = ? WHERE id = ?",
+        [languagePreference, req.user.id]
+    );
+    if (result.affectedRows === 0) throw new NotFoundError("User not found.");
+    res.json({
+        message: "Language updated successfully",
+        language_preference: languagePreference
+    });
 });
 
 router.put("/weight-unit", authenticateToken, async (req, res) => {
-    const weightUnit = normalizeWeightUnit(req.body.weight_unit);
-
-    try {
-        await db.promise().query(
-            "UPDATE users SET weight_unit = ? WHERE id = ?",
-            [weightUnit, req.user.id]
-        );
-
-        res.json({
-            message: "Weight unit updated successfully",
-            weight_unit: weightUnit
-        });
-    } catch (error) {
-        console.error("Updating weight unit failed:", error.message);
-        res.status(500).json({ message: "Server error" });
-    }
+    const weightUnit = validatePreference(req.body.weight_unit, "weight_unit", ["kg", "lb"]);
+    const [result] = await db.promise().query(
+        "UPDATE users SET weight_unit = ? WHERE id = ?",
+        [weightUnit, req.user.id]
+    );
+    if (result.affectedRows === 0) throw new NotFoundError("User not found.");
+    res.json({
+        message: "Weight unit updated successfully",
+        weight_unit: weightUnit
+    });
 });
 
 router.put("/distance-unit", authenticateToken, async (req, res) => {
-    const distanceUnit = normalizeDistanceUnit(req.body.distance_unit);
-
-    try {
-        await db.promise().query(
-            "UPDATE users SET distance_unit = ? WHERE id = ?",
-            [distanceUnit, req.user.id]
-        );
-
-        res.json({
-            message: "Distance unit updated successfully",
-            distance_unit: distanceUnit
-        });
-    } catch (error) {
-        console.error("Updating distance unit failed:", error.message);
-        res.status(500).json({ message: "Server error" });
-    }
+    const distanceUnit = validatePreference(req.body.distance_unit, "distance_unit", ["km", "mi"]);
+    const [result] = await db.promise().query(
+        "UPDATE users SET distance_unit = ? WHERE id = ?",
+        [distanceUnit, req.user.id]
+    );
+    if (result.affectedRows === 0) throw new NotFoundError("User not found.");
+    res.json({
+        message: "Distance unit updated successfully",
+        distance_unit: distanceUnit
+    });
 });
 
 module.exports = router;

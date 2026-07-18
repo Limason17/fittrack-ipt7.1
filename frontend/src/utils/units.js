@@ -1,16 +1,20 @@
 import { ref } from 'vue'
 import { apiRequest } from './api'
 import { getToken, getUser, updateAuthUser } from './auth'
+import {
+    convertWeightValue,
+    normalizeWeightUnit,
+    roundCanonicalWeightValue,
+} from './measurements'
 
 const GUEST_UNIT_KEY = 'fittrack_unit_guest'
 const USER_UNIT_PREFIX = 'fittrack_unit_user_'
 const GUEST_DISTANCE_UNIT_KEY = 'fittrack_distance_unit_guest'
 const USER_DISTANCE_UNIT_PREFIX = 'fittrack_distance_unit_user_'
-const KG_TO_LB = 2.20462262
 const KM_TO_MI = 0.6213711922
 
 function normalizeUnit(unit) {
-    return unit === 'lb' ? 'lb' : 'kg'
+    return normalizeWeightUnit(unit)
 }
 
 function normalizeDistanceUnit(unit) {
@@ -149,9 +153,10 @@ export function applyDistanceUnitForUser(user) {
  */
 export function formatWeightValue(kgValue) {
     if (kgValue === null || kgValue === undefined || kgValue === '') return null
-    
-    const value = Number(kgValue)
-    const result = weightUnit.value === 'lb' ? value * KG_TO_LB : value
+
+    const result = convertWeightValue(kgValue, 'kg', weightUnit.value)
+    if (result === null) return null
+
     return Math.round(result * 10) / 10
 }
 
@@ -160,10 +165,11 @@ export function formatWeightValue(kgValue) {
  */
 export function normalizeWeightValue(displayValue) {
     if (displayValue === null || displayValue === undefined || displayValue === '') return null
-    
-    const value = Number(displayValue)
-    const result = weightUnit.value === 'lb' ? value / KG_TO_LB : value
-    return Math.round(result * 10) / 10
+
+    const result = convertWeightValue(displayValue, weightUnit.value, 'kg')
+    if (result === null) return null
+
+    return roundCanonicalWeightValue(result)
 }
 
 /**

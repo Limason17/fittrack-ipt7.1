@@ -6,12 +6,31 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "db:check": "node scripts/checkDb.js",
-    "test": "node --check server.js && node --check initDb.js && node --check routes/users.js && node --check routes/exercises.js && node --check routes/workouts.js && node --check routes/progress.js && node --check middleware/authMiddleware.js && node --check utils/trainingMetrics.js && node --check utils/ensureTrainingSchema.js && node --check scripts/checkDb.js"
+    "db:migrate": "node scripts/migrate.js",
+    "db:migrate:status": "node scripts/migrateStatus.js",
+    "db:backup": "node scripts/dbBackup.js",
+    "db:restore:test": "node scripts/dbRestore.js",
+    "db:dev:init": "node scripts/devInit.js",
+    "db:test:reset": "node scripts/testDbReset.js",
+    "db:test:drop": "node scripts/testDbDrop.js",
+    "e2e:server": "node scripts/e2eServer.js",
+    "test": "npm run test:unit && npm run test:integration && npm run test:migrations && npm run test:syntax",
+    "test:unit": "node --test test/unit/*.test.js test/startupHealth.test.js",
+    "test:integration": "node --test --test-concurrency=1 test/integration/*.test.js",
+    "test:migrations": "node --test --test-concurrency=1 test/migrationPlanning.test.js test/migrationDatabase.test.js",
+    "test:coverage": "node --experimental-test-coverage --test test/unit/*.test.js test/startupHealth.test.js test/migrationPlanning.test.js",
+    "test:syntax": "node scripts/checkSyntax.js",
+    "audit:security": "npm audit --audit-level=high"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "FitTrack API",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0",
+    "npm": ">=10"
+  },
+  "packageManager": "npm@10.9.2",
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",

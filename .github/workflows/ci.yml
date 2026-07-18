@@ -1,0 +1,195 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend, MySQL und Migrationen
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_ROOT_HOST: "%"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      NODE_ENV: test
+      PORT: 3001
+      DB_HOST: 127.0.0.1
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: fittrack_test_ci
+      DB_PORT: 3306
+      JWT_SECRET: fittrack-ci-secret-with-at-least-32-characters
+      CORS_ORIGIN: http://localhost:5173
+      ALLOW_TEST_DB_RESET: "true"
+      FITTRACK_RUN_DB_INTEGRATION: "true"
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Node.js 22.17.0 einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.0
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Toolchain ausgeben
+        run: |
+          node --version
+          npm --version
+
+      - name: Backend reproduzierbar installieren
+        working-directory: backend
+        run: npm ci
+
+      - name: Backend-Syntax prüfen
+        working-directory: backend
+        run: npm run test:syntax
+
+      - name: Security-Audit ab high
+        working-directory: backend
+        run: npm run audit:security
+
+      - name: Geschützten Test-Reset und Migration-No-op prüfen
+        working-directory: backend
+        run: |
+          npm run db:test:reset
+          npm run db:migrate
+          npm run db:migrate:status
+
+      - name: Backend-Suite mit Zwei-Nutzer-Isolation und Wegwerf-DBs
+        working-directory: backend
+        run: npm test
+
+      - name: Unit-Coverage erzeugen
+        working-directory: backend
+        run: npm run test:coverage
+
+  frontend:
+    name: Frontend-Tests und Produktionsbuild
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Node.js 22.17.0 einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Toolchain ausgeben
+        run: |
+          node --version
+          npm --version
+
+      - name: Frontend reproduzierbar installieren
+        working-directory: frontend
+        run: npm ci
+
+      - name: Security-Audit ab high
+        working-directory: frontend
+        run: npm audit --audit-level=high
+
+      - name: Frontend-Tests ausführen
+        working-directory: frontend
+        run: npm run test:run
+
+      - name: Produktionsbuild erstellen
+        working-directory: frontend
+        env:
+          VITE_API_BASE_URL: /api
+        run: npm run build
+
+  browser:
+    name: Chromium-E2E und Accessibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_ROOT_HOST: "%"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: root
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Node.js 22.17.0 einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.0
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Backend reproduzierbar installieren
+        working-directory: backend
+        run: npm ci
+
+      - name: Frontend reproduzierbar installieren
+        working-directory: frontend
+        run: npm ci
+
+      - name: Playwright Chromium installieren
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Isolierte Chromium-E2E-/Axe-Matrix ausführen
+        working-directory: frontend
+        run: npm run test:e2e
+
+      - name: Fehlerartefakte sichern
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failure-${{ github.run_id }}
+          path: |
+            frontend/test-results
+            frontend/playwright-report
+          if-no-files-found: ignore
+          retention-days: 7

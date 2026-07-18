@@ -20,6 +20,8 @@ import {
   normalizeWeightValue,
   weightUnit,
 } from '../utils/units'
+import { convertWeightInputValue, estimateOneRepMax } from '../utils/measurements'
+import { useModalFocus } from '../utils/modalFocus'
 import {
   normalizeExercise,
   normalizeProgressEntry,
@@ -35,9 +37,16 @@ const isSaving = ref(false)
 const errorMessage = ref('')
 const successMessage = ref('')
 const exercisePickerOpen = ref(false)
+const exercisePickerRef = ref(null)
 const pickerSearch = ref('')
 const pickerCategory = ref('')
 const pickerMuscleGroup = ref('')
+
+const { handleModalKeydown } = useModalFocus({
+  isOpen: exercisePickerOpen,
+  dialogRef: exercisePickerRef,
+  close: closeExercisePicker,
+})
 
 const categoryOptions = [
   'Brust',
@@ -86,6 +95,16 @@ const selectedExercise = computed(() =>
 )
 
 const selectedExerciseIsCardio = computed(() => isCardioExercise(selectedExercise.value))
+
+function historyGroupKey(item) {
+  return JSON.stringify([
+    Number(item?.exercise_id),
+    item?.exercise_name || '',
+    item?.category || '',
+    item?.muscle_group || '',
+    item?.image_url || '',
+  ])
+}
 
 const availablePickerCategoryOptions = computed(() => {
   if (!pickerMuscleGroup.value) {
@@ -139,8 +158,10 @@ const progressCharts = computed(() => {
   })
 
   sortedEntries.forEach((entry) => {
-    if (!groups.has(entry.exercise_id)) {
-      groups.set(entry.exercise_id, {
+    const groupKey = historyGroupKey(entry)
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, {
+        history_key: groupKey,
         exercise_id: entry.exercise_id,
         exercise_name: entry.exercise_name,
         category: entry.category,
@@ -150,7 +171,7 @@ const progressCharts = computed(() => {
       })
     }
 
-    groups.get(entry.exercise_id).entries.push(entry)
+    groups.get(groupKey).entries.push(entry)
   })
 
   return Array.from(groups.values())
@@ -481,17 +502,6 @@ function formatTrainingLoad(value) {
   return formatNumber(value, 1)
 }
 
-function estimatedOneRepMax(entry) {
-  const weight = numericValue(entry.weight)
-  const reps = numericValue(entry.reps)
-
-  if (!weight || !reps) {
-    return null
-  }
-
-  return weight * (1 + reps / 30)
-}
-
 function totalReps(entry) {
   const sets = numericValue(entry.sets)
   const reps = numericValue(entry.reps)
@@ -524,7 +534,7 @@ function progressMetricValue(entry, metricType) {
   }
 
   if (metricType === 'estimatedOneRepMax') {
-    return formatWeightValue(estimatedOneRepMax(entry))
+    return estimateOneRepMax(entry.weight, entry.reps)
   }
 
   return totalReps(entry)
@@ -629,6 +639,10 @@ watch(distanceUnit, (newUnit, oldUnit) => {
   const convertedDistance = formatDistanceValue(distanceKm, newUnit)
   form.value.distance_km = convertedDistance === null ? '' : convertedDistance.toFixed(2)
 })
+
+watch(weightUnit, (newUnit, oldUnit) => {
+  form.value.weight = convertWeightInputValue(form.value.weight, oldUnit, newUnit)
+})
 </script>
 
 <template>
@@ -642,10 +656,10 @@ watch(distanceUnit, (newUnit, oldUnit) => {
         </p>
       </div>
 
-      <p v-if="errorMessage" class="message message-error">{{ errorMessage }}</p>
-      <p v-if="successMessage" class="message message-success">{{ successMessage }}</p>
+      <p v-if="errorMessage" class="message message-error" role="alert">{{ errorMessage }}</p>
+      <p v-if="successMessage" class="message message-success" role="status">{{ successMessage }}</p>
 
-      <div class="progress-form card">
+      <form class="progress-form card" @submit.prevent="saveEntry">
         <h2>{{ t('progress.formTitle') }}</h2>
 
         <div class="progress-form-grid">
@@ -749,7 +763,7 @@ watch(distanceUnit, (newUnit, oldUnit) => {
                   class="input"
                   type="number"
                   min="0"
-                  step="0.25"
+                  step="0.0001"
                   :placeholder="weightUnit"
               />
             </div>
@@ -757,11 +771,11 @@ watch(distanceUnit, (newUnit, oldUnit) => {
         </div>
 
         <div class="form-actions">
-          <button class="btn btn-primary" type="button" :disabled="isSaving" @click="saveEntry">
+          <button class="btn btn-primary" type="submit" :disabled="isSaving">
             {{ isSaving ? t('common.saving') : t('progress.saveEntry') }}
           </button>
         </div>
-      </div>
+      </form>
 
       <div v-if="isLoading" class="empty-state card">
         <p>{{ t('common.loading') }}</p>
@@ -781,7 +795,7 @@ watch(distanceUnit, (newUnit, oldUnit) => {
           </div>
 
           <div v-else class="chart-grid">
-            <article v-for="chart in progressCharts" :key="chart.exercise_id" class="chart-card card">
+            <article v-for="chart in progressCharts" :key="chart.history_key" class="chart-card card">
               <div class="chart-card-head">
                 <div class="chart-title-row">
                   <span class="progress-media">
@@ -802,6 +816,7 @@ watch(distanceUnit, (newUnit, oldUnit) => {
 
               <div
                   class="line-chart-wrap"
+                  role="img"
                   :aria-label="`${chart.exercise_name}: ${chart.metricLabel} ${formatMetricValue(chart.latestValue, chart.metricType)}`"
               >
                 <svg class="line-chart" viewBox="0 0 100 100" preserveAspectRatio="none">
@@ -844,7 +859,7 @@ watch(distanceUnit, (newUnit, oldUnit) => {
           </div>
 
           <div v-else class="summary-grid">
-            <article v-for="item in summary" :key="item.exercise_id" class="summary-card card">
+            <article v-for="item in summary" :key="historyGroupKey(item)" class="summary-card card">
               <div class="summary-top">
                 <div class="summary-title-row">
                   <span class="progress-media">
@@ -908,7 +923,12 @@ watch(distanceUnit, (newUnit, oldUnit) => {
                 </div>
               </div>
 
-              <button class="btn btn-danger" type="button" @click="deleteEntry(entry)">
+              <button
+                  v-if="entry.source_type === 'manual'"
+                  class="btn btn-danger"
+                  type="button"
+                  @click="deleteEntry(entry)"
+              >
                 {{ t('common.delete') }}
               </button>
             </article>
@@ -925,11 +945,19 @@ watch(distanceUnit, (newUnit, oldUnit) => {
         role="presentation"
         @click.self="closeExercisePicker"
     >
-      <section class="exercise-picker card" role="dialog" aria-modal="true">
+      <section
+          ref="exercisePickerRef"
+          class="exercise-picker card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="progress-exercise-picker-title"
+          tabindex="-1"
+          @keydown="handleModalKeydown"
+      >
         <div class="picker-head">
           <div>
             <span class="eyebrow">{{ t('workouts.selectedExercise') }}</span>
-            <h2>{{ t('workouts.exercisePickerTitle') }}</h2>
+            <h2 id="progress-exercise-picker-title">{{ t('workouts.exercisePickerTitle') }}</h2>
             <p>{{ t('workouts.exercisePickerSubtitle') }}</p>
           </div>
           <button
@@ -946,6 +974,7 @@ watch(distanceUnit, (newUnit, oldUnit) => {
             <label class="form-label" for="progressExerciseSearch">{{ t('workouts.searchExercise') }}</label>
             <input
                 id="progressExerciseSearch"
+                data-autofocus
                 v-model="pickerSearch"
                 class="input"
                 type="search"

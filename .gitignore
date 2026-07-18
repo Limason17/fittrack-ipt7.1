@@ -28,6 +28,8 @@ build/
 coverage/
 frontend/dist/
 backend/dist/
+frontend/test-results/
+frontend/playwright-report/
 
 # OS files
 .DS_Store

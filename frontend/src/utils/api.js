@@ -1,7 +1,16 @@
 import { logout } from './auth'
 
 export const API_BASE_URL =
-    import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api'
+    import.meta.env.VITE_API_BASE_URL || '/api'
+
+export function joinApiUrl(baseUrl, path) {
+    const base = String(baseUrl ?? '').trim()
+    const pathPart = String(path ?? '').trim()
+    const normalizedBase = base === '/' ? '' : base.replace(/\/+$/, '')
+    const normalizedPath = `/${pathPart.replace(/^\/+/, '')}`
+
+    return `${normalizedBase}${normalizedPath}`
+}
 
 export async function apiRequest(path, options = {}) {
     const { method = 'GET', body, token } = options
@@ -17,7 +26,7 @@ export async function apiRequest(path, options = {}) {
         headers.Authorization = `Bearer ${token}`
     }
 
-    const response = await fetch(`${API_BASE_URL}${path}`, {
+    const response = await fetch(joinApiUrl(API_BASE_URL, path), {
         method,
         headers,
         body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -35,7 +44,7 @@ export async function apiRequest(path, options = {}) {
     }
 
     if (!response.ok) {
-        if (token && (response.status === 401 || response.status === 403)) {
+        if (token && response.status === 401) {
             logout()
 
             if (typeof window !== 'undefined') {
@@ -44,7 +53,7 @@ export async function apiRequest(path, options = {}) {
             }
         }
 
-        const error = new Error(data?.message || response.statusText)
+        const error = new Error(data?.error?.message || data?.message || response.statusText)
         error.status = response.status
         error.data = data
         throw error
