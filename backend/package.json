@@ -10,6 +10,8 @@
     "db:migrate:status": "node scripts/migrateStatus.js",
     "db:migrate:doctor": "node scripts/migrateDoctor.js",
     "db:backup": "node scripts/dbBackup.js",
+    "db:backup:daily": "node scripts/dbBackupDaily.js",
+    "db:backup:status": "node scripts/dbBackupStatus.js",
     "db:restore:test": "node scripts/dbRestore.js",
     "db:dev:init": "node scripts/devInit.js",
     "db:test:reset": "node scripts/testDbReset.js",
