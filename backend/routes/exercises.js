@@ -1,181 +1,134 @@
 const express = require("express");
 const db = require("../config/db");
 const authenticateToken = require("../middleware/authMiddleware");
+const { ConflictError, NotFoundError, ValidationError } = require("../errors/AppError");
 const {
     normalizeExercise,
     normalizeText,
     taxonomyVariants
 } = require("../utils/taxonomy");
+const { validatePathId, validateString } = require("../validation/trainingValidation");
 
 const router = express.Router();
 
-function cleanString(value) {
-    return typeof value === "string" ? value.trim() : "";
+function exerciseInput(body) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+        throw new ValidationError({ body: "A JSON object is required." });
+    }
+
+    return {
+        name: normalizeText(validateString(body.name, {
+            field: "name", required: true, maxLength: 80
+        })),
+        description: normalizeText(validateString(body.description, {
+            field: "description", maxLength: 255
+        })),
+        category: normalizeText(validateString(body.category, {
+            field: "category", required: true, maxLength: 50
+        })),
+        muscleGroup: normalizeText(validateString(body.muscle_group, {
+            field: "muscle_group", required: true, maxLength: 50
+        })),
+        imageUrl: validateString(body.image_url, {
+            field: "image_url", maxLength: 500
+        })
+    };
 }
 
-function positiveInteger(value) {
-    const number = Number(value);
-    return Number.isInteger(number) && number > 0 ? number : null;
-}
-
-router.get("/", authenticateToken, (req, res) => {
-    const { category, muscle_group } = req.query;
-
+router.get("/", authenticateToken, async (req, res) => {
+    const { category, muscle_group: muscleGroup } = req.query;
     let sql = `
         SELECT id, user_id, name, description, category, muscle_group, image_url, created_at
         FROM exercises
         WHERE (user_id = ? OR user_id IS NULL)
     `;
-
-    const queryParams = [req.user.id];
+    const parameters = [req.user.id];
 
     if (category) {
+        if (typeof category !== "string" || category.length > 50) {
+            throw new ValidationError({ category: "Category filter is invalid." });
+        }
         const variants = taxonomyVariants(category);
         sql += ` AND category IN (${variants.map(() => "?").join(", ")})`;
-        queryParams.push(...variants);
+        parameters.push(...variants);
     }
-
-    if (muscle_group) {
-        const variants = taxonomyVariants(muscle_group);
+    if (muscleGroup) {
+        if (typeof muscleGroup !== "string" || muscleGroup.length > 50) {
+            throw new ValidationError({ muscle_group: "Muscle group filter is invalid." });
+        }
+        const variants = taxonomyVariants(muscleGroup);
         sql += ` AND muscle_group IN (${variants.map(() => "?").join(", ")})`;
-        queryParams.push(...variants);
+        parameters.push(...variants);
     }
-
     sql += " ORDER BY user_id IS NULL DESC, name ASC";
 
-    db.query(sql, queryParams, (err, results) => {
-        if (err) {
-            console.error("Loading exercises failed:", err.message);
-            return res.status(500).json({
-                message: "Error loading exercises"
-            });
-        }
+    const [rows] = await db.promise().query(sql, parameters);
+    res.json(rows.map(normalizeExercise));
+});
 
-        res.json(results.map(normalizeExercise));
+router.post("/", authenticateToken, async (req, res) => {
+    const input = exerciseInput(req.body);
+    const [result] = await db.promise().query(
+        `INSERT INTO exercises (user_id, name, description, category, muscle_group, image_url)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+            req.user.id,
+            input.name,
+            input.description,
+            input.category,
+            input.muscleGroup,
+            input.imageUrl
+        ]
+    );
+    res.status(201).json({
+        message: "Exercise created successfully",
+        exerciseId: result.insertId
     });
 });
 
-router.post("/", authenticateToken, (req, res) => {
-    const name = cleanString(req.body.name);
-    const description = normalizeText(cleanString(req.body.description));
-    const category = normalizeText(cleanString(req.body.category));
-    const muscleGroup = normalizeText(cleanString(req.body.muscle_group));
-    const imageUrl = cleanString(req.body.image_url);
-
-    if (!name || !category || !muscleGroup) {
-        return res.status(400).json({
-            message: "Name, category and muscle_group are required"
-        });
-    }
-
-    const sql = `
-        INSERT INTO exercises (user_id, name, description, category, muscle_group, image_url)
-        VALUES (?, ?, ?, ?, ?, ?)
-    `;
-
-    db.query(
-        sql,
+router.put("/:id", authenticateToken, async (req, res) => {
+    const exerciseId = validatePathId(req.params.id, "exerciseId");
+    const input = exerciseInput(req.body);
+    const [result] = await db.promise().query(
+        `UPDATE exercises
+         SET name = ?, description = ?, category = ?, muscle_group = ?, image_url = ?
+         WHERE id = ? AND user_id = ?`,
         [
-            req.user.id,
-            name,
-            description || null,
-            category,
-            muscleGroup,
-            imageUrl || null
-        ],
-        (err, result) => {
-            if (err) {
-                console.error("Creating exercise failed:", err.message);
-                return res.status(500).json({
-                    message: "Error creating exercise"
-                });
-            }
-
-            res.status(201).json({
-                message: "Exercise created successfully",
-                exerciseId: result.insertId
-            });
-        }
-    );
-});
-
-router.put("/:id", authenticateToken, (req, res) => {
-    const exerciseId = positiveInteger(req.params.id);
-    const name = cleanString(req.body.name);
-    const description = normalizeText(cleanString(req.body.description));
-    const category = normalizeText(cleanString(req.body.category));
-    const muscleGroup = normalizeText(cleanString(req.body.muscle_group));
-    const imageUrl = cleanString(req.body.image_url);
-
-    if (!exerciseId) {
-        return res.status(400).json({ message: "Invalid exercise id" });
-    }
-
-    if (!name || !category || !muscleGroup) {
-        return res.status(400).json({
-            message: "Name, category and muscle_group are required"
-        });
-    }
-
-    const sql = `
-        UPDATE exercises
-        SET name = ?, description = ?, category = ?, muscle_group = ?, image_url = ?
-        WHERE id = ? AND user_id = ?
-    `;
-
-    db.query(
-        sql,
-        [
-            name,
-            description || null,
-            category,
-            muscleGroup,
-            imageUrl || null,
+            input.name,
+            input.description,
+            input.category,
+            input.muscleGroup,
+            input.imageUrl,
             exerciseId,
             req.user.id
-        ],
-        (err, result) => {
-            if (err) {
-                console.error("Updating exercise failed:", err.message);
-                return res.status(500).json({
-                    message: "Error updating exercise"
-                });
-            }
-
-            if (result.affectedRows === 0) {
-                return res.status(404).json({ message: "Exercise not found" });
-            }
-
-            res.json({ message: "Exercise updated successfully" });
-        }
+        ]
     );
+    if (result.affectedRows === 0) {
+        throw new NotFoundError("Exercise not found.");
+    }
+    res.json({ message: "Exercise updated successfully" });
 });
 
-router.delete("/:id", authenticateToken, (req, res) => {
-    const exerciseId = positiveInteger(req.params.id);
-
-    if (!exerciseId) {
-        return res.status(400).json({ message: "Invalid exercise id" });
-    }
-
-    db.query(
-        "DELETE FROM exercises WHERE id = ? AND user_id = ?",
-        [exerciseId, req.user.id],
-        (err, result) => {
-            if (err) {
-                console.error("Deleting exercise failed:", err.message);
-                return res.status(409).json({
-                    message: "Exercise is already used in workouts or progress entries"
-                });
-            }
-
-            if (result.affectedRows === 0) {
-                return res.status(404).json({ message: "Exercise not found" });
-            }
-
-            res.json({ message: "Exercise deleted successfully" });
+router.delete("/:id", authenticateToken, async (req, res) => {
+    const exerciseId = validatePathId(req.params.id, "exerciseId");
+    try {
+        const [result] = await db.promise().query(
+            "DELETE FROM exercises WHERE id = ? AND user_id = ?",
+            [exerciseId, req.user.id]
+        );
+        if (result.affectedRows === 0) {
+            throw new NotFoundError("Exercise not found.");
         }
-    );
+        res.json({ message: "Exercise deleted successfully" });
+    } catch (error) {
+        if (error.code === "ER_ROW_IS_REFERENCED_2") {
+            throw new ConflictError(
+                "Exercise is already used in workouts or progress entries.",
+                "EXERCISE_IN_USE"
+            );
+        }
+        throw error;
+    }
 });
 
 module.exports = router;

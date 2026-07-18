@@ -1,17 +1,29 @@
 const jwt = require("jsonwebtoken");
 const { JWT_SECRET } = require("../config/auth");
+const { AuthenticationError } = require("../errors/AppError");
+
+function extractBearerToken(authHeader) {
+    if (typeof authHeader !== "string") {
+        return null;
+    }
+
+    const match = /^Bearer\s+(\S+)$/i.exec(authHeader.trim());
+    return match ? match[1] : null;
+}
 
 function authenticateToken(req, res, next) {
     const authHeader = req.headers["authorization"];
-    const token = authHeader && authHeader.split(" ")[1];
+    const token = extractBearerToken(authHeader);
 
     if (!token) {
-        return res.status(401).json({ message: "Access token missing" });
+        next(new AuthenticationError("Access token missing or malformed."));
+        return;
     }
 
-    jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) {
-            return res.status(403).json({ message: "Invalid or expired token" });
+    jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] }, (error, user) => {
+        if (error || !Number.isSafeInteger(user?.id) || user.id <= 0) {
+            next(new AuthenticationError("Access token is invalid or expired."));
+            return;
         }
 
         req.user = user;
@@ -20,3 +32,4 @@ function authenticateToken(req, res, next) {
 }
 
 module.exports = authenticateToken;
+module.exports.extractBearerToken = extractBearerToken;
