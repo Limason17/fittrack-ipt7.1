@@ -333,7 +333,7 @@ FITTRACK_MIGRATION_EXPECTED_DATABASE=fittrack_test_ci
 FITTRACK_AUTO_MIGRATE=false
 ```
 
-Damit bleibt der Server status-only, während der explizite CI-Schritt `npm run db:migrate` sein Ziel doppelt bestätigt. Der Backend-Job umfasst MySQL-Healthcheck, geschützten Reset, expliziten Migrations-No-op, Doctor-/Statusprüfung, vollständige Tests, Syntax, Coverage und Dependency-Audit.
+Damit bleibt der Server status-only, während der explizite CI-Schritt `npm run db:migrate` sein Ziel doppelt bestätigt. Der Backend-Job umfasst MySQL-Healthcheck, geschützten Reset, expliziten Migrations-No-op, Doctor-/Statusprüfung, vollständige Tests, Syntax, Coverage und Dependency-Audit. Zusätzlich erstellt er mit der MySQL-Service-Container-ID ein komprimiertes Wegwerf-Backup im Runner-Temp, prüft Manifest, Hash und Backupstatus und lädt dieses kurzlebige Artefakt nicht hoch.
 
 Der Frontend-Job führt Installation, Audit, Unit-/Komponententests und Produktionsbuild aus, aber keine Migration. Der Browser-Job verwendet eine isolierte Loopback-E2E-Datenbank, den geschützten Reset/Migrationspfad und Chromium/Axe; erfolgreiche Läufe behalten keine DB-Dumps.
 

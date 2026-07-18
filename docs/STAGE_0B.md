@@ -332,3 +332,14 @@ Der tatsächlich erneut ausgelesene finale Status und der Abschlusscommit werden
 Stufe 0B nach final grünem Regressionslauf und sauberem Git-Status als **lokalen Pilotbetriebsnachweis mit dokumentierter Migrationsabweichung** abnehmen. Vor einem echten Pilot mit schützenswerten Daten sollten zuerst Backup-Automatisierung/Off-host-Verschlüsselung, kontrollierte Migrationsverantwortung, Dirty-Recovery und ein autorisierter Remote-CI-Lauf verbindlich erledigt werden.
 
 Danach an der Stop-Bedingung halten und auf ausdrückliche Freigabe warten. Stufe 1A (Studio-, Tenant- und Rollenfundament) wurde nicht begonnen.
+
+## 24. Remote-Nachweis als Follow-up in Stufe 0C
+
+Die vorstehenden Kapitel dokumentieren den lokalen Abschlusszeitpunkt von Stufe 0B. In der ausdrücklich freigegebenen Folgestufe 0C wurde der Branch anschließend normal auf den Remote gepusht und als Pull Request #1 von `stabilization/stage-0b` nach `main` geöffnet; ein Merge fand nicht statt.
+
+- **Tatsächlich ausgeführt:** Der erste GitHub-Actions-Lauf verwendete exakt Commit `576af35ae291247df0222aa8d6e9399d5be65caf`. Frontend sowie Chromium/Axe waren erfolgreich; der Backend-Job zeigte eine reale Inkonsistenz zwischen dem CI-Ziel `fittrack_ci_test` und dem absichtlich engen Wegwerf-DB-Guard.
+- **Automatisiert reproduziert und behoben:** Ein neuer Test koppelt den Backend-CI-Datenbanknamen an denselben Sicherheitsguard. Der Zielname wurde minimal auf `fittrack_test_ci` korrigiert; der Guard wurde nicht abgeschwächt.
+- **Tatsächlich ausgeführt:** GitHub-Actions-Run `29650890444` auf Korrekturcommit `7b81bc52c04aebdb851f72c775c4c49b7c5a939c` war in allen drei Jobs erfolgreich: Backend/MySQL/Migrationen, Frontend/Build und Chromium/Axe.
+- **Manuell geprüft:** Der erfolgreiche Lauf erzeugte keine hochgeladenen Artefakte. Pull Request #1 blieb offen, ungemergt und laut GitHub mergebar.
+
+Die neuen Migrations-, Backup- und Betriebsmaßnahmen werden ausschließlich in `docs/STAGE_0C.md` und den dort verlinkten kanonischen Runbooks fortgeschrieben.
