@@ -368,3 +368,70 @@ CI-Zugangsdaten wie `root/root` existieren ausschließlich im isolierten, kurzle
 - Ein grüner Dependency-Audit ersetzt weder Penetrationstest noch manuelle Security-Prüfung.
 
 Weitere Betriebs- und Recovery-Regeln stehen in `docs/BACKUP_RESTORE.md`, `docs/MIGRATION_RECOVERY.md`, `docs/STAGE_0B.md` und `docs/STAGE_0C.md`.
+
+## Ergänzung für Stufe 1A
+
+Stufe 1A ergänzt Migration `005_studio_tenancy_and_rbac`. Sie erstellt
+`studios`, `studio_memberships`, `studio_invitations` und
+`studio_audit_events`, verändert aber keine persönlichen Trainingsdatentabellen.
+Vor der Migration müssen deshalb sowohl die fünf persönlichen Tabellen als auch
+die noch nicht vorhandenen vier Studiotabellen im Preflight dokumentiert werden.
+
+Der kontrollierte Produktionsablauf bleibt unverändert: aktuelles verifiziertes
+Backup, Doctor, explizites Migrationsziel, genau ein Migrations-Owner, Migration,
+Doctor/Status und ein zweiter No-op-Lauf. Nach 005 muss der Doctor zusätzlich alle
+Studio-Spalten, Indizes, Foreign Keys und benannten Checks als sauber melden.
+
+Zusätzliche Stage-1A-Smokes nach Freigabe:
+
+- bestehender Benutzer kann sich anmelden und persönliche Workouts unverändert
+  lesen;
+- Benutzer ohne Studio erhält von `GET /api/v1/studios` eine leere Liste;
+- Studioerstellung erzeugt atomar eine aktive Owner-Mitgliedschaft und ein
+  Audit-Ereignis;
+- ein fremder Benutzer erhält für die öffentliche Studio-ID denselben
+  `STUDIO_NOT_FOUND`-Vertrag wie für eine unbekannte ID;
+- der letzte aktive Owner kann nicht suspendiert, auf `left` gesetzt oder
+  herabgestuft werden;
+- Einladungstoken erscheinen weder in Runtime-Logs noch Audit-Datensätzen.
+
+### Einladungsauslieferung
+
+`INVITATION_ACCEPT_BASE_URL` muss die kanonische HTTPS-URL des Frontends sein,
+beispielsweise `https://app.example.ch`. Development und Test dürfen den Link über
+den einmaligen lokalen Delivery-Adapter an den aufrufenden Entwickler/Test
+zurückgeben. Dieser Link ist ein Bearer Secret und darf nicht persistiert,
+protokolliert oder in Tickets kopiert werden.
+
+Der Standard-Produktionspfad enthält bewusst keinen improvisierten SMTP-Versand.
+Ohne einen explizit verdrahteten, getesteten Provider verweigert die API die
+Einladungserstellung mit `INVITATION_DELIVERY_UNAVAILABLE`, bevor eine Einladung
+persistiert wird. Ein realer Provider mit sichtbarem Fehler-/Retry-Vertrag ist
+damit zwingende Pilotvoraussetzung; das Setzen einer URL allein aktiviert keinen
+Versand.
+
+Statisches Frontend und Reverse Proxy müssen für alle SPA-Seiten einschließlich
+`/invitations/:token` `Referrer-Policy: no-referrer`, TLS, keine URL-Query-Logs und
+keine Analysewerkzeuge mit vollständigen Pfaden erzwingen. Nach erfolgreicher
+Annahme ersetzt der Client die tokenhaltige Route.
+
+### Datenschutzbetrieb
+
+Normale Listen geben bei `left`-Mitgliedschaften keine vollständige Identität und
+bei abgeschlossenen/widerrufenen/abgelaufenen Einladungen keine E-Mail mehr aus.
+Vor einem Pilot müssen zusätzlich eine freigegebene Aufbewahrungsfrist (technische
+Vorgabe: höchstens 90 Tage nach Abschluss/Widerruf/Ablauf), ein regelmäßig
+überwachter Anonymisierungs- oder Löschjob und ein Prozess für ausgeschiedene
+Mitglieder festgelegt werden. Audit-Ereignisse behalten nur minimale, token- und
+trainingsdatenfreie Metadaten. Stufe 1A liefert keine vollständigen Rechtsdokumente.
+
+### Zusätzliche Release-Checks
+
+- [ ] Migration 005 auf leerer und bestehender Stage-0C-Datenbank grün
+- [ ] persönliche Tabellen-Counts und Verknüpfungen vor/nach 005 unverändert
+- [ ] negative Zwei-Studio-Isolationstests grün
+- [ ] Rollen-, Last-Owner-, Einladungs-Replay- und Audit-Tests grün
+- [ ] Chromium-/Axe-Studiofluss grün
+- [ ] Produktions-Delivery-Provider vorhanden oder Einladungsfunktion bewusst
+      als nicht pilotfähig blockiert
+- [ ] Einladungs-/Left-Member-Retention und verantwortlicher Owner festgehalten

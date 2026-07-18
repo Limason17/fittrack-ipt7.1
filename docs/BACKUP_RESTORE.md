@@ -344,3 +344,75 @@ Der Drop unterliegt demselben Loopback-, Environment- und Namensschutz. Containe
 Monitoring erfasst mindestens letzten erfolgreichen Completion-Zeitpunkt, Alter, Artefaktgrösse und SHA-256, lokalen und Off-host-Status, Retentionresultat, Restore-/RTO-Dauer, Doctor-/Readiness-Ergebnis, zuständigen Owner und Alarmquittierung. Secrets, Dump-Inhalte und Zugangsdaten dürfen nie als Metrik oder Logfeld erscheinen.
 
 Vor einem produktiven Einsatz sind ein freigegebener Off-host-Adapter, verschlüsselter und versionierter Storage, getrennte Least-Privilege-Rollen, Secret Store, Alarmrouting, Datenschutz-/Löschfreigabe sowie ein vollständig gemessener Disaster-Recovery-Test zwingend.
+
+## Ergänzung für Stufe 1A
+
+Logische Backups enthalten nach Migration 005 zusätzlich die Tabellen
+`studios`, `studio_memberships`, `studio_invitations` und
+`studio_audit_events`. Einladungsträger selbst sind nicht enthalten: Die
+Datenbank speichert ausschließlich 32-Byte-SHA-256-Digests. Ein Dump ist dennoch
+personenbezogen und enthält E-Mail-Adressen aus noch offenen Einladungen; Zugriff,
+Verschlüsselung und Aufbewahrung bleiben entsprechend streng.
+
+Vor und nach einem Stage-1A-Backup/Restore mindestens diese Counts erfassen:
+
+```sql
+SELECT COUNT(*) FROM studios;
+SELECT COUNT(*) FROM studio_memberships;
+SELECT COUNT(*) FROM studio_invitations;
+SELECT COUNT(*) FROM studio_audit_events;
+```
+
+Zusätzliche Restore-Invarianten:
+
+```sql
+-- keine doppelte Mitgliedschaft pro Benutzer und Studio
+SELECT studio_id, user_id, COUNT(*) AS total
+FROM studio_memberships
+GROUP BY studio_id, user_id
+HAVING COUNT(*) > 1;
+
+-- jedes Studio besitzt mindestens einen aktiven Owner
+SELECT s.public_id
+FROM studios s
+LEFT JOIN studio_memberships sm
+  ON sm.studio_id = s.id
+ AND sm.role = 'owner'
+ AND sm.status = 'active'
+GROUP BY s.id, s.public_id
+HAVING COUNT(sm.id) = 0;
+
+-- keine verwaisten tenantbezogenen Zeilen
+SELECT 'memberships' AS source, COUNT(*) AS total
+FROM studio_memberships sm LEFT JOIN studios s ON s.id = sm.studio_id
+WHERE s.id IS NULL
+UNION ALL
+SELECT 'invitations', COUNT(*)
+FROM studio_invitations si LEFT JOIN studios s ON s.id = si.studio_id
+WHERE s.id IS NULL
+UNION ALL
+SELECT 'audit', COUNT(*)
+FROM studio_audit_events sae LEFT JOIN studios s ON s.id = sae.studio_id
+WHERE s.id IS NULL;
+```
+
+Alle Abfragen müssen null Zeilen beziehungsweise `total = 0` liefern. Zusätzlich
+müssen offene Token-Hashes genau 32 Byte lang sein, Rollen/Statuswerte den Checks
+entsprechen und ein fremder Testbenutzer darf über öffentliche oder erratene
+interne IDs keine Studiodaten lesen.
+
+Ein Stage-1A-Restore-Drill umfasst nach Doctor/Readiness mindestens:
+
+1. Login eines bestehenden persönlichen Testbenutzers und read-only Abruf eines
+   bestehenden persönlichen Workouts;
+2. Abruf der autorisierten Studioliste;
+3. read-only Abruf einer bekannten eigenen Studio-Mitgliedschaft;
+4. negative Abfrage derselben Studio-ID durch einen fremden Testbenutzer;
+5. Vergleich eines bekannten Audit-Ereignisses ohne Ausgabe von Token- oder
+   vollständigen Requestdaten.
+
+Im Restore-Drill werden keine Einladungen versendet oder angenommen. Development-
+Outbox, E-Mail-Provider und sonstige externe Benachrichtigungen bleiben deaktiviert.
+Die monatliche Drill-Dokumentation nimmt zusätzlich Migration-005-Status,
+Studio-/Membership-/Invitation-/Audit-Counts, Owner-Invariante und Ergebnis des
+negativen Tenant-Smokes auf.
