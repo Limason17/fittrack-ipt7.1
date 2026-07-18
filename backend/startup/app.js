@@ -3,6 +3,7 @@ const cors = require("cors");
 const {
     errorHandler: defaultErrorHandler,
     notFoundHandler: defaultNotFoundHandler,
+    createRequestLoggingMiddleware,
     requestIdMiddleware,
     securityHeaders
 } = require("../middleware/httpFoundation");
@@ -28,6 +29,20 @@ function allowedOrigins() {
             }
             return parsed.origin.toLowerCase();
         });
+}
+
+function readTrustProxyHops(env = process.env) {
+    const value = env.TRUST_PROXY_HOPS;
+    if (value === undefined || value === null || value === "") {
+        return 0;
+    }
+    const hops = Number(value);
+    if (!Number.isInteger(hops) || hops < 0 || hops > 10) {
+        const error = new Error("TRUST_PROXY_HOPS must be an integer between 0 and 10.");
+        error.code = "INVALID_PROXY_CONFIG";
+        throw error;
+    }
+    return hops;
 }
 
 function createCorsOptions(configuredOrigins = allowedOrigins()) {
@@ -108,8 +123,13 @@ function createApp({
 
     const app = express();
     app.disable("x-powered-by");
+    const trustProxyHops = readTrustProxyHops();
+    if (trustProxyHops > 0) {
+        app.set("trust proxy", trustProxyHops);
+    }
     app.locals.logger = logger;
     app.use(requestIdMiddleware);
+    app.use(createRequestLoggingMiddleware());
     app.use(securityHeaders);
 
     if (typeof beforeMiddleware === "function") {
@@ -148,5 +168,6 @@ module.exports = {
     createApp,
     createCorsOptions,
     createReadyHandler,
+    readTrustProxyHops,
     sendLive
 };

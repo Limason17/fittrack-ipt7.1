@@ -1,12 +1,14 @@
 const REDACTED = "[REDACTED]";
-const SENSITIVE_KEY_PATTERN = /password|secret|token|authorization|cookie|credential/i;
+const SENSITIVE_KEY_PATTERN = /password|passphrase|secret|token|authorization|cookie|credential|jwt|refresh/i;
 
 function redactString(value) {
     return String(value)
         .replace(
-            /((?:password|secret|token|authorization|cookie|credential)\s*[=:]\s*)[^\s,;]+/gi,
+            /((?:password|passphrase|secret|token|authorization|cookie|credential|jwt|refresh)\s*[=:]\s*)[^\s,;]+/gi,
             `$1${REDACTED}`
         )
+        .replace(/\bBearer\s+[^\s,;]+/gi, `Bearer ${REDACTED}`)
+        .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, REDACTED)
         .replace(/:\/\/[^/@\s]+@/g, `://${REDACTED}@`);
 }
 
@@ -24,10 +26,16 @@ function sanitize(value, seen = new WeakSet()) {
     }
 
     if (value instanceof Error) {
+        if (seen.has(value)) {
+            return "[Circular]";
+        }
+        seen.add(value);
         return {
             name: value.name,
             code: value.code || undefined,
-            message: redactString(value.message)
+            message: redactString(value.message),
+            stack: value.stack ? redactString(value.stack) : undefined,
+            cause: value.cause ? sanitize(value.cause, seen) : undefined
         };
     }
 

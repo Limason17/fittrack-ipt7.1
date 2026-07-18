@@ -49,4 +49,53 @@ function createFixedWindowRateLimiter({
     };
 }
 
-module.exports = { createFixedWindowRateLimiter };
+function positiveInteger(value, fallback, name) {
+    if (value === undefined || value === null || value === "") {
+        return fallback;
+    }
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+        throw new TypeError(`${name} must be a positive integer.`);
+    }
+    return parsed;
+}
+
+function createAuthRateLimiters(options = {}) {
+    const env = options.env || process.env;
+    const now = options.now || Date.now;
+    const loginWindowMs = options.loginWindowMs ?? positiveInteger(
+        env.AUTH_LOGIN_RATE_LIMIT_WINDOW_MS,
+        15 * 60 * 1000,
+        "AUTH_LOGIN_RATE_LIMIT_WINDOW_MS"
+    );
+    const loginMax = options.loginMax ?? positiveInteger(
+        env.AUTH_LOGIN_RATE_LIMIT_MAX,
+        10,
+        "AUTH_LOGIN_RATE_LIMIT_MAX"
+    );
+    const registrationWindowMs = options.registrationWindowMs ?? positiveInteger(
+        env.AUTH_REGISTRATION_RATE_LIMIT_WINDOW_MS,
+        60 * 60 * 1000,
+        "AUTH_REGISTRATION_RATE_LIMIT_WINDOW_MS"
+    );
+    const registrationMax = options.registrationMax ?? positiveInteger(
+        env.AUTH_REGISTRATION_RATE_LIMIT_MAX,
+        5,
+        "AUTH_REGISTRATION_RATE_LIMIT_MAX"
+    );
+
+    return {
+        login: createFixedWindowRateLimiter({ windowMs: loginWindowMs, max: loginMax, now }),
+        registration: createFixedWindowRateLimiter({
+            windowMs: registrationWindowMs,
+            max: registrationMax,
+            now
+        })
+    };
+}
+
+module.exports = {
+    createAuthRateLimiters,
+    createFixedWindowRateLimiter,
+    positiveInteger
+};

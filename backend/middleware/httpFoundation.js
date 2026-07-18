@@ -24,6 +24,33 @@ function securityHeaders(req, res, next) {
     next();
 }
 
+function requestRoute(req) {
+    const routePath = typeof req.route?.path === "string" ? req.route.path : null;
+    if (routePath) {
+        const suffix = routePath === "/" ? "" : routePath;
+        const joined = `${req.baseUrl || ""}${suffix}` || "/";
+        return joined.replace(/\/{2,}/g, "/");
+    }
+    return req.path || String(req.originalUrl || "/").split("?", 1)[0] || "/";
+}
+
+function createRequestLoggingMiddleware({ now = () => Number(process.hrtime.bigint()) / 1e6 } = {}) {
+    return function requestLoggingMiddleware(req, res, next) {
+        const startedAt = now();
+        res.once("finish", () => {
+            const logger = req.app?.locals?.logger;
+            logger?.info?.("api_request_completed", {
+                requestId: req.requestId,
+                method: req.method,
+                route: requestRoute(req),
+                status: res.statusCode,
+                durationMs: Math.round((now() - startedAt) * 100) / 100
+            });
+        });
+        next();
+    };
+}
+
 function notFoundHandler(req, res, next) {
     next(new NotFoundError("Route not found."));
 }
@@ -52,14 +79,21 @@ function errorHandler(error, req, res, next) { // eslint-disable-line no-unused-
         : "An unexpected error occurred.";
     const logger = req.app?.locals?.logger || console;
 
-    logger.error("api_request_failed", {
+    const logFields = {
         requestId: req.requestId,
         method: req.method,
-        path: req.originalUrl,
+        route: requestRoute(req),
         status,
         code,
         errorName: error?.name || "Error"
-    });
+    };
+    if (status >= 500) {
+        logFields.error = normalizedError;
+    }
+    const logMethod = status >= 500
+        ? logger.error
+        : (logger.warn || logger.info || logger.error);
+    logMethod?.call(logger, status >= 500 ? "api_request_failed" : "api_request_rejected", logFields);
 
     const responseError = {
         code,
@@ -75,8 +109,10 @@ function errorHandler(error, req, res, next) { // eslint-disable-line no-unused-
 }
 
 module.exports = {
+    createRequestLoggingMiddleware,
     errorHandler,
     notFoundHandler,
+    requestRoute,
     requestIdMiddleware,
     securityHeaders
 };

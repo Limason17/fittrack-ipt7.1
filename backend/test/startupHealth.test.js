@@ -3,7 +3,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { afterEach, test } = require("node:test");
 
-const { createApp } = require("../startup/app");
+const { createApp, readTrustProxyHops } = require("../startup/app");
 const { bootstrap } = require("../startup/bootstrap");
 const { createReadinessProbe } = require("../startup/readiness");
 
@@ -80,6 +80,19 @@ test("Server-Modulimport startet weder Listener noch DB-/Migration-I/O", async (
     assert.equal(result.code, 0, result.stderr || result.signal);
     assert.equal(result.stdout, "");
     assert.equal(result.stderr, "");
+});
+
+test("proxy trust requires an explicit bounded hop count", () => {
+    assert.equal(readTrustProxyHops({}), 0);
+    assert.equal(readTrustProxyHops({ TRUST_PROXY_HOPS: "2" }), 2);
+    assert.throws(
+        () => readTrustProxyHops({ TRUST_PROXY_HOPS: "all" }),
+        (error) => error.code === "INVALID_PROXY_CONFIG"
+    );
+    assert.throws(
+        () => readTrustProxyHops({ TRUST_PROXY_HOPS: "11" }),
+        (error) => error.code === "INVALID_PROXY_CONFIG"
+    );
 });
 
 function createBootstrapHarness(overrides = {}) {

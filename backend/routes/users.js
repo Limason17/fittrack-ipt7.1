@@ -4,7 +4,7 @@ const jwt = require("jsonwebtoken");
 const db = require("../config/db");
 const { JWT_SECRET } = require("../config/auth");
 const authenticateToken = require("../middleware/authMiddleware");
-const { createFixedWindowRateLimiter } = require("../middleware/rateLimiter");
+const { createAuthRateLimiters } = require("../middleware/rateLimiter");
 const {
     AuthenticationError,
     ConflictError,
@@ -18,14 +18,10 @@ const {
 
 const router = express.Router();
 
-const loginRateLimiter = createFixedWindowRateLimiter({
-    windowMs: 15 * 60 * 1000,
-    max: 10
-});
-const registrationRateLimiter = createFixedWindowRateLimiter({
-    windowMs: 60 * 60 * 1000,
-    max: 5
-});
+const {
+    login: loginRateLimiter,
+    registration: registrationRateLimiter
+} = createAuthRateLimiters();
 
 function normalizeLanguage(value) {
     return value === "en" ? "en" : "de";

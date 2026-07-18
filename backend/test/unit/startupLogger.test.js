@@ -24,6 +24,10 @@ test("strukturierte Logs sind valides JSON und redigieren Secrets rekursiv", () 
     logger.error("startup_failed", {
         error,
         password: "plain-secret",
+        dbPassword: "database-secret",
+        jwt: "eyJheader.payload.signature",
+        refresh: "refresh-secret",
+        cookie: "session=private-cookie",
         nested: { authorization: "Bearer secret-token" }
     });
 
@@ -32,6 +36,7 @@ test("strukturierte Logs sind valides JSON und redigieren Secrets rekursiv", () 
     assert.equal(parsed.level, "error");
     assert.equal(parsed.event, "startup_failed");
     assert.equal(parsed.error.code, "ECONNREFUSED");
+    assert.equal(typeof parsed.error.stack, "string");
     assert.equal(parsed.password, "[REDACTED]");
     assert.equal(parsed.nested.authorization, "[REDACTED]");
 
@@ -40,6 +45,10 @@ test("strukturierte Logs sind valides JSON und redigieren Secrets rekursiv", () 
         "abc123",
         "supersecret",
         "plain-secret",
+        "database-secret",
+        "eyJheader.payload.signature",
+        "refresh-secret",
+        "private-cookie",
         "secret-token"
     ]) {
         assert.equal(lines[0].includes(secret), false);
