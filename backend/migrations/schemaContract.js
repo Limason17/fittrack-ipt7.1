@@ -371,6 +371,206 @@ const historyConstraints = [
     )
 ];
 
+const studioMigrationId = "005_studio_tenancy_and_rbac";
+const studioExistingTableElement = { pendingMissingAllowed: false };
+
+const studioTables = [
+    "studios",
+    "studio_memberships",
+    "studio_invitations",
+    "studio_audit_events"
+].map((name) => table(studioMigrationId, name));
+
+const studioColumns = [
+    ["studios", "id", "int", false],
+    ["studios", "public_id", "char(36)", false],
+    ["studios", "name", "varchar(120)", false],
+    ["studios", "slug", "varchar(80)", false],
+    ["studios", "status", "varchar(16)", false],
+    ["studios", "default_locale", "varchar(10)", false],
+    ["studios", "default_timezone", "varchar(64)", false],
+    ["studios", "default_weight_unit", "varchar(4)", false],
+    ["studios", "created_by_user_id", "int", false],
+    ["studios", "created_at", "timestamp(3)", false],
+    ["studios", "updated_at", "timestamp(3)", false],
+
+    ["studio_memberships", "id", "int", false],
+    ["studio_memberships", "public_id", "char(36)", false],
+    ["studio_memberships", "studio_id", "int", false],
+    ["studio_memberships", "user_id", "int", false],
+    ["studio_memberships", "role", "varchar(16)", false],
+    ["studio_memberships", "status", "varchar(16)", false],
+    ["studio_memberships", "invited_by_user_id", "int", true],
+    ["studio_memberships", "joined_at", "timestamp(3)", true],
+    ["studio_memberships", "created_at", "timestamp(3)", false],
+    ["studio_memberships", "updated_at", "timestamp(3)", false],
+
+    ["studio_invitations", "id", "int", false],
+    ["studio_invitations", "public_id", "char(36)", false],
+    ["studio_invitations", "studio_id", "int", false],
+    ["studio_invitations", "email_normalized", "varchar(254)", false],
+    ["studio_invitations", "role", "varchar(16)", false],
+    ["studio_invitations", "token_hash", "binary(32)", false],
+    ["studio_invitations", "status", "varchar(16)", false],
+    ["studio_invitations", "expires_at", "timestamp(3)", false],
+    ["studio_invitations", "invited_by_user_id", "int", true],
+    ["studio_invitations", "accepted_by_user_id", "int", true],
+    ["studio_invitations", "accepted_at", "timestamp(3)", true],
+    ["studio_invitations", "created_at", "timestamp(3)", false],
+    ["studio_invitations", "revoked_at", "timestamp(3)", true],
+
+    ["studio_audit_events", "id", "bigint", false],
+    ["studio_audit_events", "public_id", "char(36)", false],
+    ["studio_audit_events", "studio_id", "int", false],
+    ["studio_audit_events", "actor_user_id", "int", true],
+    ["studio_audit_events", "event_type", "varchar(64)", false],
+    ["studio_audit_events", "target_type", "varchar(32)", true],
+    ["studio_audit_events", "target_public_id", "char(36)", true],
+    ["studio_audit_events", "details_json", "json", true],
+    ["studio_audit_events", "created_at", "timestamp(3)", false]
+].map(([tableName, columnName, columnType, nullable]) =>
+    column(
+        studioMigrationId,
+        tableName,
+        columnName,
+        columnType,
+        nullable,
+        studioExistingTableElement
+    )
+);
+
+const studioIndexes = [
+    ["studios", "PRIMARY", ["id"], true],
+    ["studios", "uq_studios_public_id", ["public_id"], true],
+    ["studios", "uq_studios_slug", ["slug"], true],
+    ["studios", "idx_studios_created_by_user", ["created_by_user_id"], false],
+
+    ["studio_memberships", "PRIMARY", ["id"], true],
+    ["studio_memberships", "uq_studio_memberships_public_id", ["public_id"], true],
+    [
+        "studio_memberships",
+        "uq_studio_memberships_studio_user",
+        ["studio_id", "user_id"],
+        true
+    ],
+    [
+        "studio_memberships",
+        "idx_studio_memberships_user_status",
+        ["user_id", "status"],
+        false
+    ],
+    [
+        "studio_memberships",
+        "idx_studio_memberships_studio_role_status",
+        ["studio_id", "role", "status"],
+        false
+    ],
+    [
+        "studio_memberships",
+        "idx_studio_memberships_invited_by_user",
+        ["invited_by_user_id"],
+        false
+    ],
+
+    ["studio_invitations", "PRIMARY", ["id"], true],
+    ["studio_invitations", "uq_studio_invitations_public_id", ["public_id"], true],
+    ["studio_invitations", "uq_studio_invitations_token_hash", ["token_hash"], true],
+    [
+        "studio_invitations",
+        "idx_studio_invitations_studio_status_expires",
+        ["studio_id", "status", "expires_at"],
+        false
+    ],
+    [
+        "studio_invitations",
+        "idx_studio_invitations_email_status",
+        ["email_normalized", "status"],
+        false
+    ],
+    [
+        "studio_invitations",
+        "idx_studio_invitations_invited_by_user",
+        ["invited_by_user_id"],
+        false
+    ],
+    [
+        "studio_invitations",
+        "idx_studio_invitations_accepted_by_user",
+        ["accepted_by_user_id"],
+        false
+    ],
+
+    ["studio_audit_events", "PRIMARY", ["id"], true],
+    ["studio_audit_events", "uq_studio_audit_events_public_id", ["public_id"], true],
+    [
+        "studio_audit_events",
+        "idx_studio_audit_events_studio_created_id",
+        ["studio_id", "created_at", "id"],
+        false
+    ],
+    [
+        "studio_audit_events",
+        "idx_studio_audit_events_actor_created_id",
+        ["actor_user_id", "created_at", "id"],
+        false
+    ]
+].map(([tableName, indexName, columns, unique]) =>
+    index(
+        studioMigrationId,
+        tableName,
+        indexName,
+        columns,
+        unique,
+        studioExistingTableElement
+    )
+);
+
+const studioForeignKeys = [
+    ["studios", "fk_studios_created_by_user", ["created_by_user_id"], "users", ["id"], "RESTRICT"],
+    ["studio_memberships", "fk_studio_memberships_studio", ["studio_id"], "studios", ["id"], "CASCADE"],
+    ["studio_memberships", "fk_studio_memberships_user", ["user_id"], "users", ["id"], "RESTRICT"],
+    ["studio_memberships", "fk_studio_memberships_invited_by_user", ["invited_by_user_id"], "users", ["id"], "SET NULL"],
+    ["studio_invitations", "fk_studio_invitations_studio", ["studio_id"], "studios", ["id"], "CASCADE"],
+    ["studio_invitations", "fk_studio_invitations_invited_by_user", ["invited_by_user_id"], "users", ["id"], "SET NULL"],
+    ["studio_invitations", "fk_studio_invitations_accepted_by_user", ["accepted_by_user_id"], "users", ["id"], "SET NULL"],
+    ["studio_audit_events", "fk_studio_audit_events_studio", ["studio_id"], "studios", ["id"], "CASCADE"],
+    ["studio_audit_events", "fk_studio_audit_events_actor_user", ["actor_user_id"], "users", ["id"], "SET NULL"]
+].map(([
+    tableName,
+    constraintName,
+    columns,
+    referencedTable,
+    referencedColumns,
+    deleteRule
+]) =>
+    foreignKey(
+        studioMigrationId,
+        tableName,
+        constraintName,
+        columns,
+        referencedTable,
+        referencedColumns,
+        deleteRule,
+        studioExistingTableElement
+    )
+);
+
+const studioChecks = [
+    ["studios", "chk_studios_status"],
+    ["studios", "chk_studios_default_weight_unit"],
+    ["studio_memberships", "chk_studio_memberships_role"],
+    ["studio_memberships", "chk_studio_memberships_status"],
+    ["studio_invitations", "chk_studio_invitations_role"],
+    ["studio_invitations", "chk_studio_invitations_status"]
+].map(([tableName, constraintName]) =>
+    checkConstraint(
+        studioMigrationId,
+        tableName,
+        constraintName,
+        studioExistingTableElement
+    )
+);
+
 const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
     {
         migrationId: "001_initial_schema",
@@ -392,6 +592,16 @@ const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
     {
         migrationId: "004_training_history_consistency",
         checks: [...historyColumns, ...historyIndexes, ...historyConstraints]
+    },
+    {
+        migrationId: studioMigrationId,
+        checks: [
+            ...studioTables,
+            ...studioColumns,
+            ...studioIndexes,
+            ...studioForeignKeys,
+            ...studioChecks
+        ]
     }
 ]);
 
