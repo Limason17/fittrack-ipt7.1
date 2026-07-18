@@ -4,6 +4,8 @@ import { RouterLink, useRouter } from 'vue-router'
 import { authToken, authUser, logout } from '../utils/auth'
 import { locale, t, toggleLanguage } from '../utils/i18n'
 import { distanceUnit, toggleDistanceUnit, weightUnit, toggleWeightUnit } from '../utils/units'
+import { activeStudio, canManageActiveStudio, canViewActiveStudioMembers } from '../utils/studioContext'
+import StudioSwitcher from './StudioSwitcher.vue'
 import fitTrackLogo from '../assets/FitTrack Logo/FitTrack Logo.png'
 
 const router = useRouter()
@@ -67,6 +69,9 @@ const ExercisesIcon = `
 
         <!-- Desktop Navigation -->
         <div v-if="loggedIn" class="ft-links desktop-only">
+          <RouterLink to="/studios" class="ft-link">
+            <span>{{ t('nav.studios') }}</span>
+          </RouterLink>
           <RouterLink to="/exercises" class="ft-link">
             <svg class="ft-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="ExercisesIcon"></svg>
             <span>{{ t('nav.exercises') }}</span>
@@ -87,10 +92,32 @@ const ExercisesIcon = `
             </svg>
             <span>{{ t('nav.progress') }}</span>
           </RouterLink>
+          <RouterLink
+            v-if="canManageActiveStudio"
+            :to="{ name: 'studio-settings', params: { studioId: activeStudio.id } }"
+            class="ft-link"
+          >
+            <span>{{ t('nav.studioSettings') }}</span>
+          </RouterLink>
+          <RouterLink
+            v-if="canViewActiveStudioMembers"
+            :to="{ name: 'studio-members', params: { studioId: activeStudio.id } }"
+            class="ft-link"
+          >
+            <span>{{ t('nav.members') }}</span>
+          </RouterLink>
+          <RouterLink
+            v-if="canManageActiveStudio"
+            :to="{ name: 'studio-invitations', params: { studioId: activeStudio.id } }"
+            class="ft-link"
+          >
+            <span>{{ t('nav.invitations') }}</span>
+          </RouterLink>
         </div>
 
         <!-- Action Section -->
         <div class="ft-actions">
+          <StudioSwitcher v-if="loggedIn" class="desktop-only" />
           <div class="ft-toggles" role="group" :aria-label="t('routing.preferences')">
             <button
                 class="ft-toggle-btn"
@@ -167,13 +194,15 @@ const ExercisesIcon = `
             id="mobile-navigation-menu"
             ref="mobileMenuRef"
             class="ft-popover mobile-only"
-            role="menu"
-            :aria-label="t('routing.mobileNavigation')"
         >
-          <div class="ft-popover-inner">
-            <div class="ft-popover-header">
-              <span class="ft-popover-user">{{ user?.username }}</span>
-            </div>
+          <div class="ft-popover-header">
+            <span class="ft-popover-user">{{ user?.username }}</span>
+            <StudioSwitcher compact @changed="closeMenu" />
+          </div>
+          <div class="ft-popover-inner" role="menu" :aria-label="t('routing.mobileNavigation')">
+            <RouterLink to="/studios" class="ft-popover-item" role="menuitem" @click="closeMenu">
+              <span>{{ t('nav.studios') }}</span>
+            </RouterLink>
             <RouterLink to="/exercises" class="ft-popover-item" role="menuitem" @click="closeMenu">
               <svg class="ft-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="ExercisesIcon"></svg>
               <span>{{ t('nav.exercises') }}</span>
@@ -193,6 +222,33 @@ const ExercisesIcon = `
                 <polyline points="17 6 23 6 23 12"></polyline>
               </svg>
               <span>{{ t('nav.progress') }}</span>
+            </RouterLink>
+            <template v-if="canManageActiveStudio">
+              <RouterLink
+                :to="{ name: 'studio-settings', params: { studioId: activeStudio.id } }"
+                class="ft-popover-item"
+                role="menuitem"
+                @click="closeMenu"
+              >
+                <span>{{ t('nav.studioSettings') }}</span>
+              </RouterLink>
+              <RouterLink
+                :to="{ name: 'studio-invitations', params: { studioId: activeStudio.id } }"
+                class="ft-popover-item"
+                role="menuitem"
+                @click="closeMenu"
+              >
+                <span>{{ t('nav.invitations') }}</span>
+              </RouterLink>
+            </template>
+            <RouterLink
+              v-if="canViewActiveStudioMembers"
+              :to="{ name: 'studio-members', params: { studioId: activeStudio.id } }"
+              class="ft-popover-item"
+              role="menuitem"
+              @click="closeMenu"
+            >
+              <span>{{ t('nav.members') }}</span>
             </RouterLink>
             <div class="ft-divider"></div>
             <button class="ft-popover-item ft-logout-text" type="button" role="menuitem" @click="handleLogout">
@@ -407,9 +463,9 @@ const ExercisesIcon = `
 /* Popover Menu */
 .ft-popover {
   position: absolute;
-  top: 56px;
+  top: 68px;
   right: 1rem;
-  width: 180px;
+  width: min(320px, calc(100vw - 2rem));
   background: white;
   border: 1px solid #eeeeee;
   border-radius: 12px;
@@ -425,7 +481,9 @@ const ExercisesIcon = `
 }
 
 .ft-popover-header {
-  padding: 0.75rem 1rem;
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.75rem;
   background: #f9f9f9;
   border-bottom: 1px solid #eeeeee;
   width: 100%;
@@ -477,6 +535,11 @@ const ExercisesIcon = `
 /* Responsive */
 .desktop-only { display: flex; }
 .mobile-only { display: none; }
+
+@media (max-width: 1120px) {
+  .desktop-only { display: none; }
+  .mobile-only { display: flex; }
+}
 
 @media (max-width: 768px) {
   .desktop-only { display: none; }

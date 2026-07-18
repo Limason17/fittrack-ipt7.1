@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 
-export const E2E_PASSWORD = 'stage0b-browser-password-32-chars'
+export const E2E_PASSWORD = 'stage1a-browser-password-32-chars'
 
 export function userFixture(id) {
   const runId = randomUUID().replaceAll('-', '').slice(0, 12)
   return {
-    username: `stage0b-${id}-${runId}`,
-    email: `stage0b-${id}-${runId}@example.test`,
+    username: `stage1a-${id}-${runId}`,
+    email: `stage1a-${id}-${runId}@example.test`,
     password: E2E_PASSWORD,
   }
 }

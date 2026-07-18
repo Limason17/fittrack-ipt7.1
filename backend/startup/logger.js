@@ -9,6 +9,10 @@ function redactString(value) {
         )
         .replace(/\bBearer\s+[^\s,;]+/gi, `Bearer ${REDACTED}`)
         .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, REDACTED)
+        .replace(
+            /(^|[^A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?=$|[^A-Za-z0-9_-])/g,
+            `$1${REDACTED}`
+        )
         .replace(/:\/\/[^/@\s]+@/g, `://${REDACTED}@`);
 }
 

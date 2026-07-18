@@ -24,8 +24,31 @@ test('Kernseiten haben keine schweren oder kritischen Axe-Verstöße', async ({ 
   await page.goto('/register')
   await expectNoSeriousAxeViolations(page)
 
-  await authenticate(page, request, accessibilityUser)
-  for (const route of ['/workouts', '/progress']) {
+  const auth = await authenticate(page, request, accessibilityUser)
+  const studioResponse = await request.post('/api/v1/studios', {
+    headers: { Authorization: `Bearer ${auth.token}` },
+    data: {
+      name: `Axe ${accessibilityUser.username}`,
+      slug: `axe-${accessibilityUser.username}`,
+      defaultLocale: 'de',
+      defaultTimezone: 'Europe/Zurich',
+      defaultWeightUnit: 'kg',
+    },
+  })
+  expect(studioResponse.status()).toBe(201)
+  const studio = (await studioResponse.json()).studio
+  for (const route of [
+    '/workouts',
+    '/progress',
+    '/studios',
+    '/studios/new',
+    `/studios/${studio.id}`,
+    `/studios/${studio.id}/settings`,
+    `/studios/${studio.id}/members`,
+    `/studios/${studio.id}/invitations`,
+    `/studios/${studio.id}/access-denied`,
+    `/invitations/${'a'.repeat(43)}`,
+  ]) {
     await page.goto(route)
     await expectNoSeriousAxeViolations(page)
   }

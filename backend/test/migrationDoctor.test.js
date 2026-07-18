@@ -9,6 +9,7 @@ const {
     isSelectOnlyStatement,
     validateLedgerRecords
 } = require("../migrations/doctor");
+const { MIGRATION_SCHEMA_CONTRACT } = require("../migrations/schemaContract");
 const { createStructuredLogger } = require("../startup/logger");
 const {
     createSafeDatabaseTarget,
@@ -223,6 +224,126 @@ test("read-only connection accepts one SELECT and rejects every write form", asy
     assert.deepEqual(queries, ["SELECT 1 AS ok"]);
 });
 
+test("Stage 1A schema contract covers every studio table, column, index and constraint", () => {
+    const contract = MIGRATION_SCHEMA_CONTRACT.find(
+        (item) => item.migrationId === "005_studio_tenancy_and_rbac"
+    );
+    assert.ok(contract);
+
+    const keys = new Set(
+        contract.checks.map((check) => {
+            if (check.kind === "table") return `table:${check.table}`;
+            if (check.kind === "column") return `column:${check.table}.${check.column}`;
+            if (check.kind === "index") return `index:${check.table}.${check.index}`;
+            return `${check.kind}:${check.table}.${check.constraint}`;
+        })
+    );
+    const expected = [
+        "table:studios",
+        "table:studio_memberships",
+        "table:studio_invitations",
+        "table:studio_audit_events",
+        "column:studios.public_id",
+        "column:studios.default_weight_unit",
+        "column:studio_memberships.joined_at",
+        "column:studio_invitations.token_hash",
+        "column:studio_invitations.revoked_at",
+        "column:studio_audit_events.details_json",
+        "index:studios.uq_studios_slug",
+        "index:studio_memberships.uq_studio_memberships_studio_user",
+        "index:studio_memberships.idx_studio_memberships_user_status",
+        "index:studio_memberships.idx_studio_memberships_studio_role_status",
+        "index:studio_invitations.uq_studio_invitations_token_hash",
+        "index:studio_invitations.idx_studio_invitations_studio_status_expires",
+        "index:studio_invitations.idx_studio_invitations_email_status",
+        "index:studio_audit_events.idx_studio_audit_events_studio_created_id",
+        "index:studio_audit_events.idx_studio_audit_events_actor_created_id",
+        "foreign_key:studios.fk_studios_created_by_user",
+        "foreign_key:studio_memberships.fk_studio_memberships_studio",
+        "foreign_key:studio_memberships.fk_studio_memberships_user",
+        "foreign_key:studio_memberships.fk_studio_memberships_invited_by_user",
+        "foreign_key:studio_invitations.fk_studio_invitations_studio",
+        "foreign_key:studio_invitations.fk_studio_invitations_invited_by_user",
+        "foreign_key:studio_invitations.fk_studio_invitations_accepted_by_user",
+        "foreign_key:studio_audit_events.fk_studio_audit_events_studio",
+        "foreign_key:studio_audit_events.fk_studio_audit_events_actor_user",
+        "check_constraint:studios.chk_studios_status",
+        "check_constraint:studios.chk_studios_default_weight_unit",
+        "check_constraint:studio_memberships.chk_studio_memberships_role",
+        "check_constraint:studio_memberships.chk_studio_memberships_status",
+        "check_constraint:studio_invitations.chk_studio_invitations_role",
+        "check_constraint:studio_invitations.chk_studio_invitations_status"
+    ];
+    for (const key of expected) assert.ok(keys.has(key), `missing schema check ${key}`);
+
+    const expectedColumns = {
+        studios: [
+            "id", "public_id", "name", "slug", "status", "default_locale",
+            "default_timezone", "default_weight_unit", "created_by_user_id",
+            "created_at", "updated_at"
+        ],
+        studio_memberships: [
+            "id", "public_id", "studio_id", "user_id", "role", "status",
+            "invited_by_user_id", "joined_at", "created_at", "updated_at"
+        ],
+        studio_invitations: [
+            "id", "public_id", "studio_id", "email_normalized", "role",
+            "token_hash", "status", "expires_at", "invited_by_user_id",
+            "accepted_by_user_id", "accepted_at", "created_at", "revoked_at"
+        ],
+        studio_audit_events: [
+            "id", "public_id", "studio_id", "actor_user_id", "event_type",
+            "target_type", "target_public_id", "details_json", "created_at"
+        ]
+    };
+    for (const [tableName, columns] of Object.entries(expectedColumns)) {
+        assert.deepEqual(
+            contract.checks
+                .filter((check) => check.kind === "column" && check.table === tableName)
+                .map((check) => check.column)
+                .sort(),
+            [...columns].sort()
+        );
+    }
+
+    const expectedIndexes = {
+        studios: [
+            "PRIMARY", "uq_studios_public_id", "uq_studios_slug",
+            "idx_studios_created_by_user"
+        ],
+        studio_memberships: [
+            "PRIMARY", "uq_studio_memberships_public_id",
+            "uq_studio_memberships_studio_user",
+            "idx_studio_memberships_user_status",
+            "idx_studio_memberships_studio_role_status",
+            "idx_studio_memberships_invited_by_user"
+        ],
+        studio_invitations: [
+            "PRIMARY", "uq_studio_invitations_public_id",
+            "uq_studio_invitations_token_hash",
+            "idx_studio_invitations_studio_status_expires",
+            "idx_studio_invitations_email_status",
+            "idx_studio_invitations_invited_by_user",
+            "idx_studio_invitations_accepted_by_user"
+        ],
+        studio_audit_events: [
+            "PRIMARY", "uq_studio_audit_events_public_id",
+            "idx_studio_audit_events_studio_created_id",
+            "idx_studio_audit_events_actor_created_id"
+        ]
+    };
+    for (const [tableName, indexes] of Object.entries(expectedIndexes)) {
+        assert.deepEqual(
+            contract.checks
+                .filter((check) => check.kind === "index" && check.table === tableName)
+                .map((check) => check.index)
+                .sort(),
+            [...indexes].sort()
+        );
+    }
+    assert.equal(contract.checks.length, 83);
+});
+
 test("CLI emits a safe JSON target without user or password and preserves exit 0", async () => {
     const lines = [];
     const logger = createStructuredLogger({
@@ -246,7 +367,7 @@ test("CLI emits a safe JSON target without user or password and preserves exit 0
         ready: true,
         recoveryRequired: false,
         summary: {
-            applied: 4,
+            applied: 5,
             pending: 0,
             dirty: 0,
             drift: 0,

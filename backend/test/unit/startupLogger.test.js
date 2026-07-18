@@ -17,8 +17,11 @@ test("strukturierte Logs sind valides JSON und redigieren Secrets rekursiv", () 
         }
     });
 
+    const invitationToken = `_${"a".repeat(41)}-`;
     const error = new Error(
-        "connect password=hunter2 token=abc123 mysql://root:supersecret@internal-db/fittrack"
+        "connect password=hunter2 token=abc123 " +
+        "mysql://root:supersecret@internal-db/fittrack " +
+        `https://app.example.test/invitations/${invitationToken}`
     );
     error.code = "ECONNREFUSED";
     logger.error("startup_failed", {
@@ -49,7 +52,8 @@ test("strukturierte Logs sind valides JSON und redigieren Secrets rekursiv", () 
         "eyJheader.payload.signature",
         "refresh-secret",
         "private-cookie",
-        "secret-token"
+        "secret-token",
+        invitationToken
     ]) {
         assert.equal(lines[0].includes(secret), false);
     }

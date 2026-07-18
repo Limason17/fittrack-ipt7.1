@@ -1,15 +1,16 @@
 import { nextTick } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
-import { isLoggedIn } from '../utils/auth'
+import { isLoggedIn, safeInternalRedirect } from '../utils/auth'
 import { t } from '../utils/i18n'
+import { hydrateStudioContext, selectStudio } from '../utils/studioContext'
 
 const routes = [
     {
         path: '/',
         name: 'home',
         component: HomeView,
-        meta: { titleKey: 'routing.titles.home' },
+        meta: { personalContext: true, titleKey: 'routing.titles.home' },
     },
     {
         path: '/login',
@@ -27,19 +28,87 @@ const routes = [
         path: '/exercises',
         name: 'exercises',
         component: () => import('../views/ExercisesView.vue'),
-        meta: { requiresAuth: true, titleKey: 'routing.titles.exercises' },
+        meta: { requiresAuth: true, personalContext: true, titleKey: 'routing.titles.exercises' },
     },
     {
         path: '/workouts',
         name: 'workouts',
         component: () => import('../views/WorkoutsView.vue'),
-        meta: { requiresAuth: true, titleKey: 'routing.titles.workouts' },
+        meta: { requiresAuth: true, personalContext: true, titleKey: 'routing.titles.workouts' },
     },
     {
         path: '/progress',
         name: 'progress',
         component: () => import('../views/ProgressView.vue'),
-        meta: { requiresAuth: true, titleKey: 'routing.titles.progress' },
+        meta: { requiresAuth: true, personalContext: true, titleKey: 'routing.titles.progress' },
+    },
+    {
+        path: '/studios',
+        name: 'studios',
+        component: () => import('../views/StudiosView.vue'),
+        meta: { requiresAuth: true, titleKey: 'routing.titles.studios' },
+    },
+    {
+        path: '/studios/new',
+        name: 'studio-create',
+        component: () => import('../views/StudioCreateView.vue'),
+        meta: { requiresAuth: true, titleKey: 'routing.titles.studioCreate' },
+    },
+    {
+        path: '/studios/:studioId',
+        name: 'studio-dashboard',
+        component: () => import('../views/StudioDashboardView.vue'),
+        meta: { requiresAuth: true, requiresStudio: true, titleKey: 'routing.titles.studioDashboard' },
+    },
+    {
+        path: '/studios/:studioId/settings',
+        name: 'studio-settings',
+        component: () => import('../views/StudioSettingsView.vue'),
+        meta: {
+            requiresAuth: true,
+            requiresStudio: true,
+            studioRoles: ['owner', 'admin'],
+            titleKey: 'routing.titles.studioSettings',
+        },
+    },
+    {
+        path: '/studios/:studioId/members',
+        name: 'studio-members',
+        component: () => import('../views/StudioMembersView.vue'),
+        meta: {
+            requiresAuth: true,
+            requiresStudio: true,
+            studioRoles: ['owner', 'admin', 'trainer'],
+            titleKey: 'routing.titles.studioMembers',
+        },
+    },
+    {
+        path: '/studios/:studioId/invitations',
+        name: 'studio-invitations',
+        component: () => import('../views/StudioInvitationsView.vue'),
+        meta: {
+            requiresAuth: true,
+            requiresStudio: true,
+            studioRoles: ['owner', 'admin'],
+            titleKey: 'routing.titles.studioInvitations',
+        },
+    },
+    {
+        path: '/studios/:studioId/access-denied',
+        name: 'studio-access-denied',
+        component: () => import('../views/StudioAccessDeniedView.vue'),
+        meta: { requiresAuth: true, requiresStudio: true, titleKey: 'routing.titles.accessDenied' },
+    },
+    {
+        path: '/invitations/:token',
+        name: 'invitation-accept',
+        component: () => import('../views/InvitationAcceptView.vue'),
+        meta: {
+            requiresAuth: true,
+            replaceAuthRedirect: true,
+            sensitiveHistory: true,
+            titleKey: 'routing.titles.invitationAccept',
+        },
     },
     {
         path: '/:pathMatch(.*)*',
@@ -54,17 +123,49 @@ const router = createRouter({
     routes,
 })
 
-router.beforeEach((to) => {
+export async function navigationGuard(to, { studioLoader } = {}) {
     const loggedIn = isLoggedIn()
 
     if (to.meta.requiresAuth && !loggedIn) {
-        return { path: '/login', query: { redirect: to.fullPath } }
+        const loginRedirect = {
+            path: '/login',
+            query: { redirect: safeInternalRedirect(to.fullPath) },
+        }
+        if (to.meta.replaceAuthRedirect) loginRedirect.replace = true
+        return loginRedirect
     }
 
     if (to.meta.guestOnly && loggedIn) {
         return '/'
     }
-})
+
+    if (to.meta.personalContext) {
+        selectStudio(null)
+    }
+
+    if (to.meta.requiresAuth && loggedIn) {
+        try {
+            const hydration = await hydrateStudioContext({
+                force: Boolean(to.meta.requiresStudio),
+                ...(studioLoader ? { loader: studioLoader } : {}),
+            })
+            if (hydration?.ignored) return false
+        } catch {
+            if (to.meta.requiresStudio) return { name: 'studios' }
+            return true
+        }
+    }
+
+    if (to.meta.requiresStudio) {
+        const studio = selectStudio(to.params.studioId)
+        if (!studio) return { name: 'studios' }
+        if (to.meta.studioRoles && !to.meta.studioRoles.includes(studio.membership.role)) {
+            return { name: 'studio-access-denied', params: { studioId: studio.id } }
+        }
+    }
+}
+
+router.beforeEach((to) => navigationGuard(to))
 
 router.afterEach(async (to) => {
     document.title = `${t(to.meta.titleKey || 'routing.titles.home')} | FitTrack`

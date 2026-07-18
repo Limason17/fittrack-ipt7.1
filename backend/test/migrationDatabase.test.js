@@ -4,6 +4,7 @@ const { after, before, test } = require("node:test");
 const mysql = require("mysql2/promise");
 
 const db = require("../config/db");
+const { loadMigrations } = require("../migrations/loader");
 const { createMigrationRunner, lockName } = require("../migrations/runner");
 
 const RUN_INTEGRATION = process.env.FITTRACK_RUN_DB_INTEGRATION !== "false";
@@ -49,6 +50,41 @@ function testMigration(id, up) {
     };
 }
 
+async function personalDataSnapshot(sql) {
+    const [counts] = await sql.query(`
+        SELECT
+            (SELECT COUNT(*) FROM users) AS users,
+            (SELECT COUNT(*) FROM exercises) AS exercises,
+            (SELECT COUNT(*) FROM workouts) AS workouts,
+            (SELECT COUNT(*) FROM workout_exercises) AS workout_exercises,
+            (SELECT COUNT(*) FROM progress_entries) AS progress_entries
+    `);
+    const [links] = await sql.query(`
+        SELECT
+            pe.id AS progress_id,
+            pe.user_id,
+            pe.workout_id,
+            pe.workout_exercise_id,
+            pe.exercise_id,
+            pe.source_type,
+            we.workout_id AS linked_workout_id,
+            we.exercise_id AS linked_exercise_id
+        FROM progress_entries pe
+        LEFT JOIN workout_exercises we ON we.id = pe.workout_exercise_id
+        ORDER BY pe.id
+    `);
+    return {
+        counts: Object.fromEntries(
+            Object.entries(counts[0]).map(([name, value]) => [name, Number(value)])
+        ),
+        links
+    };
+}
+
+async function expectMysqlError(promise, code) {
+    await assert.rejects(promise, (error) => error.code === code);
+}
+
 before(async () => {
     if (!RUN_INTEGRATION) {
         return;
@@ -86,7 +122,8 @@ test(
                     "001_initial_schema",
                     "002_legacy_schema_upgrade",
                     "003_seed_global_exercises",
-                    "004_training_history_consistency"
+                    "004_training_history_consistency",
+                    "005_studio_tenancy_and_rbac"
                 ]
             );
 
@@ -103,7 +140,8 @@ test(
                 "001_initial_schema",
                 "002_legacy_schema_upgrade",
                 "003_seed_global_exercises",
-                "004_training_history_consistency"
+                "004_training_history_consistency",
+                "005_studio_tenancy_and_rbac"
             ]);
 
             const [tables] = await pool.promise().query(
@@ -119,6 +157,10 @@ test(
                     "exercises",
                     "progress_entries",
                     "schema_migrations",
+                    "studio_audit_events",
+                    "studio_invitations",
+                    "studio_memberships",
+                    "studios",
                     "users",
                     "workout_exercises",
                     "workouts"
@@ -149,7 +191,7 @@ test(
                  FROM schema_migrations
                  ORDER BY migration_id`
             );
-            assert.equal(ledgerSnapshot.length, 4);
+            assert.equal(ledgerSnapshot.length, 5);
             assert.ok(ledgerSnapshot.every((row) => row.status === "applied"));
 
             const secondRun = await runner.migrate();
@@ -266,9 +308,19 @@ test(
                 [userResult.insertId, workoutResult.insertId, exerciseResult.insertId]
             );
 
-            const runner = createMigrationRunner({ pool, logger: silentLogger() });
-            const result = await runner.migrate();
-            assert.equal(result.applied.length, 4);
+            const migrations = loadMigrations();
+            const stage0Runner = createMigrationRunner({
+                pool,
+                migrations: migrations.slice(0, 4),
+                logger: silentLogger()
+            });
+            const stage0Result = await stage0Runner.migrate();
+            assert.deepEqual(stage0Result.applied, [
+                "001_initial_schema",
+                "002_legacy_schema_upgrade",
+                "003_seed_global_exercises",
+                "004_training_history_consistency"
+            ]);
 
             const [users] = await sql.query(
                 "SELECT username, email FROM users WHERE id = ?",
@@ -305,8 +357,291 @@ test(
             assert.equal(progress[0].exercise_category_snapshot, "Brust");
             assert.equal(progress[0].exercise_muscle_group_snapshot, "Brustmitte");
 
-            const secondRun = await runner.migrate();
+            const beforeStudioMigration = await personalDataSnapshot(sql);
+            const stage1Runner = createMigrationRunner({
+                pool,
+                migrations,
+                logger: silentLogger()
+            });
+            const stage1Result = await stage1Runner.migrate();
+            assert.deepEqual(stage1Result.applied, ["005_studio_tenancy_and_rbac"]);
+            const afterStudioMigration = await personalDataSnapshot(sql);
+            assert.deepEqual(
+                afterStudioMigration,
+                beforeStudioMigration,
+                "studio schema migration must not alter personal rows or links"
+            );
+
+            const secondRun = await stage1Runner.migrate();
             assert.deepEqual(secondRun.applied, []);
+        } finally {
+            await db.closePool(pool);
+        }
+    }
+);
+
+test(
+    "Studio-Schema erzwingt Unique-, FK-, Check- und Löschregeln",
+    { skip: !RUN_INTEGRATION },
+    async () => {
+        const database = await createDisposableDatabase();
+        const pool = createTestPool(database);
+        const sql = pool.promise();
+
+        try {
+            const runner = createMigrationRunner({ pool, logger: silentLogger() });
+            await runner.migrate();
+
+            async function createUser(username) {
+                const [result] = await sql.query(
+                    `INSERT INTO users (username, email, password_hash)
+                     VALUES (?, ?, 'test-hash')`,
+                    [username, `${username}@example.test`]
+                );
+                return result.insertId;
+            }
+
+            const creatorId = await createUser("studio-creator");
+            const memberId = await createUser("studio-member");
+            const actorId = await createUser("studio-actor");
+            const studioPublicId = "10000000-0000-4000-8000-000000000001";
+            const [studioResult] = await sql.query(
+                `INSERT INTO studios (
+                    public_id, name, slug, status, default_locale,
+                    default_timezone, default_weight_unit, created_by_user_id
+                 ) VALUES (?, 'Stage 1A Studio', 'stage-1a-studio', 'active',
+                           'de', 'Europe/Zurich', 'kg', ?)`,
+                [studioPublicId, creatorId]
+            );
+            const studioId = studioResult.insertId;
+
+            const [membershipResult] = await sql.query(
+                `INSERT INTO studio_memberships (
+                    public_id, studio_id, user_id, role, status,
+                    invited_by_user_id, joined_at
+                 ) VALUES (
+                    '20000000-0000-4000-8000-000000000001', ?, ?,
+                    'owner', 'active', ?, CURRENT_TIMESTAMP(3)
+                 )`,
+                [studioId, creatorId, actorId]
+            );
+            const tokenHash = Buffer.alloc(32, 1);
+            const [invitationResult] = await sql.query(
+                `INSERT INTO studio_invitations (
+                    public_id, studio_id, email_normalized, role, token_hash,
+                    status, expires_at, invited_by_user_id,
+                    accepted_by_user_id, accepted_at
+                 ) VALUES (
+                    '30000000-0000-4000-8000-000000000001', ?,
+                    'invitee@example.test', 'trainer', ?, 'accepted',
+                    DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 7 DAY), ?, ?,
+                    CURRENT_TIMESTAMP(3)
+                 )`,
+                [studioId, tokenHash, actorId, actorId]
+            );
+            const [auditResult] = await sql.query(
+                `INSERT INTO studio_audit_events (
+                    public_id, studio_id, actor_user_id, event_type,
+                    target_type, target_public_id, details_json
+                 ) VALUES (
+                    '40000000-0000-4000-8000-000000000001', ?, ?,
+                    'studio.created', 'studio', ?, JSON_OBJECT('source', 'migration-test')
+                 )`,
+                [studioId, actorId, studioPublicId]
+            );
+
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studios (public_id, name, slug, created_by_user_id)
+                     VALUES (?, 'Duplicate public id', 'duplicate-public-id', ?)`,
+                    [studioPublicId, creatorId]
+                ),
+                "ER_DUP_ENTRY"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studios (public_id, name, slug, created_by_user_id)
+                     VALUES ('10000000-0000-4000-8000-000000000002',
+                             'Duplicate slug', 'stage-1a-studio', ?)`,
+                    [creatorId]
+                ),
+                "ER_DUP_ENTRY"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studios (
+                        public_id, name, slug, status, created_by_user_id
+                     ) VALUES (
+                        '10000000-0000-4000-8000-000000000003',
+                        'Invalid status', 'invalid-status', 'deleted', ?
+                     )`,
+                    [creatorId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studios (
+                        public_id, name, slug, default_weight_unit, created_by_user_id
+                     ) VALUES (
+                        '10000000-0000-4000-8000-000000000004',
+                        'Invalid unit', 'invalid-unit', 'oz', ?
+                     )`,
+                    [creatorId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studios (public_id, name, slug, created_by_user_id)
+                     VALUES ('10000000-0000-4000-8000-000000000005',
+                             'Orphan studio', 'orphan-studio', 2147483647)`
+                ),
+                "ER_NO_REFERENCED_ROW_2"
+            );
+
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_memberships (
+                        public_id, studio_id, user_id, role, status
+                     ) VALUES (
+                        '20000000-0000-4000-8000-000000000002',
+                        ?, ?, 'owner', 'active'
+                     )`,
+                    [studioId, creatorId]
+                ),
+                "ER_DUP_ENTRY"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_memberships (
+                        public_id, studio_id, user_id, role, status
+                     ) VALUES (
+                        '20000000-0000-4000-8000-000000000003',
+                        ?, ?, 'viewer', 'active'
+                     )`,
+                    [studioId, memberId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_memberships (
+                        public_id, studio_id, user_id, role, status
+                     ) VALUES (
+                        '20000000-0000-4000-8000-000000000004',
+                        ?, ?, 'member', 'deleted'
+                     )`,
+                    [studioId, memberId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_memberships (
+                        public_id, studio_id, user_id, role, status
+                     ) VALUES (
+                        '20000000-0000-4000-8000-000000000005',
+                        2147483647, ?, 'member', 'active'
+                     )`,
+                    [memberId]
+                ),
+                "ER_NO_REFERENCED_ROW_2"
+            );
+
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_invitations (
+                        public_id, studio_id, email_normalized, role,
+                        token_hash, status, expires_at
+                     ) VALUES (
+                        '30000000-0000-4000-8000-000000000002', ?,
+                        'duplicate-token@example.test', 'member', ?, 'pending',
+                        DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 7 DAY)
+                     )`,
+                    [studioId, tokenHash]
+                ),
+                "ER_DUP_ENTRY"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_invitations (
+                        public_id, studio_id, email_normalized, role,
+                        token_hash, status, expires_at
+                     ) VALUES (
+                        '30000000-0000-4000-8000-000000000003', ?,
+                        'invalid-role@example.test', 'owner', ?, 'pending',
+                        DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 7 DAY)
+                     )`,
+                    [studioId, Buffer.alloc(32, 2)]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_invitations (
+                        public_id, studio_id, email_normalized, role,
+                        token_hash, status, expires_at
+                     ) VALUES (
+                        '30000000-0000-4000-8000-000000000004', ?,
+                        'invalid-status@example.test', 'member', ?, 'deleted',
+                        DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 7 DAY)
+                     )`,
+                    [studioId, Buffer.alloc(32, 3)]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_audit_events (
+                        public_id, studio_id, actor_user_id, event_type
+                     ) VALUES (
+                        '40000000-0000-4000-8000-000000000002', ?,
+                        2147483647, 'invalid.actor'
+                     )`,
+                    [studioId]
+                ),
+                "ER_NO_REFERENCED_ROW_2"
+            );
+
+            await expectMysqlError(
+                sql.query("DELETE FROM users WHERE id = ?", [creatorId]),
+                "ER_ROW_IS_REFERENCED_2"
+            );
+
+            await sql.query("DELETE FROM users WHERE id = ?", [actorId]);
+            const [membershipAfterActorDelete] = await sql.query(
+                `SELECT invited_by_user_id
+                 FROM studio_memberships WHERE id = ?`,
+                [membershipResult.insertId]
+            );
+            const [invitationAfterActorDelete] = await sql.query(
+                `SELECT invited_by_user_id, accepted_by_user_id
+                 FROM studio_invitations WHERE id = ?`,
+                [invitationResult.insertId]
+            );
+            const [auditAfterActorDelete] = await sql.query(
+                "SELECT actor_user_id FROM studio_audit_events WHERE id = ?",
+                [auditResult.insertId]
+            );
+            assert.equal(membershipAfterActorDelete[0].invited_by_user_id, null);
+            assert.equal(invitationAfterActorDelete[0].invited_by_user_id, null);
+            assert.equal(invitationAfterActorDelete[0].accepted_by_user_id, null);
+            assert.equal(auditAfterActorDelete[0].actor_user_id, null);
+
+            await sql.query("DELETE FROM studios WHERE id = ?", [studioId]);
+            const [childCounts] = await sql.query(`
+                SELECT
+                    (SELECT COUNT(*) FROM studio_memberships) AS memberships,
+                    (SELECT COUNT(*) FROM studio_invitations) AS invitations,
+                    (SELECT COUNT(*) FROM studio_audit_events) AS audit_events
+            `);
+            assert.deepEqual(
+                Object.fromEntries(
+                    Object.entries(childCounts[0]).map(([name, value]) => [name, Number(value)])
+                ),
+                { memberships: 0, invitations: 0, audit_events: 0 }
+            );
         } finally {
             await db.closePool(pool);
         }
