@@ -1,11 +1,13 @@
+import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 
 export const E2E_PASSWORD = 'stage0b-browser-password-32-chars'
 
 export function userFixture(id) {
+  const runId = randomUUID().replaceAll('-', '').slice(0, 12)
   return {
-    username: `stage0b-${id}`,
-    email: `stage0b-${id}@example.test`,
+    username: `stage0b-${id}-${runId}`,
+    email: `stage0b-${id}-${runId}@example.test`,
     password: E2E_PASSWORD,
   }
 }
@@ -46,10 +48,16 @@ export async function attachAuth(page, auth) {
   }, { token: auth.token, authUser: auth.user })
 }
 
-export async function chooseExercise(page, name = 'Bench Press') {
+export async function chooseExercise(page, name = 'Bench Press', { keyboard = false } = {}) {
   const dialog = page.getByRole('dialog', { name: 'Übung auswählen' })
   await expect(dialog).toBeVisible()
   const card = dialog.locator('.picker-card').filter({ hasText: name }).first()
-  await card.getByRole('button', { name: 'Übung auswählen' }).click()
+  const selection = card.getByRole('button', { name: 'Übung auswählen' })
+  if (keyboard) {
+    await selection.focus()
+    await page.keyboard.press('Enter')
+  } else {
+    await selection.click()
+  }
   await expect(dialog).toBeHidden()
 }

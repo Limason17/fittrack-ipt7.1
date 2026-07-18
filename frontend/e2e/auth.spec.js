@@ -18,7 +18,8 @@ test('Registrierung, geschützte Weiterleitung und Login funktionieren im Browse
   await page.goto('/workouts')
   await page.getByLabel('E-Mail').fill(user.email)
   await page.getByLabel('Passwort').fill(user.password)
-  await page.getByRole('button', { name: 'Login' }).click()
+  await page.getByLabel('Passwort').focus()
+  await page.keyboard.press('Enter')
 
   await expect(page).toHaveURL(/\/workouts$/)
   await expect(page.getByRole('heading', { name: 'Deine Trainingspläne' })).toBeVisible()
