@@ -20,6 +20,7 @@ import {
   normalizeWeightValue,
   weightUnit,
 } from '../utils/units'
+import { convertWeightInputValue } from '../utils/measurements'
 import { normalizeExercise, normalizeWorkout } from '../utils/taxonomy'
 
 const workouts = ref([])
@@ -68,7 +69,13 @@ function dateInputValue(date = new Date()) {
 
 function emptyWorkoutExercise() {
   return {
+    workout_exercise_id: null,
     exercise_id: '',
+    preserve_snapshot: false,
+    exercise_name_snapshot: null,
+    exercise_category_snapshot: null,
+    exercise_muscle_group_snapshot: null,
+    exercise_image_url_snapshot: null,
     sets: 3,
     reps: 10,
     weight: '',
@@ -200,7 +207,7 @@ function openCreateForm() {
 
 function scrollToWorkoutForm() {
   nextTick(() => {
-    workoutFormRef.value?.scrollIntoView({
+    workoutFormRef.value?.scrollIntoView?.({
       behavior: 'smooth',
       block: 'start',
     })
@@ -230,12 +237,26 @@ function selectedExerciseById(exerciseId) {
   return exercises.value.find((exercise) => Number(exercise.id) === Number(exerciseId))
 }
 
+function displayExerciseForRow(row) {
+  if (row.preserve_snapshot && row.exercise_name_snapshot) {
+    return {
+      id: row.exercise_id,
+      name: row.exercise_name_snapshot,
+      category: row.exercise_category_snapshot,
+      muscle_group: row.exercise_muscle_group_snapshot,
+      image_url: row.exercise_image_url_snapshot,
+    }
+  }
+
+  return selectedExerciseById(row.exercise_id)
+}
+
 function isCardioExercise(exercise) {
   return exercise?.category === 'Cardio'
 }
 
 function isCardioRow(row) {
-  return isCardioExercise(selectedExerciseById(row.exercise_id))
+  return isCardioExercise(displayExerciseForRow(row))
 }
 
 function openExercisePicker(index) {
@@ -254,7 +275,9 @@ function chooseExercise(exercise) {
   }
 
   const row = form.value.exercises[pickerRowIndex.value]
+  row.workout_exercise_id = null
   row.exercise_id = exercise.id
+  row.preserve_snapshot = false
 
   if (isCardioExercise(exercise)) {
     row.duration_minutes = row.duration_minutes || 30
@@ -311,8 +334,16 @@ function validWorkoutForm() {
 }
 
 function workoutExercisePayload(row) {
+  const identity = {
+    workout_exercise_id:
+        row.workout_exercise_id === null || row.workout_exercise_id === undefined
+            ? null
+            : Number(row.workout_exercise_id),
+  }
+
   if (isCardioRow(row)) {
     return {
+      ...identity,
       exercise_id: Number(row.exercise_id),
       duration_minutes: Number(row.duration_minutes),
       distance_km: row.distance_km === '' ? null : normalizeDistanceValue(row.distance_km),
@@ -321,6 +352,7 @@ function workoutExercisePayload(row) {
   }
 
   return {
+    ...identity,
     exercise_id: Number(row.exercise_id),
     sets: Number(row.sets),
     reps: Number(row.reps),
@@ -372,10 +404,19 @@ function startEditWorkout(workout) {
     workout_date: workout.workout_date || dateInputValue(),
     notes: workout.notes || '',
     exercises: workout.exercises.map((exercise) => ({
+      workout_exercise_id: exercise.id ?? null,
       exercise_id: exercise.exercise_id,
+      preserve_snapshot: true,
+      exercise_name_snapshot: exercise.name,
+      exercise_category_snapshot: exercise.category,
+      exercise_muscle_group_snapshot: exercise.muscle_group,
+      exercise_image_url_snapshot: exercise.image_url,
       sets: exercise.sets ?? 3,
       reps: exercise.reps ?? 10,
-      weight: exercise.weight ? formatWeightValue(exercise.weight).toFixed(1) : '',
+      weight:
+          exercise.weight === null || exercise.weight === undefined
+              ? ''
+              : convertWeightInputValue(exercise.weight, 'kg', weightUnit.value),
       duration_minutes: exercise.duration_minutes ?? 30,
       distance_km:
           exercise.distance_km === null || exercise.distance_km === undefined
@@ -495,6 +536,12 @@ watch(distanceUnit, (newUnit, oldUnit) => {
     row.distance_km = convertedDistance === null ? '' : convertedDistance.toFixed(2)
   })
 })
+
+watch(weightUnit, (newUnit, oldUnit) => {
+  form.value.exercises.forEach((row) => {
+    row.weight = convertWeightInputValue(row.weight, oldUnit, newUnit)
+  })
+})
 </script>
 
 <template>
@@ -572,20 +619,20 @@ watch(distanceUnit, (newUnit, oldUnit) => {
                   type="button"
                   @click="openExercisePicker(index)"
               >
-                <template v-if="selectedExerciseById(row.exercise_id)">
+                <template v-if="displayExerciseForRow(row)">
                   <span class="choice-media">
                     <img
-                        v-if="getExerciseImage(selectedExerciseById(row.exercise_id).name) || selectedExerciseById(row.exercise_id).image_url"
-                        :src="getExerciseImage(selectedExerciseById(row.exercise_id).name) || selectedExerciseById(row.exercise_id).image_url"
-                        :alt="selectedExerciseById(row.exercise_id).name"
+                        v-if="getExerciseImage(displayExerciseForRow(row).name) || displayExerciseForRow(row).image_url"
+                        :src="getExerciseImage(displayExerciseForRow(row).name) || displayExerciseForRow(row).image_url"
+                        :alt="displayExerciseForRow(row).name"
                     />
                   </span>
                   <span class="choice-body">
-                    <strong>{{ selectedExerciseById(row.exercise_id).name }}</strong>
+                    <strong>{{ displayExerciseForRow(row).name }}</strong>
                     <small>
-                      {{ translateCategory(selectedExerciseById(row.exercise_id).category) }}
+                      {{ translateCategory(displayExerciseForRow(row).category) }}
                       -
-                      {{ translateMuscleGroup(selectedExerciseById(row.exercise_id).muscle_group) }}
+                      {{ translateMuscleGroup(displayExerciseForRow(row).muscle_group) }}
                     </small>
                   </span>
                   <span class="choice-action">{{ t('workouts.changeExercise') }}</span>
@@ -655,7 +702,7 @@ watch(distanceUnit, (newUnit, oldUnit) => {
                     class="input"
                     type="number"
                     min="0"
-                    step="0.25"
+                    step="0.0001"
                     :placeholder="weightUnit"
                 />
               </div>
