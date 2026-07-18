@@ -71,7 +71,7 @@ function createMigrationRunner({
         }
     }
 
-    async function migrate() {
+    async function migrate({ expectedDatabase } = {}) {
         const connection = await promisePool(pool).getConnection();
         const helpers = createSchemaHelpers(connection);
         const store = createMigrationStore(connection, helpers);
@@ -80,6 +80,16 @@ function createMigrationRunner({
         let acquired = false;
 
         try {
+            if (expectedDatabase !== undefined && databaseName !== expectedDatabase) {
+                throw runnerError(
+                    "MIGRATION_TARGET_MISMATCH",
+                    "The selected database does not match the confirmed migration target.",
+                    {
+                        expectedDatabase,
+                        actualDatabase: databaseName
+                    }
+                );
+            }
             await acquireLock(connection, advisoryLockName, lockTimeoutSeconds);
             acquired = true;
             await store.ensureTable();

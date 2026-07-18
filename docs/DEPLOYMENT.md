@@ -1,15 +1,15 @@
 # FitTrack Deployment
 
-Diese Anleitung beschreibt den Betriebsvertrag von Stufe 0A. `docker-compose.yml` stellt nur eine lokale MySQL-Instanz bereit und ist keine Produktionsarchitektur.
+Diese Anleitung beschreibt den Betriebsvertrag nach Stufe 0C. `docker-compose.yml` stellt weiterhin nur eine lokale MySQL-Instanz bereit und ist keine Produktionsarchitektur.
 
 ## Festgelegte Toolchain
 
 - Node.js: `22.17.0` aus `.nvmrc`
 - npm: `10.9.2` beziehungsweise kompatibles npm 10
 - Datenbank: MySQL 8.0
-- Reproduzierbare Installation: `npm ci`, nicht `npm install`
+- reproduzierbare Installation: `npm ci`, nicht `npm install`
 
-CI verwendet Node 22.17.0 und MySQL 8.0. Vor einem Release müssen beide CI-Jobs grün sein.
+CI verwendet Node 22.17.0 und MySQL 8.0. Vor einem Release müssen alle verbindlichen Remote-CI-Jobs für den exakten Commit erfolgreich sein.
 
 ## Backend-Umgebung
 
@@ -17,18 +17,20 @@ Produktionswerte gehören in den Secret Store der Zielplattform und nicht in Git
 
 | Variable | Erforderlich | Bedeutung und Grenze |
 | --- | --- | --- |
-| `NODE_ENV` | ja | In Produktion exakt `production` |
+| `NODE_ENV` | ja | Exakt `development`, `test` oder `production`; fehlende, anders geschriebene und unbekannte Werte brechen einen echten Server- oder Migrationsstart ab |
 | `PORT` | nein | API-Port, Standard 3001, gültig 1–65535 |
-| `DB_HOST` | ja | Hostname der MySQL-8-Instanz |
-| `DB_USER` | ja | Datenbanknutzer; beim aktuellen Auto-Migrate-Startup mit DDL-Rechten |
-| `DB_PASSWORD` | ja | Eindeutiges Produktionssecret; niemals das lokale `root`-Beispiel |
-| `DB_NAME` | ja | Zieldatenbank; nur Buchstaben, Ziffern, `_`, `$` und `-` |
-| `DB_PORT` | ja | MySQL-Port, üblicherweise 3306 |
+| `DB_HOST` | ja in Produktion | Hostname der MySQL-8-Instanz |
+| `DB_USER` | ja in Produktion | Runtime-Nutzer beim status-only Start; DDL-Nutzer nur im kontrollierten Migrationsschritt |
+| `DB_PASSWORD` | ja in Produktion | Eindeutiges Secret; niemals das lokale `root`-Beispiel |
+| `DB_NAME` | ja vor jeder Mutation | Explizites Ziel; nur Buchstaben, Ziffern, `_`, `$` und `-` |
+| `DB_PORT` | nein | MySQL-Port, Standard 3306 |
 | `DB_CONNECT_TIMEOUT_MS` | nein | 100–120000, Standard 10000 |
 | `DB_CONNECTION_LIMIT` | nein | Poolgröße 1–100, Standard 10 |
 | `DB_QUEUE_LIMIT` | nein | Warteschlangenlimit 0–100000, Standard 100; 0 = unbegrenzt |
-| `JWT_SECRET` | ja | Eindeutig, mindestens 32 Zeichen; bekannte Platzhalter werden abgelehnt |
-| `CORS_ORIGIN` | ja | Kommaseparierte HTTP(S)-Origins ohne Pfad, zum Beispiel `https://app.example.ch` |
+| `FITTRACK_AUTO_MIGRATE` | nein | Exakt `true` oder `false`, Standard `false`; `true` nur für einen kontrollierten Migrations-Owner |
+| `FITTRACK_MIGRATION_EXPECTED_DATABASE` | bei jeder Migration | Muss vor `db:migrate`, `db:dev:init` und Auto-Migrate exakt dem expliziten `DB_NAME` entsprechen |
+| `JWT_SECRET` | ja in Produktion | Eindeutig, mindestens 32 Zeichen; bekannte Platzhalter werden abgelehnt |
+| `CORS_ORIGIN` | ja in Produktion | Kommaseparierte HTTP(S)-Origins ohne Pfad |
 
 Beispiel ohne echte Secrets:
 
@@ -36,18 +38,105 @@ Beispiel ohne echte Secrets:
 NODE_ENV=production
 PORT=3001
 DB_HOST=mysql.internal
-DB_USER=fittrack_app
+DB_USER=fittrack_runtime
 DB_PASSWORD=<secret-store-reference>
 DB_NAME=fittrack
 DB_PORT=3306
 DB_CONNECT_TIMEOUT_MS=10000
 DB_CONNECTION_LIMIT=10
 DB_QUEUE_LIMIT=100
+FITTRACK_AUTO_MIGRATE=false
+FITTRACK_MIGRATION_EXPECTED_DATABASE=fittrack
 JWT_SECRET=<unique-random-secret-at-least-32-characters>
 CORS_ORIGIN=https://app.example.ch
 ```
 
-Das aktuelle Backend wendet Migrationen beim Start an. Der Produktionsnutzer benötigt deshalb neben Laufzeitrechten auch die von den Migrationen verwendeten DDL-Rechte. Die Trennung in einen privilegierten Migrationsnutzer und einen eingeschränkten Runtime-Nutzer ist noch nicht umgesetzt.
+### Deterministische `.env`-Auflösung
+
+Lokale Backend-Konfiguration wird immer aus `backend/.env` geladen, unabhängig davon, ob der Prozess aus dem Repository-Root, aus `backend` oder über eine IDE gestartet wird. Eine `.env` im aktuellen Arbeitsverzeichnis wird nicht als alternative Backend-Konfiguration verwendet. Bereits gesetzte Prozess-/Plattformvariablen haben Vorrang. Die Datei `backend/.env` bleibt ignoriert und darf weder echte Secrets noch Produktionswerte ins Repository bringen.
+
+Der Datenbankpool wird lazy erzeugt. Ein reiner Import von `server.js`, DB-Konfiguration, Migrations-CLI oder Migrationsdefinitionen startet weder Listener noch DB-Verbindung, Statusabfrage oder Migration.
+
+## Startup- und Migrationsvertrag
+
+### Standard: status-only
+
+`FITTRACK_AUTO_MIGRATE` ist standardmäßig `false`. `npm start` und `npm run dev` verändern in diesem Modus weder Schema noch Ledger. Der Prozess:
+
+```text
+Prozessstart
+→ backend/.env deterministisch laden
+→ NODE_ENV, DB-, Port-, Auth-, CORS-, Proxy- und Rate-Limit-Konfiguration validieren
+→ sicheres migration_target-Event loggen
+→ Datenbankverbindung prüfen
+→ Migrationsstatus read-only lesen
+→ bei pending, dirty, drift oder unknown Start blockieren
+→ Readiness aktivieren
+→ Server Listener öffnen
+```
+
+Die vollständige Anwendungskonfiguration wird vor DB- oder Migrations-I/O validiert. Eine ungültige Auth-, CORS- oder sonstige Runtime-Konfiguration kann deshalb nicht zuerst das Schema verändern und erst danach den Start abbrechen.
+
+### Kontrolliertes Auto-Migrate
+
+Auto-Migrate ist nur aktiv, wenn alle folgenden Bedingungen erfüllt sind:
+
+- `FITTRACK_AUTO_MIGRATE=true`;
+- `NODE_ENV` ist gültig;
+- `DB_NAME` ist explizit gesetzt;
+- `FITTRACK_MIGRATION_EXPECTED_DATABASE` entspricht exakt `DB_NAME`;
+- der Prozess ist der bewusst ausgewählte einzelne Migrations-Owner.
+
+Dann lautet der zusätzliche Pfad:
+
+```text
+DB-Ping
+→ erwartetes Ziel gegen SELECT DATABASE() bestätigen
+→ MySQL Advisory Lock erwerben
+→ Ledger und Migrationsstatus prüfen
+→ ausschließlich ausstehende Forward-Migrationen anwenden
+→ finalen Status prüfen
+→ erst danach Listener öffnen
+```
+
+Bei Abweichung zwischen bestätigtem und tatsächlich selektiertem Datenbanknamen bricht der Runner vor Lock, Ledger-DDL und Anwendungsmigrationen mit `MIGRATION_TARGET_MISMATCH` ab.
+
+Auto-Migrate ist kein Ersatz für einen kontrollierten Deployment-Schritt. Für Produktion ist der unten beschriebene explizite Migrationslauf mit anschließendem status-only Start der Standard.
+
+### Sicheres Ziel-Logging
+
+Vor jeder kontrollierten Migration wird `migration_target` als strukturiertes JSON-Ereignis ausgegeben. Es enthält ausschließlich:
+
+- `environment`;
+- `host`;
+- `port`;
+- `database`.
+
+DB-Benutzer, Passwort, JWT-, Token- und Connection-String-Werte gehören nicht in dieses Ereignis. Der Runner bestätigt danach zusätzlich den von MySQL tatsächlich selektierten Datenbanknamen.
+
+## Kommandomatrix und Seiteneffekte
+
+| Befehl/Einstieg | DB-Verbindung | Migration/DDL | Zielschutz |
+| --- | --- | --- | --- |
+| Backend `npm start` | ja | standardmäßig nein; nur bei explizitem Auto-Migrate | gültiges `NODE_ENV`; bei Mutation erwartetes und tatsächliches DB-Ziel |
+| Backend `npm run dev` | ja, bei jedem Nodemon-Restart | wie `npm start` | wie `npm start` |
+| `npm run db:migrate:status` | ja | nein; Ledger/Registry read-only | konfigurierte DB |
+| `npm run db:migrate:doctor` | ja | nein; vollständig read-only | konfiguriertes gegen selektiertes Ziel |
+| `npm run db:migrate` | ja | ja | gültiges `NODE_ENV`, explizites `DB_NAME`, exakte erwartete DB und tatsächliche DB-Bestätigung |
+| `npm run db:dev:init` | ja | DB bei Bedarf erstellen, danach migrieren | in Produktion gesperrt; dieselbe Zielbestätigung wie `db:migrate` |
+| `npm run db:test:reset` | ja | Test-DB droppen, erstellen und migrieren | `NODE_ENV=test`, explizite Freigabe, Loopback und Wegwerf-DB-Name |
+| `npm run db:test:drop` | ja | Test-DB droppen | dieselben Wegwerfguards |
+| `npm run e2e:server` | ja | geschützter Reset/Migrationslauf; Server danach status-only | feste isolierte E2E-DB plus Wegwerfguards |
+| Backend `npm run test:unit` / `test:coverage` | nein für Unit-Kernlogik | nein | Imports bleiben DB-I/O-frei |
+| Backend `npm run test:integration` | ja | ja, nur in zufälliger API-Wegwerf-DB | pro Prozess isolierter Name |
+| Backend `npm run test:migrations` | ja | ja, nur in zufälligen Migrations-Wegwerf-DBs | `fittrack_migration_test_<hex>` |
+| Backend `npm run test:syntax` | nein | nein; `node --check` führt Module nicht aus | — |
+| Frontend `npm run dev`, `build`, `preview`, `test:run` | nein | nein | Frontend lädt kein Backend-Migrationsmodul |
+| Frontend `npm run test:e2e*` | ja, über den Playwright-Backend-Webserver | geschützter E2E-Reset/Migrationslauf | feste Loopback-/E2E-Konfiguration |
+| `docker compose up` | nur MySQL | keine FitTrack-Versionierung; bei leerem Volume nur `MYSQL_DATABASE` | Compose ist lokal |
+| Reiner Modulimport | nein | nein | `require.main`-Guards und lazy DB-Pool |
+
+`npm ci`, Frontend-Build, Frontend-Unit-Tests und Syntaxprüfung dürfen keine FitTrack-Migration auslösen. Migrationen sind ausschließlich in den in der Matrix markierten Pfaden erlaubt.
 
 ## Frontend-Umgebung
 
@@ -56,7 +145,7 @@ Das aktuelle Backend wendet Migrationen beim Start an. Der Produktionsnutzer ben
 | `VITE_API_BASE_URL` | Build | Standard `/api`; alternativ vollständige öffentliche HTTPS-API-URL |
 | `API_PROXY_TARGET` | Entwicklung | Ziel des lokalen Vite-Proxys, Standard `http://localhost:3001` |
 
-`VITE_API_BASE_URL` wird in das statische Bundle kompiliert. Produktion akzeptiert nur einen root-relativen Pfad ohne Query/Fragment oder eine absolute HTTPS-URL ohne eingebettete Zugangsdaten. Localhost-, Loopback-, Klartext-HTTP- und ungültige Ziele brechen den Build ab. Bei `/api` muss der Reverse Proxy diesen Pfad an das Backend weiterleiten.
+`VITE_API_BASE_URL` wird in das statische Bundle kompiliert. Produktion akzeptiert nur einen root-relativen Pfad ohne Query/Fragment oder eine absolute HTTPS-URL ohne eingebettete Zugangsdaten. Localhost-, Loopback-, Klartext-HTTP- und ungültige Produktionsziele brechen den Build ab. Bei `/api` muss der Reverse Proxy diesen Pfad an das Backend weiterleiten.
 
 ## Versionierte Migrationen
 
@@ -71,111 +160,144 @@ Der Runner verwendet:
 
 - das Ledger `schema_migrations`;
 - SHA-256-Prüfsummen gegen nachträglich veränderte Migrationen;
-- Zustände für angewendet und fehlgeschlagen;
+- Zustände für angewendet, laufend und fehlgeschlagen;
 - einen MySQL Advisory Lock gegen parallele Migrationen;
+- die tatsächliche Datenbankbestätigung vor DDL;
 - einen zweiten Lauf als No-op.
 
 Bereits veröffentlichte Migrationsdateien dürfen nicht umgeschrieben werden. Änderungen erfolgen immer in einer neuen, aufsteigend nummerierten Datei.
 
-### Befehle
+## Migration Doctor
 
 Im Ordner `backend`:
 
 ```sh
-npm run db:migrate:status
+npm run db:migrate:doctor
+```
+
+Der Doctor ist strikt read-only. Er erwirbt keinen Migrations-Lock und verändert weder Schema, Ledger noch Geschäftsdaten. Er prüft insbesondere:
+
+- konfiguriertes und tatsächlich selektiertes Datenbankziel ohne Credentials;
+- Ledger-Struktur und Ledger-Datensätze;
+- pending, dirty, Checksum-Drift und unbekannte Migrationen;
+- erwartete Tabellen, Spalten, Indizes, Foreign Keys und Check-Constraints;
+- teilweise vorhandene oder abweichende Schemaelemente.
+
+Das Ergebnis ist ein strukturiertes `migration_doctor_result`-Ereignis mit maschinenlesbarem Zustand, Fehlercodes und sicheren Zielmetadaten.
+
+| Exit | Zustand | Bedeutung und Reaktion |
+| ---: | --- | --- |
+| 0 | `ready` | Ledger, Registry und erwartetes Schema sind sauber |
+| 2 | `pending` | kontrolliertes Migrationsfenster erforderlich; kein normaler Serverstart |
+| 3 | `recovery_required` | Dirty, Drift, Unknown, ungültiges Ledger oder Schemaabweichung; Deployment stoppen |
+| 1 | `failed` | Konfigurations-, Verbindungs-, Ziel- oder Diagnosefehler beheben; keine Migration starten |
+
+Bei Exit 3 oder wiederholtem Exit 1 gilt das Runbook [MIGRATION_RECOVERY.md](MIGRATION_RECOVERY.md). Der Doctor repariert niemals automatisch Ledger oder Schema.
+
+`npm run db:migrate:status` bleibt die kleinere read-only Ledger-/Registry-Prüfung. Sie endet mit Exit 1, solange pending, dirty, drift oder unknown vorliegt. Der Doctor liefert darüber hinaus den Schema- und Recovery-Befund mit den differenzierten Exitcodes oben.
+
+## Explizite Migrationsbefehle
+
+Vor einem mutierenden Lauf müssen `DB_NAME` und die Bestätigung gesetzt sein:
+
+```env
+DB_NAME=fittrack
+FITTRACK_MIGRATION_EXPECTED_DATABASE=fittrack
+```
+
+Danach im Ordner `backend`:
+
+```sh
+npm run db:migrate:doctor
 npm run db:migrate
+npm run db:migrate:doctor
 npm run db:migrate:status
 ```
 
-`db:migrate:status` ist read-only und beendet sich mit Exit 1, solange Migrationen ausstehen oder das Ledger `dirty`, `drift` beziehungsweise unbekannte Einträge enthält. Ein Exit 1 vor der ersten Migration kann daher erwartetes `pending` bedeuten; nach dem Migrationsschritt muss der Befehl erfolgreich sein.
+Ein Doctor-Exit 2 vor dem geplanten Lauf darf ausschließlich die erwarteten ausstehenden Migrationen enthalten. Exit 3 oder 1 ist eine Stop-Bedingung. Nach dem Lauf müssen Doctor und Status erfolgreich sein.
 
-`db:migrate` verändert Schema und gegebenenfalls Bestandsdaten. Vor jeder Produktionsmigration sind ein aktuelles Backup, ein geprüfter Restore-Weg und ein Wartungs-/Rollback-Entscheid erforderlich.
+`db:migrate` verändert Schema und gegebenenfalls Bestandsdaten. Vor jeder Produktionsmigration sind ein aktuelles verifiziertes Backup, ein geprüfter Restore-Weg, ein Change-Fenster und eine Rollback-/Recovery-Entscheidung erforderlich.
 
-Bei `dirty`, Checksum-Drift, unbekannten Ledger-Einträgen oder einer fehlgeschlagenen Legacy-Datenprüfung:
-
-1. Deployment stoppen.
-2. Datenbank und strukturierte Fehlerlogs sichern.
-3. Ledger nicht manuell umschreiben.
-4. Ursache und Datenbestand prüfen.
-5. Korrektur als neue Migration oder Restore ausführen.
-
-Es gibt keine automatischen Down-Migrationen. Ein Anwendungs-Rollback ist nur zulässig, wenn das neue Schema rückwärtskompatibel ist; andernfalls ist der getestete Datenbank-Restore der Rückweg.
+Es gibt keine automatischen Down-Migrationen. Bei Dirty-, Drift-, Unknown- oder Schemafehlern das Ledger nicht manuell umschreiben, keine Blindstarts wiederholen und `docs/MIGRATION_RECOVERY.md` ausführen.
 
 ## Deutlich destruktive Befehle
 
 ### Testdatenbank zurücksetzen
 
-`npm run db:test:reset` droppt und erstellt exakt `DB_NAME` neu. Der Befehl verweigert die Ausführung, wenn nicht alle drei Bedingungen erfüllt sind:
+`npm run db:test:reset` droppt und erstellt exakt `DB_NAME` neu. Der Befehl verweigert die Ausführung, wenn nicht alle Bedingungen erfüllt sind:
 
-- `NODE_ENV=test`
-- `ALLOW_TEST_DB_RESET=true`
-- `DB_NAME` enthält ein getrenntes `test`-Segment
+- `NODE_ENV=test`;
+- `ALLOW_TEST_DB_RESET=true`;
+- `DB_HOST` ist Loopback (`localhost`, `127.0.0.1` oder `::1`);
+- `DB_NAME` entspricht dem streng begrenzten Wegwerfmuster `fittrack_test_*`, `fittrack_e2e_*` oder `fittrack_restore_*`.
 
-Beispiel für eine ausschließlich lokale Wegwerf-Datenbank:
+Beispiel:
 
 ```powershell
 $env:NODE_ENV = 'test'
 $env:ALLOW_TEST_DB_RESET = 'true'
+$env:DB_HOST = '127.0.0.1'
 $env:DB_NAME = 'fittrack_test_local'
 npm run db:test:reset
 ```
-
-Diese Sperren reduzieren Fehlbedienung, ersetzen aber keine Prüfung des tatsächlichen Hosts und Datenbanknamens.
 
 ### Legacy-SQL und Docker-Volume
 
 > **Nicht in Produktion ausführen:** `database/schema.sql` enthält `DROP TABLE`. Die Datei ist kein Teil des aktiven Migrationssystems.
 
-> **Löscht alle lokalen MySQL-Daten:** `docker compose down -v` entfernt das Volume `mysql_data`. Für einen normalen Neustart genügt `docker compose down` ohne `-v` oder `docker compose up -d mysql`.
+> **Niemals für einen normalen Neustart verwenden:** `docker compose down -v` löscht das lokale MySQL-Volume vollständig.
 
-Die Legacy-SQL-Dateien werden in `docker-compose.yml` bewusst nicht in den MySQL-Initialisierungsordner gemountet. Ein neues Volume erhält nur die leere, über `MYSQL_DATABASE` benannte Datenbank; Tabellen und Seeds entstehen anschließend ausschließlich über `npm run db:dev:init` und die versionierten Migrationen.
+Die Legacy-SQL-Dateien werden in `docker-compose.yml` nicht in den MySQL-Initialisierungsordner gemountet. Ein neues Volume erhält nur die über `MYSQL_DATABASE` benannte leere Datenbank; Tabellen und Seeds entstehen über die versionierten Migrationen.
 
 ## Lokale und Test-Datenbanken
 
-`npm run db:dev:init` ist der sichere lokale Initialisierungsweg:
+`npm run db:dev:init` ist der lokale Initialisierungsweg:
 
-- in `NODE_ENV=production` gesperrt;
-- erstellt ausschließlich die konfigurierte, fehlende Datenbank;
+- ein gültiges `NODE_ENV` ist erforderlich; vorgesehen ist `development`;
+- in `production` gesperrt;
+- `DB_NAME` und `FITTRACK_MIGRATION_EXPECTED_DATABASE` müssen explizit identisch sein;
+- erstellt ausschließlich die konfigurierte fehlende Datenbank;
 - droppt keine Datenbank;
 - wendet danach alle Migrationen an.
 
-Die API-Integrationstests erzeugen pro Prozess eine zufällige Datenbank `fittrack_api_test_<...>`, registrieren zwei Nutzer, prüfen unter anderem Datenisolation und löschen die Datenbank im Cleanup.
+Danach startet `npm run dev` standardmäßig status-only. Ein liegen gebliebener Watcher kann deshalb nicht ohne das zusätzliche explizite Auto-Migrate-Opt-in die Entwicklungsdatenbank verändern.
 
-Die realen Migrationstests laufen standardmäßig und benötigen MySQL 8:
-
-```powershell
-npm run test:migrations
-```
-
-Sie verwenden nur Namen nach `fittrack_migration_test_<hex>` und prüfen:
-
-- Migration einer leeren Datenbank;
-- additive Migration eines unterstützten Legacy-Schemas bei Erhalt und Verknüpfung der Daten;
-- vollständiges Ledger und Prüfsummen;
-- zweiten Lauf ohne Änderungen;
-- automatisches Löschen der Wegwerf-Datenbanken.
-
-`FITTRACK_RUN_DB_INTEGRATION=false` überspringt die realen Datenbankszenarien und lässt nur die Planungschecks laufen. Das ist ein lokaler Teilcheck und kein vollständiges Release-Gate. CI setzt den Wert ausdrücklich auf `true`.
+API-Integrationstests und Migrationstests verwenden ausschließlich eigene zufällige Wegwerf-Datenbanknamen und löschen sie im Cleanup. `FITTRACK_RUN_DB_INTEGRATION=false` überspringt die realen Migrationsszenarien nur für einen bewusst DB-losen lokalen Teilcheck; das ist kein vollständiges Release-Gate.
 
 ## Produktionsablauf
 
-1. CI für den exakten Commit vollständig grün abwarten.
+1. Remote-CI für den exakten Commit vollständig grün abwarten.
 2. Release-Artefakt und Commit-SHA festhalten.
-3. Datenbankbackup erstellen und Restore-Verfügbarkeit prüfen.
-4. Umgebungsvariablen und Secret-Referenzen validieren.
-5. Backend-Abhängigkeiten reproduzierbar installieren:
+3. Datenbankbackup erstellen, Hash und Status prüfen sowie Restore-Verfügbarkeit bestätigen.
+4. `NODE_ENV=production`, DB-Ziel, Secrets, `FITTRACK_AUTO_MIGRATE=false` und `FITTRACK_MIGRATION_EXPECTED_DATABASE=DB_NAME` im Secret-/Deployment-System validieren.
+5. Sicherstellen, dass genau ein privilegierter Migrations-Owner aktiv ist und normale Runtime-Instanzen noch keinen Traffic erhalten.
+6. Backend-Abhängigkeiten reproduzierbar installieren und Diagnose ausführen:
 
 ```sh
 cd backend
 npm ci --omit=dev
+npm run db:migrate:doctor
+```
+
+7. Nur bei Doctor Exit 0 oder erwartbarem Exit 2 im freigegebenen Change-Fenster explizit migrieren:
+
+```sh
 npm run db:migrate
+npm run db:migrate:doctor
 npm run db:migrate:status
+```
+
+Nach der Migration müssen Doctor Exit 0 und Status Exit 0 liefern.
+
+8. DDL-Rechte beziehungsweise den privilegierten Migrationskontext entfernen und das Backend status-only starten:
+
+```sh
 npm start
 ```
 
-Der Server prüft DB-Verbindung, migriert, kontrolliert den Status und lauscht erst danach. Bei DB- oder Migrationsfehler beendet sich der Start mit Fehler.
+Der Server validiert die gesamte Runtime-Konfiguration, loggt das sichere Ziel, prüft Verbindung und Migrationsstatus und lauscht nur bei einem vollständig sauberen Zustand. Er migriert mit `FITTRACK_AUTO_MIGRATE=false` nicht.
 
-6. Frontend bauen:
+9. Frontend bauen:
 
 ```sh
 cd frontend
@@ -183,12 +305,10 @@ npm ci
 VITE_API_BASE_URL=/api npm run build
 ```
 
-7. `frontend/dist` unverändert über einen statischen Hoster ausliefern.
-8. SPA-Fallback konfigurieren: unbekannte Frontend-Routen müssen `index.html` liefern.
-9. `/api` an das Backend routen; TLS am Reverse Proxy oder der Plattform terminieren.
-10. Readiness erst nach erfolgreicher Prüfung für Traffic freigeben.
+10. `frontend/dist` unverändert über einen statischen Hoster ausliefern, SPA-Fallback konfigurieren, `/api` an das Backend routen und TLS terminieren.
+11. Readiness erst nach erfolgreicher Prüfung für Traffic freigeben und mindestens zwei Minuten beobachten.
 
-Der gezeigte Inline-Environment-Befehl ist POSIX-Syntax. In PowerShell wird die Variable vor dem Build über `$env:VITE_API_BASE_URL = '/api'` gesetzt.
+Der gezeigte Inline-Frontend-Environment-Befehl ist POSIX-Syntax. In PowerShell wird die Variable vor dem Build über `$env:VITE_API_BASE_URL = '/api'` gesetzt.
 
 ## Health und Prozesssteuerung
 
@@ -196,63 +316,55 @@ Der gezeigte Inline-Environment-Befehl ist POSIX-Syntax. In PowerShell wird die 
 | --- | --- | --- |
 | `/api/health/live` | 200 `{ "status": "live" }` | Prozess lebt; keine DB-Prüfung |
 | `/api/health/ready` | 200 ready, sonst 503 | DB-Ping, Lifecycle und sauberer Migrationsstatus |
-| `/api/health` | wie `/ready` | Rückwärtskompatibler Readiness-Alias |
+| `/api/health` | wie `/ready` | rückwärtskompatibler Readiness-Alias |
 
-Empfohlene Zuordnung:
-
-- Liveness-Probe: `/api/health/live`
-- Readiness-/Load-Balancer-Probe: `/api/health/ready`
-
-`SIGTERM` und `SIGINT` markieren die Instanz nicht bereit, schließen den HTTP-Server und danach den DB-Pool. Die Plattform muss genügend Grace-Period für diesen Ablauf gewähren.
+Readiness bleibt bei pending, dirty, drift oder unknown auf 503. `SIGTERM` und `SIGINT` markieren die Instanz nicht bereit, schließen den HTTP-Server und danach den DB-Pool.
 
 ## CI-Gates
 
 `.github/workflows/ci.yml` läuft auf Pull Requests, Pushes nach `main` und manuell.
 
-Backend-Job:
+Der Backend-Job benötigt für sein isoliertes Ziel mindestens:
 
-- Node 22.17.0 und MySQL 8 Service mit Healthcheck;
-- `npm ci`;
-- `npm run audit:security`, Exit-Gate ab `high`;
-- streng geschützter Reset einer CI-Testdatenbank;
-- Migration und anschließender Status/No-op;
-- vollständiges `npm test` mit Unit-, API-, Migrations- und Syntaxchecks;
-- reale Empty-/Legacy-/No-op-Migrationstests;
-- `npm run test:coverage`.
+```env
+NODE_ENV=test
+DB_NAME=fittrack_test_ci
+FITTRACK_MIGRATION_EXPECTED_DATABASE=fittrack_test_ci
+FITTRACK_AUTO_MIGRATE=false
+```
 
-Frontend-Job:
+Damit bleibt der Server status-only, während der explizite CI-Schritt `npm run db:migrate` sein Ziel doppelt bestätigt. Der Backend-Job umfasst MySQL-Healthcheck, geschützten Reset, expliziten Migrations-No-op, Doctor-/Statusprüfung, vollständige Tests, Syntax, Coverage und Dependency-Audit. Zusätzlich erstellt er mit der MySQL-Service-Container-ID ein komprimiertes Wegwerf-Backup im Runner-Temp, prüft Manifest, Hash und Backupstatus und lädt dieses kurzlebige Artefakt nicht hoch.
 
-- `npm ci`;
-- `npm audit --audit-level=high`;
-- `npm run test:run`;
-- Produktionsbuild mit `/api`.
+Der Frontend-Job führt Installation, Audit, Unit-/Komponententests und Produktionsbuild aus, aber keine Migration. Der Browser-Job verwendet eine isolierte Loopback-E2E-Datenbank, den geschützten Reset/Migrationspfad und Chromium/Axe; erfolgreiche Läufe behalten keine DB-Dumps.
 
 CI-Zugangsdaten wie `root/root` existieren ausschließlich im isolierten, kurzlebigen MySQL-Service des Runners und sind keine Produktionswerte.
 
 ## Release-Checkliste
 
-- [ ] CI für den Release-Commit grün
-- [ ] Keine Security-Befunde ab `high`
-- [ ] Backup erstellt und Restore-Weg bestätigt
-- [ ] `JWT_SECRET`, DB-Secrets und CORS-Origin geprüft
-- [ ] Migration erfolgreich und Status sauber
+- [ ] Remote-CI für den exakten Release-Commit grün
+- [ ] keine Security-Befunde ab `high`
+- [ ] Backup aktuell, Hash vorhanden und Restore-Weg bestätigt
+- [ ] `NODE_ENV`, `JWT_SECRET`, DB-Secrets und CORS-Origin geprüft
+- [ ] `FITTRACK_AUTO_MIGRATE=false` für normale Runtime-Instanzen
+- [ ] erwartete Datenbank entspricht exakt `DB_NAME`
+- [ ] sicherer Ziel-Log geprüft, keine Credentials enthalten
+- [ ] Migration Doctor nach Migration Exit 0
+- [ ] Migrationsstatus sauber und zweiter Lauf No-op
 - [ ] Backend-Readiness liefert 200
-- [ ] Registrierung und Login manuell geprüft
-- [ ] Zwei Nutzer sehen keine gegenseitigen Workouts oder Fortschritte
-- [ ] Workout-Erstellen/-Ändern/-Löschen und abgeleiteter Fortschritt geprüft
-- [ ] Frontend-Deep-Link direkt im Browser geladen
-- [ ] Browser-Konsole und strukturierte Backend-Logs ohne neue Fehler
-- [ ] Rollback-Entscheid und verantwortliche Person festgehalten
+- [ ] Registrierung/Login und Zwei-Nutzer-Isolation geprüft
+- [ ] Workout-/Progress-Smokes erfolgreich
+- [ ] Rollback-/Recovery-Entscheid und verantwortliche Person festgehalten
 
-## Grenzen von Stufe 0A
+## Grenzen nach Stufe 0C
 
-- Keine automatisierten echten Browser-E2E-Tests.
-- Keine Last-, Failover-, Replikations- oder Restore-Automation.
-- Keine Down-Migrationen und kein automatischer Datenbank-Rollback.
-- Keine produktionsfertigen Container, Infrastrukturdefinition oder Deployment-Automation.
-- Readiness prüft API, MySQL und Migrationen, aber nicht Frontend, Reverse Proxy oder externe Plattformdienste.
+- Keine automatischen Down-Migrationen und keine automatische Ledger-Reparatur.
+- MySQL-DDL ist nicht vollständig transaktional; Dirty-Recovery bleibt ein kontrollierter manueller Incident-Prozess.
+- Kein automatischer Datenbank-Rollback und keine produktionsfertige Deployment-Orchestrierung.
+- Auto-Migrate ist technisch verfügbar, aber ein einzelner Owner muss betrieblich sichergestellt werden.
+- Readiness prüft API, MySQL und Migrationsstatus, aber nicht Frontend, Reverse Proxy oder externe Plattformdienste.
 - Der Rate Limiter ist pro Prozess; mehrere Instanzen teilen keinen zentralen Zähler.
-- Coverage wird erzeugt, aber noch nicht durch einen Mindestprozentsatz gegatet.
+- Chromium-E2E/Axe ist das verbindliche Browser-Gate; Firefox, WebKit und ein vollständiger manueller Screenreader-Test bleiben zusätzliche Nachweise.
+- Keine Last-, Failover- oder Replikationstests.
 - Ein grüner Dependency-Audit ersetzt weder Penetrationstest noch manuelle Security-Prüfung.
 
-Weitere Abnahmekriterien stehen in `docs/STAGE_0A.md`.
+Weitere Betriebs- und Recovery-Regeln stehen in `docs/BACKUP_RESTORE.md`, `docs/MIGRATION_RECOVERY.md`, `docs/STAGE_0B.md` und `docs/STAGE_0C.md`.

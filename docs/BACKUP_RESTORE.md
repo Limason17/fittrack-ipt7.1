@@ -1,90 +1,261 @@
 # FitTrack Backup und Restore
 
-Diese Anleitung beschreibt den lokalen, bewusst begrenzten Wiederherstellungsweg aus Stufe 0B. Er ist ein Pilotnachweis für eine einzelne MySQL-8-Instanz im Docker-Container und noch kein Produktions-Runbook.
+Diese Anleitung beschreibt den lokalen Backup- und Restore-Weg für die einzelne MySQL-8-Instanz des FitTrack-Piloten. Stage 0B stellte einen bewusst manuellen Dump-/Restore-Nachweis bereit. Stage 0C ergänzt einen täglich planbaren, überwachten Backup-Lauf mit Integritätsmanifest und GFS-Retention. Das ist noch kein Produktions-Runbook und keine Aussage darüber, dass ein bestimmter Lauf bereits ausgeführt wurde.
 
-## Pilotziele
+## Pilotziele und Geltungsbereich
 
 - Recovery Point Objective (RPO): höchstens 24 Stunden Datenverlust.
 - Recovery Time Objective (RTO): höchstens 4 Stunden bis zu einer geprüften, betriebsbereiten Instanz.
+- Die Ziele sind Planungsannahmen des Piloten und keine vertraglich garantierten Service Level Agreements (SLA).
+- Das RPO setzt mindestens einen erfolgreichen Backup-Lauf pro 24 Stunden, eine funktionierende Überwachung und eine zweite, vom Anwendungsrechner unabhängige Kopie voraus.
+- Das RTO muss monatlich sowie nach wesentlichen Schema-, Restore- oder Infrastrukturänderungen in einer Restore-Übung gemessen werden.
 
-Das sind anfängliche Planungsannahmen, keine vertraglich garantierten SLA. Um das RPO zu erreichen, muss mindestens täglich ein erfolgreicher, extern gespeicherter Dump erstellt und überwacht werden. Das RTO muss nach jeder wesentlichen Schema- oder Infrastrukturänderung erneut in einer Restore-Übung gemessen werden.
+Die Skripte sind absichtlich auf ein lokales Docker-/Loopback-Szenario begrenzt. Sie dürfen nicht durch Abschwächen der Guards für eine entfernte oder produktive Datenbank umfunktioniert werden.
 
-## Sicherheitsgrenzen
+## Zwei getrennte Backup-Wege
 
-Die Skripte brechen ab, wenn ihre Sicherheitsbedingungen nicht erfüllt sind:
+| Zweck | Befehl | Ergebnis | Geeignet für den täglichen Pilotbetrieb |
+| --- | --- | --- | --- |
+| Manueller Stage-0B-Dump | `npm run db:backup` | Eine geprüfte, unkomprimierte `.sql`-Datei mit `bytes` und `sha256` im JSON-Ergebnis | Nein; Ad-hoc-Diagnose und manueller Nachweis |
+| Automatisierter Stage-0C-Lauf | `npm run db:backup:daily` | Ein verifiziertes `.sql.gz`-/Manifest-Paar, Identitätsprüfung, Lock und UTC-GFS-Retention | Ja, sobald Scheduler, Monitoring und Off-host-Kopie eingerichtet sind |
 
-- Backup und Restore akzeptieren nur eine Datenbank auf `localhost`, `127.0.0.1` oder `::1`.
-- Das Backup-Verzeichnis muss ausserhalb des Repositorys liegen.
-- Ein Restore ist nur mit `NODE_ENV=test` und `ALLOW_TEST_DB_RESET=true` erlaubt.
-- Der Zielname muss mit `fittrack_test`, `fittrack_e2e` oder `fittrack_restore` beginnen und darf danach nur klar begrenzte alphanumerische Segmente enthalten.
-- Der Restore verlangt zusätzlich `FITTRACK_RESTORE_ACK=restore-local-test-database`.
-- Die Zieldatenbank wird beim Restore vollständig neu erstellt. Niemals eine produktive oder anderweitig benötigte Datenbank als Ziel angeben.
-- Das Datenbankpasswort wird nicht als Prozessargument übergeben. Das Skript reicht es nur im Environment des Docker-Unterprozesses als `MYSQL_PWD` weiter.
-- Dump-Dateien, Passwörter und andere Secrets werden nicht committed oder in Logs ausgegeben.
+Der manuelle Lauf besitzt kein Completion-Manifest, keinen Parallelitäts-Lock, keine Host-/Container-UUID-Prüfung und keine automatische Retention. Ein manueller Dump allein erfüllt deshalb den automatisierten Pilotprozess nicht.
 
-Diese Grenzen ersetzen keine Produktionskontrollen. Ein Produktionsrestore benötigt ein genehmigtes Change-Fenster, eindeutig benannte Verantwortliche, getrennte Rollen, verschlüsselten Storage, Zugriffskontrollen und einen geprüften Rollback-Plan.
+## Gemeinsame Voraussetzungen
 
-## Voraussetzungen
+1. Eine von `backend/package.json` erlaubte Node.js-Version, npm 10 und installierte Backend-Abhängigkeiten (`cd backend`, danach `npm ci`).
+2. Docker mit einem laufenden MySQL-8-Container; der lokale Standard des manuellen Restore-Pfads ist `fittrack_mysql`.
+3. Ein dediziertes Betriebssystemkonto mit minimalen Rechten auf Repository, Docker, Backup- und Log-Verzeichnis.
+4. Ein zugriffsgeschütztes Backup-Verzeichnis ausserhalb des Repositorys. Für den automatisierten Lauf muss der Pfad absolut sein und darf nicht auf ein Dateisystem-Root zeigen.
+5. `DB_PASSWORD` wird über eine geschützte Environment-/Secret-Konfiguration bereitgestellt. Es gehört weder in Befehlsargumente noch in Scheduler-Definitionen, Logs oder das Repository.
 
-1. Node.js 22.17.0 oder eine von `package.json` erlaubte Version und npm 10.
-2. Docker mit einem laufenden MySQL-8-Container, standardmässig `fittrack_mysql`.
-3. Installierte Backend-Abhängigkeiten: `cd backend` und `npm ci`.
-4. Die üblichen Variablen `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD` und `DB_NAME` stammen aus der lokalen Secret-/Environment-Konfiguration. Secrets nicht in die Shell-History kopieren.
-5. Ein existierendes, zugriffsgeschütztes Backup-Verzeichnis ausserhalb des Repositorys.
-
-Vor dem Start read-only prüfen:
+Vor einem manuellen Eingriff read-only prüfen:
 
 ```powershell
 docker compose ps
 cd backend
 npm run db:check
 npm run db:migrate:status
+npm run db:migrate:doctor
 ```
 
-Bei einer absichtlich unversionierten Legacy-Datenbank darf `db:migrate:status` die Migrationen 001–004 als ausstehend melden. Dirty-, Drift- oder unbekannte Ledger-Einträge sind dagegen Stop-Bedingungen.
+Dirty-, Drift-, Unknown- oder partielle Schema-Zustände sind Stop-Bedingungen. Der Migration Doctor verändert die Datenbank nicht; seine Exitcodes und die Recovery-Schritte stehen in `MIGRATION_RECOVERY.md`.
 
-## Backup erstellen
+## Manuellen Stage-0B-Dump erstellen
 
-Die Environmentwerte werden hier nur als Platzhalter gezeigt. `DB_PASSWORD` muss bereits sicher im Prozess-Environment verfügbar sein.
+Die Werte sind Platzhalter. Das Passwort muss bereits sicher im Prozess-Environment verfügbar sein.
 
 ```powershell
 cd backend
 $env:DB_HOST = '127.0.0.1'
+$env:DB_PORT = '3306'
+$env:DB_USER = '<datenbankbenutzer>'
 $env:DB_NAME = 'fittrack'
 $env:FITTRACK_DB_CONTAINER = 'fittrack_mysql'
 $env:FITTRACK_BACKUP_DIR = '<absolutes Verzeichnis ausserhalb des Repositorys>'
 npm run db:backup
 ```
 
-Das Skript verwendet `mysqldump` aus dem Container mit konsistentem Single-Transaction-Dump. Es schreibt zuerst eine exklusive `.partial`-Datei, prüft Mindestgrösse, Dump-Header und Tabellendefinitionen, berechnet SHA-256 und benennt die Datei erst danach atomar in folgendes Format um:
+Der manuelle Lauf akzeptiert nur `localhost`, `127.0.0.1` oder `::1`, verlangt ein Ziel ausserhalb des Repositorys und verwendet `mysqldump --single-transaction` aus dem Container. Er schreibt exklusiv nach `.partial`, prüft Mindestgrösse, MySQL-Dump-Header und mindestens eine Tabellendefinition, berechnet SHA-256 und benennt die Datei danach atomar um:
 
 ```text
 <datenbank>-<UTC-Zeitstempel>.sql
 ```
 
-Erfolg ist ausschliesslich ein Exitcode 0 plus ein JSON-Resultat mit `path`, `bytes` und `sha256`. Eine verbliebene `.partial`-Datei oder ein fehlendes Resultat gilt als fehlgeschlagen.
+Erfolg bedeutet Exitcode `0` und ein JSON-Ergebnis mit `database`, `path`, `createdAt`, `bytes` und `sha256`. Eine `.partial`-Datei, ein fehlendes Ergebnis oder Exitcode ungleich `0` gilt als fehlgeschlagen. Das Passwort wird dem Docker-Unterprozess als `MYSQL_PWD` übergeben und nicht als Prozessargument.
 
-## In eine Wegwerf-Datenbank wiederherstellen
+## Automatisierten täglichen Lauf konfigurieren
 
-Der folgende Vorgang löscht und erstellt ausschliesslich die explizit benannte Restore-Datenbank neu:
+Für `npm run db:backup:daily` müssen alle folgenden Werte explizit gesetzt sein:
+
+| Variable | Bedingung |
+| --- | --- |
+| `DB_HOST` | Muss explizit gesetzt sein und auf `localhost`, `127.0.0.1` oder `::1` zeigen |
+| `DB_PORT` | Optional; Standard `3306`; muss bei Angabe eine gültige Portnummer sein |
+| `DB_USER` | Muss explizit und nicht leer gesetzt sein |
+| `DB_PASSWORD` | Muss explizit und nicht leer aus geschützter Secret-Konfiguration kommen |
+| `DB_NAME` | Muss explizit sein; erlaubt sind nur Buchstaben, Ziffern, `_`, `$` und `-` |
+| `FITTRACK_BACKUP_EXPECTED_DATABASE` | Muss exakt mit dem expliziten `DB_NAME` übereinstimmen |
+| `FITTRACK_BACKUP_ACK` | Muss exakt `backup:<DB_NAME>` sein, zum Beispiel `backup:fittrack` |
+| `FITTRACK_DB_CONTAINER` | Muss explizit sein; erlaubt sind nur Buchstaben, Ziffern, `_`, `.`, `-` |
+| `FITTRACK_BACKUP_DIR` | Absoluter Pfad ausserhalb des Repositorys; weder Repositorypfad noch Dateisystem-Root |
+
+Beispiel für eine interaktive, nicht als Scheduler-Konfiguration zu übernehmende Vorbereitung:
+
+```powershell
+cd backend
+$env:DB_HOST = '127.0.0.1'
+$env:DB_PORT = '3306'
+$env:DB_USER = '<datenbankbenutzer>'
+# DB_PASSWORD vorher aus der geschützten lokalen Secret-Quelle laden.
+$env:DB_NAME = 'fittrack'
+$env:FITTRACK_BACKUP_EXPECTED_DATABASE = 'fittrack'
+$env:FITTRACK_BACKUP_ACK = 'backup:fittrack'
+$env:FITTRACK_DB_CONTAINER = 'fittrack_mysql'
+$env:FITTRACK_BACKUP_DIR = 'D:\FitTrackBackups'
+npm run db:backup:daily
+```
+
+Der Pfad wird vor und nach dem Erstellen beziehungsweise Auflösen geprüft. Symlink-/Pfadauflösungen dürfen nicht in das Repository zurückführen. Das Skript erstellt keine Backups auf einem Remote-DB-Host.
+
+## Zielidentität, Lock und Veröffentlichungsgrenze
+
+Vor `mysqldump` liest der tägliche Lauf parallel:
+
+- über die konfigurierte Host-Verbindung `SELECT DATABASE(), @@server_uuid`;
+- über den expliziten Container und dessen MySQL-Socket dieselben beiden Werte.
+
+Konfigurierte Datenbank, Container-Datenbank und `FITTRACK_BACKUP_EXPECTED_DATABASE` müssen gleich sein; zusätzlich müssen Host-Verbindung und Container dieselbe MySQL-Server-UUID liefern. Bei jeder Abweichung bricht der Lauf mit `BACKUP_TARGET_MISMATCH` ab, bevor ein Dump veröffentlicht wird.
+
+Im Backup-Verzeichnis schützt `.fittrack-backup.lock` mit exklusiver Dateierstellung vor parallelen Läufen. Ein vorhandener Lock führt zu `BACKUP_LOCKED`. Einen nach Prozessabsturz verbliebenen Lock erst entfernen, wenn eindeutig kein Backup-Prozess mehr läuft, Owner und Ursache dokumentiert sind und das Verzeichnis auf `.partial`-/unvollständige Dateien geprüft wurde.
+
+Ein erfolgreicher Lauf erzeugt das Paar:
+
+```text
+<datenbank>-<YYYYMMDD>T<HHMMSS>Z.sql.gz
+<datenbank>-<YYYYMMDD>T<HHMMSS>Z.sql.gz.manifest.json
+```
+
+Der Ablauf ist:
+
+1. Unkomprimierten Dump exklusiv als `.sql.partial` erzeugen, strukturell prüfen und Rohgrösse sowie Roh-SHA-256 ermitteln.
+2. Nach `.sql.gz.partial` komprimieren und die Datei vollständig wieder dekomprimieren.
+3. Komprimierte Grösse/SHA-256 und dekomprimierte Grösse/SHA-256 gegeneinander prüfen.
+4. Ein exklusives Manifest als `.manifest.json.partial` schreiben. Es enthält `schemaVersion: 1`, `kind: fittrack.mysql.logical-backup`, `state: complete`, UTC-Zeiten, Datenbank, Server-UUID, gzip-Metadaten sowie Rohdump-Metadaten.
+5. Zuerst gzip-Artefakt und danach Manifest atomar auf ihre endgültigen Namen umbenennen. Erst das endgültige Manifest mit `state: complete` ist der Completion Marker.
+6. Den temporären Rohdump entfernen und anschliessend die Retention anwenden.
+
+Der Status- und Restore-Pfad akzeptiert nur ein vollständig validiertes Paar. Dateiname, Manifestformat, Datenbank, Grössen, beide SHA-256-Werte, gzip-Dekodierung, Dump-Header und Tabellendefinitionen werden geprüft. Symbolische Links, aus dem Backup-Verzeichnis ausbrechende Artefakte und unvollständige Manifeste werden abgelehnt.
+
+## Maschinenlesbarer Ergebnisvertrag
+
+`db:backup:daily` und `db:backup:status` schreiben genau ein JSON-Resultat pro Lauf. Erfolgs-/Statusresultate gehen nach stdout, abgefangene Fehler nach stderr. Monitoring muss sowohl den Prozess-Exitcode als auch `status`, `code` und `exitCode` des JSON prüfen.
+
+| Lauf | `event` | `status` | `code` | Exitcode |
+| --- | --- | --- | --- | --- |
+| Backup vollständig erstellt und Retention erfolgreich | `database_backup_completed` | `ok` | `BACKUP_CREATED` | `0` |
+| Status: jüngstes vollständiges Backup höchstens 24 Stunden alt | `database_backup_status` | `ok` | `BACKUP_OK` | `0` |
+| Status: jüngstes vollständiges Backup älter als 24 Stunden | `database_backup_status` | `stale` | `BACKUP_STALE` | `22` |
+| Backup-Fehler | `database_backup_failed` | `failed` | Fehlercode aus der folgenden Tabelle | Gemäss Tabelle |
+| Status-Fehler | `database_backup_status` | `failed` | Fehlercode aus der folgenden Tabelle | Gemäss Tabelle |
+
+Der gemeinsame Exitcode-Vertrag lautet exakt:
+
+| Exitcode | Zugeordnete Codes/Bedeutung |
+| --- | --- |
+| `0` | `BACKUP_CREATED` oder `BACKUP_OK` |
+| `10` | Unsichere Konfiguration: `BACKUP_CONFIG_UNSAFE`, `BACKUP_LOCATION_REQUIRED`, `BACKUP_LOCATION_FORBIDDEN`, `BACKUP_TARGET_FORBIDDEN`, `BACKUP_TARGET_MISMATCH`, `BACKUP_ACK_INVALID`, `DATABASE_TOOL_CONFIG_INVALID` |
+| `20` | Sonstiger Betriebsfehler, insbesondere `BACKUP_FAILED`, `DATABASE_TOOL_FAILED` oder `DATABASE_TOOL_UNAVAILABLE` |
+| `21` | `BACKUP_MISSING`: kein vollständiges, eigenes Manifest-Paar vorhanden |
+| `22` | `BACKUP_STALE`: jüngstes vollständiges Backup ist älter als 24 Stunden |
+| `23` | `BACKUP_INTEGRITY_FAILED` oder `BACKUP_VERIFICATION_FAILED` |
+| `24` | `BACKUP_RETENTION_FAILED` |
+| `25` | `BACKUP_LOCKED` |
+
+Der Statuslauf erzeugt im normalen Prüfpfad `0`, `10`, `20`, `21`, `22` oder `23`; `24` und `25` stammen aus dem täglichen Erstellungs-/Retention-Pfad, gehören aber in dasselbe Alarmrouting. Scheitert nur die Retention, nachdem das neue Paar bereits veröffentlicht wurde, enthält das Fehler-JSON zusätzlich `backupCreated: true`. Das ist weiterhin ein fehlgeschlagener Lauf mit Exitcode `24`, nicht ein vollständig erfolgreicher Zyklus.
+
+## Backupstatus und 24-Stunden-Grenze
+
+Der Statusbefehl benötigt keine Datenbankverbindung und verändert weder Datenbank noch Backup-Dateien:
+
+```powershell
+cd backend
+$env:DB_NAME = 'fittrack'
+$env:FITTRACK_BACKUP_EXPECTED_DATABASE = 'fittrack'
+$env:FITTRACK_BACKUP_ACK = 'backup:fittrack'
+$env:FITTRACK_BACKUP_DIR = 'D:\FitTrackBackups'
+npm run db:backup:status
+```
+
+Er prüft alle zum Datenbanknamen passenden Manifeste und Artefakte inklusive gzip- und SHA-256-Integrität. Das jüngste `completedAt` ist bei einem Alter **grösser als** 86'400 Sekunden stale; exakt 24 Stunden ist noch innerhalb der Grenze. Eine Zeit mehr als fünf Minuten in der Zukunft gilt als Integritätsfehler. Das Erfolgs-JSON enthält unter `latest` Artefaktname, Completion-Zeit, Alter in Sekunden, komprimierte Grösse und SHA-256 sowie `maximumAgeSeconds: 86400`.
+
+Mindestens täglich nach dem Erstellerlauf und zusätzlich in einem unabhängigen Monitoring-Zeitfenster ausführen. Ein Scheduler-Erfolg ohne anschliessenden Statusnachweis genügt nicht.
+
+## UTC-GFS-Retention
+
+Nach einem erfolgreich veröffentlichten Backup gilt die feste UTC-Policy:
+
+- 7 neueste unterschiedliche UTC-Tages-Buckets (`daily`);
+- 4 neueste unterschiedliche ISO-Wochen-Buckets (`weekly`);
+- 3 neueste unterschiedliche UTC-Monats-Buckets (`monthly`);
+- zusätzlich immer das insgesamt jüngste Backup.
+
+Die tatsächlich behaltenen Dateien sind die Vereinigung dieser Buckets; ein Backup kann mehrere Buckets abdecken. Vor jeder Löschung werden alle Löschkandidaten erneut vollständig verifiziert. Automatisch gelöscht werden ausschliesslich eigene, zum exakten Datenbanknamen und Namensschema passende `.sql.gz`-/`.manifest.json`-Paare. Unbekannte Dateien, Legacy-`.sql`, fremde Datenbanknamen, verwaiste Artefakte und Manifeste ausserhalb des eigenen Musters werden nicht automatisch gelöscht. Ein ungültiges passendes Manifest oder ein Fehler beim Löschen stoppt die Retention mit Exitcode `24`; es gibt kein rekursives Verzeichnislöschen.
+
+Managed `.sql.gz`-/Manifest-Paare nicht manuell auseinandernehmen. Legacy-Dateien dürfen erst nach dokumentierter Frist, bestätigter Off-host-Kopie und erfolgreichem Restore-Nachweis einzeln per exakt aufgelöstem Pfad entfernt werden; keine Wildcards verwenden.
+
+## Scheduler-Prozess
+
+Für Cron und Windows Task Scheduler gilt derselbe Betriebsprozess:
+
+1. Einen namentlichen technischen Owner und eine Vertretung festlegen. Der Owner verantwortet Zeitplan, Secret-Rotation, Logprüfung, Alarmquittierung und Restore-Drills.
+2. Unter einem dedizierten, nicht interaktiv genutzten Konto täglich in UTC zuerst `npm run db:backup:daily` und danach `npm run db:backup:status` ausführen. Zeitzone und Verhalten bei Sommerzeitwechsel dokumentieren und testen.
+3. Einen nicht versionierten, nur für das Dienstkonto lesbaren Wrapper verwenden. Er setzt das Backend-Arbeitsverzeichnis, lädt die Variablen aus einem ACL-geschützten Secret Store beziehungsweise Environment-File und ruft npm auf.
+4. `DB_PASSWORD`, Acknowledgements und andere sensible Werte niemals in die Cron-Zeile, Task-Argumente oder Kommandozeile schreiben. Logs dürfen nur die JSON-Resultate und Scheduler-Metadaten enthalten.
+5. stdout/stderr in ein zugriffsgeschütztes JSONL-/Scheduler-Log schreiben, Rotation und Aufbewahrung festlegen und Exitcodes an das Alarmrouting übergeben.
+6. Laufzeit und Lock beobachten, damit kein zweiter Zeitplan denselben Lauf überlappt. Nach jedem Fehler den unabhängigen Statuslauf beibehalten.
+
+Beispielhafte Cron-Struktur, sofern die eingesetzte Cron-Variante `CRON_TZ` unterstützt:
+
+```cron
+CRON_TZ=UTC
+15 2 * * * /opt/fittrack/ops/run-fittrack-backup >> /var/log/fittrack/backup.jsonl 2>&1
+```
+
+`run-fittrack-backup` ist ein lokal zu erstellender, geschützter Wrapper und kein Bestandteil des Repositorys. Er darf keine Secrets ausgeben. Bei einer Cron-Variante ohne `CRON_TZ` muss die Host-Zeitzone oder eine äquivalente UTC-Planung explizit dokumentiert werden.
+
+Im Windows Task Scheduler zeigt die Action beispielsweise auf `powershell.exe` mit `-NoProfile -NonInteractive -File C:\FitTrack\ops\Run-FitTrackBackup.ps1`. Das Passwort steht nicht in `Arguments`; das ACL-geschützte Skript lädt es aus dem freigegebenen lokalen Secret-Verfahren. Die Aufgabe läuft unabhängig von einer Benutzeranmeldung unter dem dedizierten Konto, besitzt ein festes Working Directory, schreibt ein geschütztes Log und behandelt jeden Exitcode ungleich `0` als Fehler. Nach Anlage und nach Passwortrotation sind ein manueller Trigger und die Log-/Alarmzustellung zu prüfen.
+
+## Off-host-Kopie als nachgelagerter Adapter
+
+Der aktuelle Stage-0C-Code erstellt und verwaltet lokale externe Backup-Paare; ein Upload-Adapter ist noch nicht implementiert. Der dokumentierte nächste Schritt beginnt **erst nach** lokalem Exitcode `0`, `BACKUP_CREATED`, vollständigem Manifest-/Hash-Nachweis und erfolgreichem `db:backup:status`:
+
+1. Genau das neue `.sql.gz` und sein `.manifest.json` als unveränderliches Paar auswählen.
+2. Beide Objekte in privaten, verschlüsselten Object Storage hochladen; öffentliche Leserechte und anonyme URLs sind verboten.
+3. Server-side encryption (SSE, vorzugsweise mit verwaltetem kundenspezifischem Schlüssel), Versioning und eine mit RPO/Datenschutz abgestimmte Lifecycle-/Löschpolicy aktivieren.
+4. Eine separate Upload-Rolle mit Schreibrecht nur auf den vorgesehenen Bucket/Prefix verwenden. Restore-Leserechte liegen bei einer getrennten Recovery-Rolle; die Anwendung selbst erhält keine Bucket-Rechte.
+5. Region, Datenresidenz, Datenschutzklassifikation, Schlüsselstandort, Anbieter-Backups und Löschfristen vor Aktivierung freigeben.
+6. Übertragene Objektgrösse und Checksumme gegen das lokale Manifest prüfen, Objektversion/Remote-ID protokollieren und Uploadfehler alarmieren. Ein fehlgeschlagener Upload darf keinen lokalen Erfolg vortäuschen.
+7. Regelmässig eine konkrete Objektversion in ein isoliertes Verzeichnis herunterladen, Manifest und beide Hashes lokal prüfen und sie im monatlichen Restore-Drill verwenden.
+
+Dieser Adapter muss als eigener, getesteter und beobachteter Schritt implementiert werden. Object-Storage-Lifecycle und lokale 7/4/3-Retention sind getrennte Policies; keine von beiden darf stillschweigend die andere ersetzen.
+
+## Restore in eine neue Wegwerf-Datenbank
+
+Ein Restore löscht und erstellt die explizit benannte Zieldatenbank neu. Er ist nur zulässig, wenn alle Guards erfüllt sind:
+
+- `NODE_ENV=test`;
+- `ALLOW_TEST_DB_RESET=true`;
+- `DB_HOST` ist `localhost`, `127.0.0.1` oder `::1`;
+- `DB_NAME` beginnt mit `fittrack_test`, `fittrack_e2e` oder `fittrack_restore` und enthält danach nur klar begrenzte alphanumerische `_`-Segmente;
+- `FITTRACK_RESTORE_ACK=restore-local-test-database`;
+- `FITTRACK_RESTORE_FILE` zeigt auf eine lesbare `.sql.gz`- oder Legacy-`.sql`-Datei.
+
+Beispiel:
 
 ```powershell
 cd backend
 $env:NODE_ENV = 'test'
 $env:ALLOW_TEST_DB_RESET = 'true'
 $env:DB_HOST = '127.0.0.1'
-$env:DB_NAME = 'fittrack_restore_drill'
+$env:DB_PORT = '3306'
+$env:DB_USER = '<datenbankbenutzer>'
+$env:DB_NAME = 'fittrack_restore_drill202607'
 $env:FITTRACK_DB_CONTAINER = 'fittrack_mysql'
-$env:FITTRACK_RESTORE_FILE = '<absoluter Pfad zum geprüften .sql-Dump>'
+$env:FITTRACK_RESTORE_FILE = 'D:\FitTrackBackups\fittrack-<UTC-Zeitstempel>.sql.gz'
 $env:FITTRACK_RESTORE_ACK = 'restore-local-test-database'
 npm run db:restore:test
 ```
 
-Das Restore-Skript wiederholt die strukturelle Plausibilitätsprüfung der Dump-Datei, berechnet ihren SHA-256, erstellt das klar begrenzte Testziel neu, streamt den Dump über `mysql` aus dem Container und meldet anschliessend Verbindung und Tabellenanzahl. Vor dem Restore muss der Datei-Hash separat berechnet und mit dem beim Backup protokollierten Sollwert verglichen werden; das Skript kennt diesen Sollwert nicht und gibt `sourceSha256` erst nach dem Lauf aus. Ein Exitcode 0 allein reicht ebenfalls nicht: `restoredTables` muss grösser als 0 sein und der erwarteten Struktur entsprechen. Ein Restore gegen `fittrack`, einen entfernten Host oder einen unklaren Namen wird verweigert.
+Für `.sql.gz` ist das benachbarte Manifest mit dem Namen `<dump>.manifest.json` zwingend. **Vor `DROP DATABASE`** prüft das Skript Completion Marker, Datenbank-/Dateinamensbindung, komprimierte Grösse und SHA-256, vollständige gzip-Dekodierung, Rohgrösse und Roh-SHA-256 sowie Dump-Header und Tabellendefinitionen. Erst danach erstellt es das begrenzte Testziel neu und streamt den dekomprimierten Dump über `mysql` in den Container.
 
-## Restore und Migration verifizieren
+Ein Legacy-`.sql` bleibt unterstützt. Vor dem Drop werden Mindestgrösse, Header, Tabellendefinitionen und SHA-256 berechnet; da kein Stage-0C-Manifest vorhanden ist, muss dieser Hash zusätzlich gegen den beim manuellen Backup sicher protokollierten Sollwert verglichen werden. Für neue automatisierte Backups ist immer `.sql.gz` plus Manifest zu verwenden.
 
-Vor einer Migration die erwarteten Zeilenzahlen und Foreign Keys read-only erfassen. Mindestens prüfen:
+Ein erfolgreicher Restore meldet unter anderem `sourceBytes`, `sourceSha256`, `logicalBytes`, `logicalSha256`, `compression` und `restoredTables`. Exitcode `0` allein genügt nicht: Hashes müssen zur Quelle passen, `restoredTables` muss plausibel sein und die folgenden Integritäts-/Anwendungstests müssen bestehen.
+
+## Migration und Datenintegrität nach Restore
+
+Vor Änderungen Zeilenzahlen und Foreign Keys read-only erfassen, mindestens:
 
 ```sql
 SELECT COUNT(*) FROM users;
@@ -101,84 +272,75 @@ WHERE TABLE_SCHEMA = DATABASE()
 ORDER BY TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION;
 ```
 
-Zuerst den erwarteten Migrationszustand bestimmen und dann gegen die Restore-Datenbank ausführen:
+Zunächst nur diagnostizieren:
 
 ```powershell
 npm run db:migrate:status
-npm run db:migrate
-npm run db:migrate:status
-npm run db:migrate
-npm run db:migrate:status
+npm run db:migrate:doctor
 ```
 
-Bei einem unversionierten Legacy-Dump muss der erste Status die erwarteten Migrationen 001–004 als ausstehend melden und der erste Migrationslauf sie anwenden. Bei einem bereits versionierten Dump müssen 001–004 schon mit den bekannten Checksums erfolgreich vorliegen und bereits der erste Migrationslauf ein No-op sein. In beiden Fällen müssen `dirty`, `drift` und `unknown` leer bleiben; der abschliessende zweite Migrationslauf muss `applied: []` beziehungsweise `appliedCount: 0` melden.
+Nur wenn der erwartete Zustand tatsächlich `pending` ist und keine Dirty-/Drift-/Unknown-/Schemafehler vorliegen, die Migration explizit für die Wegwerf-Datenbank bestätigen:
 
-Anschliessend dieselben Counts und Foreign Keys erneut erfassen und mindestens folgende Integritätsbedingungen prüfen:
+```powershell
+$env:FITTRACK_MIGRATION_EXPECTED_DATABASE = $env:DB_NAME
+npm run db:migrate
+npm run db:migrate:doctor
+npm run db:migrate
+npm run db:migrate:doctor
+```
+
+Der zweite Migrationslauf muss ein No-op sein und der abschliessende Doctor muss `ready` mit Exitcode `0` melden. Bei Dirty, Drift, Unknown oder partiellem Schema nicht weiter migrieren; `MIGRATION_RECOVERY.md` verwenden.
+
+Danach dieselben Counts und Foreign Keys erneut erfassen und mindestens prüfen:
 
 - keine verwaisten Workouts, Workout-Übungen oder Fortschrittseinträge;
 - keine verwaisten Quellverknüpfungen zwischen Fortschritt und Workout-Übung;
 - keine doppelten Fortschrittseinträge pro Workout-Übung;
 - alle abgeleiteten Fortschrittseinträge besitzen Quelle und Übungs-Snapshot;
-- Gewicht, Sätze, Wiederholungen, Datum und 1RM der abgeleiteten Einträge stimmen mit der Quelle überein;
-- Anwendung startet gegen die Kopie, `/api/health/live` und `/api/health/ready` liefern HTTP 200;
-- Registrierung/Login sowie ein kleiner Workout-/Progress-Smoke funktionieren mit eigens erzeugten Testdaten.
+- Gewicht, Sätze, Wiederholungen, Datum und 1RM stimmen mit der Quelle überein;
+- Anwendung startet gegen die Kopie; `/api/health/live` und `/api/health/ready` liefern HTTP 200;
+- Login sowie das Lesen eines bestehenden Workouts funktionieren, ohne Passwörter aus dem Dump zu extrahieren oder offenzulegen.
 
-Ein Login mit einem bestehenden Konto wird nur geprüft, wenn die Zugangsdaten über einen sicheren Kanal verfügbar sind. Niemals Passwörter aus Dumps extrahieren oder offenlegen.
+## Monatlicher Restore-Drill
 
-Für einen echten Restore-Nachweis den gesamten Restore-, Migrations- und Smoke-Ablauf in einer zweiten leeren Wegwerf-Datenbank wiederholen. Erst danach darf ein geplanter Eingriff in eine benötigte Datenbank freigegeben werden.
+Der Owner führt monatlich sowie nach wesentlichen Backup-, Restore-, Schema- oder Infrastrukturänderungen folgenden kontrollierten Drill aus:
 
-## Testdatenbank sicher entfernen
-
-Nach dokumentiertem Erfolg nur das explizite Wegwerfziel löschen:
+1. Jüngstes erfolgreiches Backup anhand Status-JSON bestimmen und die dokumentierte Off-host-Objektversion in ein isoliertes Verzeichnis herunterladen. Lokale und Remote-Grösse/Checksumme protokollieren.
+2. Das `.sql.gz`-/Manifest-Paar vorab validieren und die Manifestwerte für komprimierten und logischen SHA-256 in das Drill-Protokoll übernehmen.
+3. Einen neuen, bisher nicht existierenden Namen wie `fittrack_restore_drill202607` verwenden; nie eine bestehende Test-, Entwicklungs- oder Produktivdatenbank wiederverwenden.
+4. Mit den Restore-Guards `npm run db:restore:test` ausführen. Start-/Endzeit messen und Restore-JSON samt Hashvergleich erfassen.
+5. `npm run db:migrate:doctor` ausführen. Falls kontrolliert Migrationen nötig sind, nur mit exakt passendem `FITTRACK_MIGRATION_EXPECTED_DATABASE` migrieren, No-op wiederholen und Doctor bis `ready`/Exitcode `0` prüfen.
+6. Counts, Foreign Keys und Integritätsbedingungen vergleichen.
+7. Die Anwendung mit `FITTRACK_AUTO_MIGRATE=false` gegen die Kopie starten, Live- und Readiness-Endpunkt prüfen, sich über einen genehmigten Testzugang anmelden und mindestens ein vorhandenes Workout read-only abrufen. Keine produktiven Aktionen oder Benachrichtigungen auslösen.
+8. RPO-Alter, gesamte RTO-Dauer, Owner, Backup-/Objektversion, beide SHA-256-Werte, Doctor-/Readiness-/Login-/Workout-Ergebnis und Abweichungen protokollieren.
+9. Erst nach vollständiger Beweissicherung die exakt benannte Kopie kontrolliert löschen:
 
 ```powershell
 cd backend
 $env:NODE_ENV = 'test'
 $env:ALLOW_TEST_DB_RESET = 'true'
 $env:DB_HOST = '127.0.0.1'
-$env:DB_NAME = 'fittrack_restore_drill'
+$env:DB_NAME = 'fittrack_restore_drill202607'
 npm run db:test:drop
 ```
 
-Der gleiche Loopback- und Namensschutz gilt beim Löschen. Vorher sicherstellen, dass alle benötigten Prüfergebnisse erfasst wurden.
+Der Drop unterliegt demselben Loopback-, Environment- und Namensschutz. Container, Named Volume, Quelldatenbank und Backup-Dateien werden dabei nicht gelöscht.
 
-## Alte Dumps sicher löschen
+## Alarme und Reaktion
 
-Backups zuerst nach Aufbewahrungsregel, Restore-Nachweis und Replikation in den vorgesehenen geschützten Speicher bewerten. Keine Wildcards und kein rekursives Löschen verwenden. Unter PowerShell einen einzelnen Pfad auflösen, gegen das erwartete Backup-Verzeichnis prüfen und erst dann entfernen:
-
-```powershell
-$backupRoot = (Resolve-Path -LiteralPath '<Backup-Verzeichnis>').Path
-$dump = (Resolve-Path -LiteralPath '<einzelner alter Dump.sql>').Path
-$insideRoot = $dump.StartsWith($backupRoot + [IO.Path]::DirectorySeparatorChar,
-  [StringComparison]::OrdinalIgnoreCase)
-if (-not $insideRoot -or [IO.Path]::GetExtension($dump) -ne '.sql') {
-  throw 'Abbruch: Datei liegt nicht als .sql im erwarteten Backup-Verzeichnis.'
-}
-Remove-Item -LiteralPath $dump
-```
-
-Für den frühen Pilot ist eine Ausgangsregel von sieben täglichen und vier wöchentlichen geprüften Backups sinnvoll. Sie ist vor Pilotstart mit Speicher-, Datenschutz- und Löschvorgaben verbindlich festzulegen. Ein Backup ist erst belastbar, wenn es verschlüsselt, zugriffsgeschützt, ausserhalb des Anwendungsservers gespeichert und regelmässig wiederhergestellt wurde.
-
-## Typische Fehler und Reaktion
-
-| Fehlercode/Symptom | Bedeutung | Reaktion |
+| Signal | Priorität | Reaktion |
 | --- | --- | --- |
-| `BACKUP_LOCATION_REQUIRED` | Kein externes Backupziel gesetzt | Absoluten externen Pfad setzen |
-| `BACKUP_LOCATION_FORBIDDEN` | Ziel liegt im Repository | Geschütztes Verzeichnis ausserhalb des Repositorys wählen |
-| `BACKUP_TARGET_FORBIDDEN` | Datenbankhost ist nicht Loopback | Pilot-Skript nicht umgehen; Produktionsprozess separat planen |
-| `BACKUP_VERIFICATION_FAILED` | Dump ist leer, zu klein oder strukturell unplausibel | Dump verwerfen, Container/Storage prüfen und neu erstellen |
-| `TEST_DB_OPERATION_FORBIDDEN` | Environment, Host, Zielname oder Bestätigung ist unsicher | Konfiguration korrigieren; Schutz nicht abschwächen |
-| `RESTORE_FILE_REQUIRED` / `RESTORE_FILE_INVALID` | Quelle fehlt oder ist keine lesbare `.sql`-Datei | Exakten geprüften Dump angeben |
-| `DATABASE_TOOL_UNAVAILABLE` | Docker oder Container-Tool nicht startbar | Docker, Containername und MySQL-Image prüfen |
-| Dirty-/Drift-/Unknown-Status | Migration unvollständig oder Ledger inkonsistent | Nicht weiter migrieren; Backup sichern und Ursache analysieren |
-| Readiness bleibt ungleich 200 | DB, Migration oder Runtime nicht betriebsbereit | Keine Umschaltung; Logs per Request-ID und Startup-Ereignis auswerten |
+| `BACKUP_MISSING` / Exit `21` | Kritisch | Scheduler, Pfad und letzte erfolgreiche Kopie sofort prüfen; RPO-Risiko eröffnen |
+| `BACKUP_STALE` / Exit `22` oder Alter > 24 h | Kritisch | RPO-Verletzung alarmieren, Backup-Ursache beheben und Status nach erfolgreichem Lauf erneut prüfen |
+| `BACKUP_INTEGRITY_FAILED` oder `BACKUP_VERIFICATION_FAILED` / Exit `23` | Kritisch | Artefakt nicht restaurieren oder löschen; unveränderte Kopie sichern, Storage/Transfer untersuchen, neues Backup erzeugen |
+| Konfigurations-/Targetfehler / Exit `10` | Hoch | Automation stoppen; erwartete DB, ACK, Container, Loopback und externen Pfad korrigieren; Guards nicht umgehen |
+| `BACKUP_RETENTION_FAILED` / Exit `24` | Hoch | Bei `backupCreated: true` neues Paar sichern, Retention separat analysieren; keine manuelle Massenlöschung |
+| `BACKUP_LOCKED` / Exit `25` | Hoch | Parallel-/hängenden Prozess prüfen; Lock nur nach dokumentierter Prozessprüfung behandeln |
+| `DATABASE_TOOL_FAILED`, `DATABASE_TOOL_UNAVAILABLE` oder sonstiger Exit `20` | Hoch | Docker, Container, MySQL-Tool, Berechtigungen, freien Speicher und geschützte stderr-Details prüfen |
+| Lokaler Backup-Erfolg, aber Off-host-Upload/Checksumme fehlgeschlagen | Kritisch | Lauf als nicht RPO-fähig behandeln; lokale Kopie schützen, Upload wiederholen und Remote-Verifikation dokumentieren |
+| Doctor nicht `ready`, Readiness ungleich 200 oder Login/Workout-Smoke fehlgeschlagen | Kritisch | Keine Umschaltung/Freigabe; Restore-Kopie erhalten, Migration-Recovery und Anwendungslogs untersuchen |
+| Monatlicher Drill überfällig oder RTO > 4 h | Hoch | Owner und Pilotverantwortung alarmieren, Drill nachholen beziehungsweise Recovery-Plan verbessern |
 
-## Monitoring und Verantwortlichkeit
+Monitoring erfasst mindestens letzten erfolgreichen Completion-Zeitpunkt, Alter, Artefaktgrösse und SHA-256, lokalen und Off-host-Status, Retentionresultat, Restore-/RTO-Dauer, Doctor-/Readiness-Ergebnis, zuständigen Owner und Alarmquittierung. Secrets, Dump-Inhalte und Zugangsdaten dürfen nie als Metrik oder Logfeld erscheinen.
 
-- Backupalter über 24 Stunden: Alarm und RPO-Verletzung untersuchen.
-- Jeder fehlgeschlagene Backup- oder Restore-Lauf: sofortiger Alarm.
-- Monatliche Restore-Übung im frühen Pilot; zusätzlich nach Schema-/Tooländerungen.
-- Dashboard: letzter erfolgreicher Backup-Zeitpunkt, Alter, Grösse, SHA-256-Erfassung, Restore-Dauer, Migrationsdauer, Integritätsresultat und verantwortliche Person.
-- Ein Owner muss täglich den automatisierten Backupstatus und nach jeder Übung das signierte Restore-Protokoll prüfen.
-
-Vor Produktion sind Automatisierung, verschlüsselter Off-host-Storage, Secret Store, Retention/Löschung, Least-Privilege-Konten, Alarmrouting und ein gemessener vollständiger Disaster-Recovery-Test zwingend nachzuziehen.
+Vor einem produktiven Einsatz sind ein freigegebener Off-host-Adapter, verschlüsselter und versionierter Storage, getrennte Least-Privilege-Rollen, Secret Store, Alarmrouting, Datenschutz-/Löschfreigabe sowie ein vollständig gemessener Disaster-Recovery-Test zwingend.

@@ -1,10 +1,62 @@
 const mysql = require("mysql2");
-require("dotenv").config({ quiet: true });
+const path = require("node:path");
+const dotenv = require("dotenv");
+
+const BACKEND_ENV_PATH = path.resolve(__dirname, "../.env");
+let backendEnvironmentLoaded = false;
+let defaultPool;
+
+const RUNTIME_ENVIRONMENTS = new Set(["development", "test", "production"]);
 
 function configError(message) {
     const error = new Error(message);
     error.code = "INVALID_DATABASE_CONFIG";
     return error;
+}
+
+function runtimeConfigError(code, message) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+}
+
+function loadBackendEnvironment(env = process.env) {
+    if (env === process.env && !backendEnvironmentLoaded) {
+        dotenv.config({
+            path: BACKEND_ENV_PATH,
+            processEnv: env,
+            quiet: true
+        });
+        backendEnvironmentLoaded = true;
+    }
+    return env;
+}
+
+function readRuntimeEnvironment(env = process.env) {
+    loadBackendEnvironment(env);
+    const environment = env.NODE_ENV;
+    if (!RUNTIME_ENVIRONMENTS.has(environment)) {
+        throw runtimeConfigError(
+            "INVALID_RUNTIME_ENVIRONMENT",
+            "NODE_ENV must be explicitly set to development, test, or production."
+        );
+    }
+    return environment;
+}
+
+function readAutoMigrate(env = process.env) {
+    loadBackendEnvironment(env);
+    const value = env.FITTRACK_AUTO_MIGRATE;
+    if (value === undefined || value === null || value === "" || value === "false") {
+        return false;
+    }
+    if (value === "true") {
+        return true;
+    }
+    throw runtimeConfigError(
+        "INVALID_AUTO_MIGRATE_CONFIG",
+        "FITTRACK_AUTO_MIGRATE must be exactly true or false."
+    );
 }
 
 function integerSetting(value, fallback, name, { min = 1, max = 65535 } = {}) {
@@ -35,6 +87,7 @@ function textSetting(env, name, fallback, { productionRequired = true } = {}) {
 }
 
 function readDatabaseConfig(env = process.env, { includeDatabase = true } = {}) {
+    loadBackendEnvironment(env);
     const database = textSetting(env, "DB_NAME", "fittrack");
 
     if (!/^[A-Za-z0-9_$-]+$/.test(database)) {
@@ -58,6 +111,38 @@ function readDatabaseConfig(env = process.env, { includeDatabase = true } = {}) 
     }
 
     return config;
+}
+
+function assertMigrationExpectedDatabase(config, env = process.env) {
+    loadBackendEnvironment(env);
+    const configuredDatabase = typeof env.DB_NAME === "string" ? env.DB_NAME.trim() : "";
+    const expectedDatabase =
+        typeof env.FITTRACK_MIGRATION_EXPECTED_DATABASE === "string"
+            ? env.FITTRACK_MIGRATION_EXPECTED_DATABASE.trim()
+            : "";
+
+    if (
+        !configuredDatabase ||
+        !expectedDatabase ||
+        configuredDatabase !== config?.database ||
+        expectedDatabase !== configuredDatabase
+    ) {
+        throw runtimeConfigError(
+            "MIGRATION_TARGET_NOT_CONFIRMED",
+            "FITTRACK_MIGRATION_EXPECTED_DATABASE must exactly match the explicit DB_NAME before migrations may modify a database."
+        );
+    }
+
+    return expectedDatabase;
+}
+
+function databaseTarget(config, environment) {
+    return {
+        environment,
+        host: config.host,
+        port: config.port,
+        database: config.database
+    };
 }
 
 function createPool(config = readDatabaseConfig()) {
@@ -86,6 +171,12 @@ async function verifyConnection(client = db) {
 }
 
 async function closePool(client = db) {
+    if (client === db && !defaultPool) {
+        return;
+    }
+    if (client === db) {
+        client = defaultPool;
+    }
     const promisePool = promiseClient(client);
     if (typeof promisePool.end === "function") {
         await promisePool.end();
@@ -96,15 +187,36 @@ function createAdminConnection(config = readDatabaseConfig(process.env, { includ
     return mysql.createConnection(config).promise();
 }
 
-const db = createPool();
+function getDefaultPool() {
+    if (!defaultPool) {
+        defaultPool = createPool();
+    }
+    return defaultPool;
+}
+
+const db = {
+    promise() {
+        return getDefaultPool().promise();
+    },
+    query(...args) {
+        return getDefaultPool().query(...args);
+    }
+};
 
 module.exports = db;
+module.exports.BACKEND_ENV_PATH = BACKEND_ENV_PATH;
+module.exports.assertMigrationExpectedDatabase = assertMigrationExpectedDatabase;
 module.exports.closePool = closePool;
 module.exports.configError = configError;
 module.exports.createAdminConnection = createAdminConnection;
 module.exports.createPool = createPool;
+module.exports.databaseTarget = databaseTarget;
 module.exports.integerSetting = integerSetting;
+module.exports.loadBackendEnvironment = loadBackendEnvironment;
 module.exports.promiseClient = promiseClient;
+module.exports.readAutoMigrate = readAutoMigrate;
 module.exports.readDatabaseConfig = readDatabaseConfig;
+module.exports.readRuntimeEnvironment = readRuntimeEnvironment;
+module.exports.runtimeConfigError = runtimeConfigError;
 module.exports.textSetting = textSetting;
 module.exports.verifyConnection = verifyConnection;

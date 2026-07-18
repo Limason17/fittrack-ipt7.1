@@ -46,6 +46,8 @@ jobs:
       CORS_ORIGIN: http://localhost:5173
       ALLOW_TEST_DB_RESET: "true"
       FITTRACK_RUN_DB_INTEGRATION: "true"
+      FITTRACK_AUTO_MIGRATE: "false"
+      FITTRACK_MIGRATION_EXPECTED_DATABASE: fittrack_test_ci
 
     steps:
       - name: Repository auschecken
@@ -81,6 +83,21 @@ jobs:
           npm run db:test:reset
           npm run db:migrate
           npm run db:migrate:status
+
+      - name: Migration Doctor auf sauberer Testdatenbank
+        working-directory: backend
+        run: npm run db:migrate:doctor
+
+      - name: Wegwerf-Backup, Hash und Status prüfen
+        working-directory: backend
+        env:
+          FITTRACK_DB_CONTAINER: ${{ job.services.mysql.id }}
+          FITTRACK_BACKUP_DIR: ${{ runner.temp }}/fittrack-ci-backups
+          FITTRACK_BACKUP_EXPECTED_DATABASE: fittrack_test_ci
+          FITTRACK_BACKUP_ACK: backup:fittrack_test_ci
+        run: |
+          npm run db:backup:daily
+          npm run db:backup:status
 
       - name: Backend-Suite mit Zwei-Nutzer-Isolation und Wegwerf-DBs
         working-directory: backend

@@ -58,6 +58,22 @@ function createRuntime({ pool = db, logger = createStructuredLogger() } = {}) {
     };
 }
 
+function readRuntimeConfig(env = process.env) {
+    const environment = db.readRuntimeEnvironment(env);
+    const databaseConfig = db.readDatabaseConfig(env);
+    const autoMigrate = db.readAutoMigrate(env);
+    const migrationExpectedDatabase = autoMigrate
+        ? db.assertMigrationExpectedDatabase(databaseConfig, env)
+        : undefined;
+
+    return {
+        autoMigrate,
+        databaseConfig,
+        migrationExpectedDatabase,
+        migrationTarget: db.databaseTarget(databaseConfig, environment)
+    };
+}
+
 function installShutdownHandlers({ server, database, readiness, logger }) {
     let shuttingDown = false;
 
@@ -86,14 +102,21 @@ function installShutdownHandlers({ server, database, readiness, logger }) {
 }
 
 async function main(options = {}) {
+    const runtimeConfig = options.runtimeConfig || readRuntimeConfig(options.env || process.env);
+    const port = options.port || readPort((options.env || process.env).PORT);
     const runtime = options.runtime || createRuntime(options);
-    const port = options.port || readPort();
+    const createApplication =
+        options.createApplication ||
+        (({ readiness, logger }) => createApp({ readiness, logger }));
+    const app = createApplication({
+        readiness: runtime.readiness,
+        logger: runtime.logger
+    });
     const result = await bootstrap({
         ...runtime,
+        ...runtimeConfig,
         port,
-        createApplication:
-            options.createApplication ||
-            (({ readiness, logger }) => createApp({ readiness, logger })),
+        createApplication: () => app,
         listen: options.listen || listen
     });
 
@@ -123,5 +146,6 @@ module.exports = {
     installShutdownHandlers,
     listen,
     main,
-    readPort
+    readPort,
+    readRuntimeConfig
 };

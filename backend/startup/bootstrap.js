@@ -23,15 +23,32 @@ async function bootstrap({
     migrationRunner,
     readiness,
     logger,
+    autoMigrate = false,
+    migrationExpectedDatabase,
+    migrationTarget,
     createApplication,
     listen,
     port = Number(process.env.PORT) || 3001
 }) {
-    if (!database || !migrationRunner || !readiness) {
+    if (
+        !database ||
+        !migrationRunner ||
+        !readiness ||
+        !migrationTarget ||
+        typeof createApplication !== "function" ||
+        typeof listen !== "function"
+    ) {
         throw new TypeError("Bootstrap dependencies are incomplete.");
+    }
+    if (autoMigrate && migrationExpectedDatabase !== migrationTarget.database) {
+        throw startupError(
+            "MIGRATION_TARGET_NOT_CONFIRMED",
+            "Auto-migrate requires an explicitly confirmed database target."
+        );
     }
 
     try {
+        logger?.info("migration_target", migrationTarget);
         logger?.info("startup_database_check_started");
         try {
             await database.verifyConnection();
@@ -44,8 +61,14 @@ async function bootstrap({
         }
         logger?.info("startup_database_check_succeeded");
 
-        logger?.info("startup_migrations_started");
-        await migrationRunner.migrate();
+        if (autoMigrate) {
+            logger?.info("startup_migrations_started");
+            await migrationRunner.migrate({
+                expectedDatabase: migrationExpectedDatabase
+            });
+        } else {
+            logger?.info("startup_migrations_skipped", { reason: "auto_migrate_disabled" });
+        }
         const status = await migrationRunner.status({ ensureLedger: false });
 
         if (!isMigrationStatusReady(status)) {
@@ -54,7 +77,9 @@ async function bootstrap({
                 "Database migrations are not fully applied."
             );
         }
-        logger?.info("startup_migrations_succeeded");
+        logger?.info("startup_migration_status_succeeded", {
+            autoMigrate
+        });
 
         readiness.markReady();
         const app = createApplication({ readiness, logger });
