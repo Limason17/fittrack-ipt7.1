@@ -84,11 +84,11 @@ onMounted(() => {
   width: 100%;
   min-height: 40px;
   padding: 0.4rem 2rem 0.4rem 0.65rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: #fff;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
   color: var(--text);
-  font-size: 0.82rem;
+  font-size: var(--text-sm);
   font-weight: 750;
 }
 
