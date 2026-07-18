@@ -1,10 +1,11 @@
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { saveAuth } from '../utils/auth'
+import { safeInternalRedirect, saveAuth } from '../utils/auth'
 import { apiRequest } from '../utils/api'
 import { applyLanguageForUser, t } from '../utils/i18n'
 import { applyDistanceUnitForUser, applyWeightUnitForUser } from '../utils/units'
+import { hydrateStudioContext } from '../utils/studioContext'
 
 const router = useRouter()
 const route = useRoute()
@@ -13,6 +14,10 @@ const email = ref('')
 const password = ref('')
 const errorMessage = ref('')
 const isLoading = ref(false)
+const registrationRedirect = computed(() => safeInternalRedirect(route.query.redirect, ''))
+const registerTarget = computed(() => registrationRedirect.value
+  ? { name: 'register', query: { redirect: registrationRedirect.value } }
+  : { name: 'register' })
 
 async function handleLogin() {
   errorMessage.value = ''
@@ -39,11 +44,14 @@ async function handleLogin() {
       applyWeightUnitForUser(data.user),
       applyDistanceUnitForUser(data.user)
     ])
+    await hydrateStudioContext({ force: true }).catch(() => {})
 
     email.value = ''
     password.value = ''
 
-    router.push(route.query.redirect || '/')
+    // Replace the login entry as it may contain a one-time invitation URL in
+    // the redirect query. This keeps the bearer token out of browser history.
+    router.replace(safeInternalRedirect(route.query.redirect))
   } catch (error) {
     errorMessage.value = error.status ? t('auth.loginFailed') : t('common.serverError')
   } finally {
@@ -104,7 +112,7 @@ async function handleLogin() {
 
         <p class="auth-footer">
           {{ t('auth.noAccount') }}
-          <RouterLink to="/register">{{ t('auth.toRegister') }}</RouterLink>
+          <RouterLink :to="registerTarget" :replace="Boolean(registrationRedirect)">{{ t('auth.toRegister') }}</RouterLink>
         </p>
       </div>
     </div>

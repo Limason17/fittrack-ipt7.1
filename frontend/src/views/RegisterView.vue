@@ -1,11 +1,13 @@
 <script setup>
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { apiRequest } from '../utils/api'
+import { safeInternalRedirect } from '../utils/auth'
 import { locale, t } from '../utils/i18n'
 import { distanceUnit, weightUnit } from '../utils/units'
 
 const router = useRouter()
+const route = useRoute()
 
 const username = ref('')
 const email = ref('')
@@ -13,6 +15,10 @@ const password = ref('')
 const errorMessage = ref('')
 const successMessage = ref('')
 const isLoading = ref(false)
+const loginRedirect = computed(() => safeInternalRedirect(route.query.redirect, ''))
+const loginTarget = computed(() => loginRedirect.value
+  ? { name: 'login', query: { redirect: loginRedirect.value } }
+  : { name: 'login' })
 
 async function handleRegister() {
   errorMessage.value = ''
@@ -50,7 +56,7 @@ async function handleRegister() {
     password.value = ''
 
     setTimeout(() => {
-      router.push('/login')
+      router.replace(loginTarget.value)
     }, 900)
   } catch (error) {
     errorMessage.value = error.status ? t('auth.registerFailed') : t('common.serverError')
@@ -130,7 +136,7 @@ async function handleRegister() {
 
         <p class="auth-footer">
           {{ t('auth.hasAccount') }}
-          <RouterLink to="/login">{{ t('auth.toLogin') }}</RouterLink>
+          <RouterLink :to="loginTarget" :replace="Boolean(loginRedirect)">{{ t('auth.toLogin') }}</RouterLink>
         </p>
       </div>
     </div>

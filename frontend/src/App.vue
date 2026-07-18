@@ -1,13 +1,22 @@
 <script setup>
-import { RouterView } from 'vue-router'
+import { computed } from 'vue'
+import { RouterView, useRoute } from 'vue-router'
 import Navbar from './components/Navbar.vue'
+import { safeInternalRedirect } from './utils/auth'
 import { t } from './utils/i18n'
+
+const route = useRoute()
+const sensitiveRoute = computed(() => {
+  if (route.meta.sensitiveHistory === true) return true
+  const redirect = safeInternalRedirect(route.query.redirect, '')
+  return redirect.startsWith('/invitations/')
+})
 </script>
 
 <template>
   <div class="app-shell">
-    <a class="skip-link" href="#main-content">{{ t('routing.skipToContent') }}</a>
-    <Navbar />
+    <a v-if="!sensitiveRoute" class="skip-link" href="#main-content">{{ t('routing.skipToContent') }}</a>
+    <Navbar v-if="!sensitiveRoute" />
     <main id="main-content" tabindex="-1">
       <RouterView />
     </main>
