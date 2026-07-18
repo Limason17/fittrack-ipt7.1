@@ -40,7 +40,7 @@ jobs:
       DB_HOST: 127.0.0.1
       DB_USER: root
       DB_PASSWORD: root
-      DB_NAME: fittrack_ci_test
+      DB_NAME: fittrack_test_ci
       DB_PORT: 3306
       JWT_SECRET: fittrack-ci-secret-with-at-least-32-characters
       CORS_ORIGIN: http://localhost:5173
