@@ -41,7 +41,7 @@ test('Studio-Lebenszyklus, Rollen, Isolation, Suspension und persönlicher Besta
   await expect(page).toHaveURL(/\/studios\/[0-9a-f-]+$/)
   const studioId = page.url().split('/').at(-1)
   await expect(page.getByRole('heading', { name: `Stage 1A ${owner.username}` })).toBeVisible()
-  await expect(page.getByRole('link', { name: 'Einstellungen' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Einstellungen', exact: true })).toBeVisible()
 
   async function invite(email, invitedRole) {
     await page.goto(`/studios/${studioId}/invitations`)
@@ -67,7 +67,7 @@ test('Studio-Lebenszyklus, Rollen, Isolation, Suspension und persönlicher Besta
     await trainerPage.goto(trainerInvitation)
     await trainerPage.getByRole('button', { name: 'Einladung annehmen' }).click()
     await expect(trainerPage).toHaveURL(new RegExp(`/studios/${studioId}$`))
-    await expect(trainerPage.locator('.studio-page-header .pill')).toHaveText('Trainer:in')
+    await expect(trainerPage.locator('.page-header-badge .badge')).toHaveText('Trainer:in')
     await expect(trainerPage.getByRole('link', { name: 'Einstellungen' })).toHaveCount(0)
     await expect(trainerPage.getByRole('link', { name: 'Mitglieder' }).first()).toBeVisible()
     expect(await trainerPage.evaluate(() => Object.values(localStorage).some((value) => String(value).includes('/invitations/')))).toBe(false)
@@ -97,7 +97,7 @@ test('Studio-Lebenszyklus, Rollen, Isolation, Suspension und persönlicher Besta
     await expect(memberPage).toHaveURL(/\/invitations\/[A-Za-z0-9_-]{43}$/)
     await memberPage.getByRole('button', { name: 'Einladung annehmen' }).click()
     await expect(memberPage).toHaveURL(new RegExp(`/studios/${studioId}$`))
-    await expect(memberPage.locator('.studio-page-header .pill')).toHaveText('Mitglied')
+    await expect(memberPage.locator('.page-header-badge .badge')).toHaveText('Mitglied')
     await expect(memberPage.getByRole('link', { name: 'Einstellungen' })).toHaveCount(0)
     await expect(memberPage.getByRole('link', { name: 'Mitglieder' })).toHaveCount(0)
     await memberPage.goBack()
@@ -145,7 +145,7 @@ test('Studio-Lebenszyklus, Rollen, Isolation, Suspension und persönlicher Besta
     await trainerPage.reload()
     await expect(trainerPage).toHaveURL(/\/studios$/)
     await expect(trainerPage.getByLabel('Aktiver Bereich').first()).toHaveValue('')
-    await expect(trainerPage.getByRole('heading', { name: 'Persönlicher Bereich' })).toBeVisible()
+    await expect(trainerPage.getByRole('heading', { name: 'Persönlicher Bereich', exact: true })).toBeVisible()
   } finally {
     await trainerContext.close()
     await memberContext.close()

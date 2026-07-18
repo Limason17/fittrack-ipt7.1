@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
 const api = vi.hoisted(() => ({
@@ -45,6 +45,8 @@ function studio(role) {
   }
 }
 
+let wrapper
+
 async function mountView(actorRole) {
   addAndSelectStudio(studio(actorRole))
   const router = createRouter({
@@ -58,9 +60,14 @@ async function mountView(actorRole) {
   })
   await router.push('/studios/studio-a/members')
   await router.isReady()
-  const wrapper = mount(StudioMembersView, { global: { plugins: [router] } })
+  wrapper = mount(StudioMembersView, { global: { plugins: [router] }, attachTo: document.body })
   await flushPromises()
   return wrapper
+}
+
+function confirmDialogButton(label) {
+  const buttons = [...document.body.querySelectorAll('[role="dialog"] button')]
+  return buttons.find((button) => button.textContent.includes(label))
 }
 
 describe('StudioMembersView role controls', () => {
@@ -75,35 +82,52 @@ describe('StudioMembersView role controls', () => {
     api.listMemberships.mockResolvedValue({ memberships, pagination: { total: 3 } })
   })
 
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    document.body.innerHTML = ''
+  })
+
   it('allows owners to assign all roles and explicitly mark a membership left', async () => {
-    const wrapper = await mountView('owner')
-    const trainerRow = wrapper.findAll('.studio-list-row')[1]
+    await mountView('owner')
+    const trainerRow = wrapper.findAll('tbody tr')[1]
     const roleValues = trainerRow.findAll('select')[0].findAll('option').map((option) => option.element.value)
     const statusValues = trainerRow.findAll('select')[1].findAll('option').map((option) => option.element.value)
 
     expect(roleValues).toEqual(['owner', 'admin', 'trainer', 'member'])
     expect(statusValues).toEqual(['active', 'suspended', 'left'])
-    wrapper.unmount()
   })
 
-  it('prevents admins from editing owner/admin targets or assigning elevated roles', async () => {
-    const wrapper = await mountView('admin')
-    const [ownerRow, trainerRow] = wrapper.findAll('.studio-list-row')
+  it('prevents admins from editing owner targets, showing a badge and a reason instead', async () => {
+    await mountView('admin')
+    const [ownerRow, trainerRow] = wrapper.findAll('tbody tr')
 
-    expect(ownerRow.findAll('select').every((select) => select.element.disabled)).toBe(true)
-    expect(ownerRow.get('button').element.disabled).toBe(true)
+    expect(ownerRow.findAll('select')).toHaveLength(0)
+    expect(ownerRow.text()).toContain('Nur Eigentümer:innen können diese Mitgliedschaft verwalten.')
     expect(trainerRow.findAll('select')[0].findAll('option').map((option) => option.element.value))
       .toEqual(['trainer', 'member'])
-    expect(trainerRow.findAll('select')[0].element.disabled).toBe(false)
-    wrapper.unmount()
   })
 
   it('renders left memberships without retained identity assumptions', async () => {
-    const wrapper = await mountView('owner')
+    await mountView('owner')
 
     expect(wrapper.text()).toContain('Ehemaliges Mitglied')
     expect(wrapper.text()).toContain('Identität aus Datenschutzgründen nicht mehr verfügbar')
-    wrapper.unmount()
+  })
+
+  it('asks for confirmation before applying a role change and shows before/after roles', async () => {
+    await mountView('owner')
+    const trainerRow = wrapper.findAll('tbody tr')[1]
+    await trainerRow.findAll('select')[0].setValue('member')
+    await trainerRow.get('button').trigger('click')
+    await flushPromises()
+
+    const dialog = document.body.querySelector('[role="dialog"]')
+    expect(dialog).not.toBeNull()
+    expect(dialog.textContent).toContain('Rolle ändern?')
+    expect(dialog.textContent).toContain('Trainer:in')
+    expect(dialog.textContent).toContain('Mitglied')
+    expect(api.updateMembership).not.toHaveBeenCalled()
   })
 
   it('ignores an in-flight membership response after switching studios', async () => {
@@ -120,8 +144,13 @@ describe('StudioMembersView role controls', () => {
         }],
         pagination: { total: 1 },
       })
-    const wrapper = await mountView('owner')
-    await wrapper.findAll('.studio-list-row')[1].get('button').trigger('click')
+    await mountView('owner')
+    const trainerRow = wrapper.findAll('tbody tr')[1]
+    await trainerRow.findAll('select')[0].setValue('member')
+    await trainerRow.get('button').trigger('click')
+    await flushPromises()
+    confirmDialogButton('Bestätigen').click()
+    await flushPromises()
 
     await wrapper.vm.$router.push('/studios/studio-b/members')
     await flushPromises()
@@ -139,6 +168,5 @@ describe('StudioMembersView role controls', () => {
 
     expect(wrapper.text()).toContain('tenant-b@example.test')
     expect(wrapper.text()).not.toContain('tenant-a@example.test')
-    wrapper.unmount()
   })
 })
