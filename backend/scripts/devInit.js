@@ -5,13 +5,16 @@ const { createStructuredLogger } = require("../startup/logger");
 
 async function main() {
     const logger = createStructuredLogger();
-    if (process.env.NODE_ENV === "production") {
+    const environment = db.readRuntimeEnvironment();
+    if (environment === "production") {
         const error = new Error("Development database initialization is disabled in production.");
         error.code = "DEV_INIT_FORBIDDEN";
         throw error;
     }
 
     const databaseConfig = db.readDatabaseConfig();
+    db.assertMigrationExpectedDatabase(databaseConfig);
+    logger.info("migration_target", db.databaseTarget(databaseConfig, environment));
     const admin = db.createAdminConnection();
     try {
         await admin.query(

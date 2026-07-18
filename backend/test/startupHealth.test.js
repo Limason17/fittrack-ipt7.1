@@ -6,6 +6,7 @@ const { afterEach, test } = require("node:test");
 const { createApp, readTrustProxyHops } = require("../startup/app");
 const { bootstrap } = require("../startup/bootstrap");
 const { createReadinessProbe } = require("../startup/readiness");
+const { main } = require("../server");
 
 const openServers = new Set();
 
@@ -136,6 +137,14 @@ function createBootstrapHarness(overrides = {}) {
             migrationRunner,
             readiness,
             logger: silentLogger(),
+            autoMigrate: overrides.autoMigrate ?? true,
+            migrationExpectedDatabase: "fittrack_test",
+            migrationTarget: {
+                environment: "test",
+                host: "127.0.0.1",
+                port: 3306,
+                database: "fittrack_test"
+            },
             createApplication() {
                 calls.push("create_app");
                 return { name: "app" };
@@ -234,6 +243,110 @@ test("FT-03: bereit wird erst nach Ping, Migration und sauberem Status gelauscht
         "listen"
     ]);
     assert.deepEqual(result.server, { name: "server" });
+});
+
+test("Startup bleibt ohne Auto-Migrate status-only und blockiert pending vor dem Listener", async () => {
+    const harness = createBootstrapHarness({
+        autoMigrate: false,
+        migrationRunner: {
+            async status() {
+                harness.calls.push("status");
+                return {
+                    pending: [{ id: "005_pending" }],
+                    dirty: [],
+                    drift: [],
+                    unknown: []
+                };
+            }
+        }
+    });
+
+    await assert.rejects(
+        bootstrap(harness.dependencies),
+        (error) => error.code === "MIGRATIONS_PENDING"
+    );
+    assert.deepEqual(harness.calls, ["ping", "status", "failed", "close"]);
+});
+
+test("Startup loggt das sichere Ziel vor automatischer Migration", async () => {
+    const harness = createBootstrapHarness();
+    const entries = [];
+    harness.dependencies.logger = {
+        info(event, fields) {
+            entries.push({ event, fields });
+        },
+        error() {}
+    };
+
+    await bootstrap(harness.dependencies);
+
+    const targetIndex = entries.findIndex((entry) => entry.event === "migration_target");
+    const migrationIndex = entries.findIndex((entry) => entry.event === "startup_migrations_started");
+    assert.ok(targetIndex >= 0);
+    assert.ok(migrationIndex > targetIndex);
+    assert.deepEqual(entries[targetIndex].fields, {
+        environment: "test",
+        host: "127.0.0.1",
+        port: 3306,
+        database: "fittrack_test"
+    });
+    assert.doesNotMatch(JSON.stringify(entries[targetIndex]), /password|credential|secret|token/i);
+});
+
+test("real server validates the complete application before database or migration I/O", async () => {
+    const calls = [];
+    const runtime = {
+        database: {
+            async verifyConnection() {
+                calls.push("ping");
+            },
+            async close() {
+                calls.push("close");
+            }
+        },
+        migrationRunner: {
+            async migrate() {
+                calls.push("migrate");
+            },
+            async status() {
+                calls.push("status");
+                return { pending: [], dirty: [], drift: [], unknown: [] };
+            }
+        },
+        readiness: {
+            markReady() {},
+            markFailed() {},
+            markShuttingDown() {}
+        },
+        logger: silentLogger()
+    };
+    const invalidApplicationConfig = new Error("invalid application config");
+    invalidApplicationConfig.code = "INVALID_APP_CONFIG";
+
+    await assert.rejects(
+        main({
+            runtime,
+            runtimeConfig: {
+                autoMigrate: true,
+                migrationExpectedDatabase: "fittrack_test",
+                migrationTarget: {
+                    environment: "test",
+                    host: "127.0.0.1",
+                    port: 3306,
+                    database: "fittrack_test"
+                }
+            },
+            port: 3001,
+            createApplication() {
+                throw invalidApplicationConfig;
+            },
+            async listen() {
+                calls.push("listen");
+            }
+        }),
+        (error) => error.code === "INVALID_APP_CONFIG"
+    );
+    assert.deepEqual(calls, []);
 });
 
 async function withHttpApp(readiness, callback) {

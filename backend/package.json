@@ -8,6 +8,7 @@
     "db:check": "node scripts/checkDb.js",
     "db:migrate": "node scripts/migrate.js",
     "db:migrate:status": "node scripts/migrateStatus.js",
+    "db:migrate:doctor": "node scripts/migrateDoctor.js",
     "db:backup": "node scripts/dbBackup.js",
     "db:restore:test": "node scripts/dbRestore.js",
     "db:dev:init": "node scripts/devInit.js",
@@ -17,8 +18,8 @@
     "test": "npm run test:unit && npm run test:integration && npm run test:migrations && npm run test:syntax",
     "test:unit": "node --test test/unit/*.test.js test/startupHealth.test.js",
     "test:integration": "node --test --test-concurrency=1 test/integration/*.test.js",
-    "test:migrations": "node --test --test-concurrency=1 test/migrationPlanning.test.js test/migrationDatabase.test.js",
-    "test:coverage": "node --experimental-test-coverage --test test/unit/*.test.js test/startupHealth.test.js test/migrationPlanning.test.js",
+    "test:migrations": "node --test --test-concurrency=1 test/migrationPlanning.test.js test/migrationDatabase.test.js test/migrationDoctor.test.js test/migrationDoctorDatabase.test.js",
+    "test:coverage": "node --experimental-test-coverage --test test/unit/*.test.js test/startupHealth.test.js test/migrationPlanning.test.js test/migrationDoctor.test.js",
     "test:syntax": "node scripts/checkSyntax.js",
     "audit:security": "npm audit --audit-level=high"
   },
