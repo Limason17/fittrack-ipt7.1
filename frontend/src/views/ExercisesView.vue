@@ -313,7 +313,7 @@ onMounted(() => {
                 v-model="newExercise.name"
                 type="text"
                 class="input"
-                placeholder="Cable Fly"
+                :placeholder="t('exercises.namePlaceholder')"
             />
           </div>
 
@@ -382,8 +382,8 @@ onMounted(() => {
         </div>
       </div>
 
-      <p v-if="errorMessage" class="message message-error">{{ errorMessage }}</p>
-      <p v-if="successMessage" class="message message-success">{{ successMessage }}</p>
+      <p v-if="errorMessage" class="message message-error" role="alert">{{ errorMessage }}</p>
+      <p v-if="successMessage" class="message message-success" role="status">{{ successMessage }}</p>
 
       <div v-if="isLoading" class="empty-state card">
         <p>{{ t('exercises.loading') }}</p>
@@ -435,8 +435,8 @@ onMounted(() => {
             </div>
 
             <div class="exercise-tags">
-              <span class="tag">{{ translateCategory(exercise.category) }}</span>
-              <span class="tag tag-highlight">{{ translateMuscleGroup(exercise.muscle_group) }}</span>
+              <span class="pill">{{ translateCategory(exercise.category) }}</span>
+              <span class="badge badge-warning">{{ translateMuscleGroup(exercise.muscle_group) }}</span>
             </div>
 
             <p class="exercise-description">
@@ -547,14 +547,14 @@ onMounted(() => {
 .exercise-placeholder {
   width: 100%;
   height: 100%;
-  border-radius: 8px;
+  border-radius: var(--radius);
 }
 
 .exercise-image {
   display: block;
   object-fit: contain;
   padding: 0.7rem;
-  background: #fff;
+  background: var(--surface);
 }
 
 .exercise-image-cover {
@@ -568,7 +568,7 @@ onMounted(() => {
   color: var(--text-muted);
   font-weight: 750;
   text-align: center;
-  background: #fff;
+  background: var(--surface);
 }
 
 .exercise-body {
@@ -596,20 +596,6 @@ onMounted(() => {
   display: flex;
   gap: 0.45rem;
   flex-wrap: wrap;
-}
-
-.tag {
-  padding: 0.3rem 0.58rem;
-  border-radius: 999px;
-  background: var(--surface-soft);
-  color: var(--text);
-  font-size: 0.82rem;
-  font-weight: 750;
-}
-
-.tag-highlight {
-  background: var(--surface-tint);
-  color: var(--warning);
 }
 
 .exercise-description {

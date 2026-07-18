@@ -1,11 +1,12 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 
-import StudioSubnav from '../components/StudioSubnav.vue'
+import PageHeader from '../components/ui/PageHeader.vue'
 import { t } from '../utils/i18n'
 import { getStudio, updateStudio } from '../utils/studioApi'
 import { MANAGEMENT_ROLES, activeStudio, refreshSelectedStudio, updateAuthorizedStudio } from '../utils/studioContext'
+import { toastSuccess } from '../utils/toast'
 
 const route = useRoute()
 const router = useRouter()
@@ -112,6 +113,7 @@ async function save() {
     applyStudio(fresh)
     updateAuthorizedStudio(fresh)
     successMessage.value = t('studios.settings.saved')
+    toastSuccess(t('studios.settings.saved'))
   } catch (error) {
     if (current === generation && currentStudioId === studioId.value) {
       if ([403, 404].includes(error.status) && !await reconcileStudioAccess(current, currentStudioId)) return
@@ -128,14 +130,17 @@ watch(studioId, load, { immediate: true })
 <template>
   <section class="section">
     <div class="page-container studio-page">
-      <header>
-        <span class="eyebrow">{{ studio?.name || t('studios.eyebrow') }}</span>
-        <h1 class="page-title">{{ t('studios.settings.title') }}</h1>
-        <p class="page-subtitle">{{ t('studios.settings.subtitle') }}</p>
-      </header>
+      <PageHeader
+        :eyebrow="studio?.name || t('studios.eyebrow')"
+        :title="t('studios.settings.title')"
+        :subtitle="t('studios.settings.subtitle')"
+      />
 
-      <StudioSubnav v-if="studio" :studio-id="studioId" :role="studio.membership?.role" />
-      <div v-if="isLoading" class="card empty-state">{{ t('common.loading') }}</div>
+      <div v-if="isLoading" class="card studio-form-card" aria-live="polite" aria-busy="true" style="display: grid; gap: 0.65rem;">
+        <div class="skeleton skeleton-text" style="height: 2.6rem;"></div>
+        <div class="skeleton skeleton-text" style="height: 2.6rem;"></div>
+        <div class="skeleton skeleton-text" style="height: 2.6rem; width: 50%;"></div>
+      </div>
 
       <form v-else-if="studio" class="card studio-form-card studio-form" @submit.prevent="save">
         <div class="studio-form-grid">
@@ -143,13 +148,25 @@ watch(studioId, load, { immediate: true })
             <label class="form-label" for="settings-name">{{ t('studios.fields.name') }}</label>
             <input id="settings-name" v-model="form.name" class="input" maxlength="100" required />
           </div>
-          <div v-if="isOwner" class="form-group studio-form-wide">
+          <div class="form-group studio-form-wide">
             <label class="form-label" for="settings-slug">{{ t('studios.fields.slug') }}</label>
-            <input id="settings-slug" v-model="form.slug" class="input" maxlength="80" required />
+            <input
+              id="settings-slug"
+              v-model="form.slug"
+              class="input"
+              maxlength="80"
+              required
+              :disabled="!isOwner"
+              :aria-describedby="!isOwner ? 'settings-slug-hint' : undefined"
+            />
+            <p v-if="!isOwner" id="settings-slug-hint" class="form-hint">{{ t('studios.members.cannotEditHint') }}</p>
           </div>
           <div class="form-group">
             <label class="form-label" for="settings-locale">{{ t('studios.fields.locale') }}</label>
-            <select id="settings-locale" v-model="form.defaultLocale" class="input"><option value="de">Deutsch</option><option value="en">English</option></select>
+            <select id="settings-locale" v-model="form.defaultLocale" class="select">
+              <option value="de">Deutsch</option>
+              <option value="en">English</option>
+            </select>
           </div>
           <div class="form-group">
             <label class="form-label" for="settings-timezone">{{ t('studios.fields.timezone') }}</label>
@@ -157,14 +174,18 @@ watch(studioId, load, { immediate: true })
           </div>
           <div class="form-group">
             <label class="form-label" for="settings-weight">{{ t('studios.fields.weightUnit') }}</label>
-            <select id="settings-weight" v-model="form.defaultWeightUnit" class="input"><option value="kg">kg</option><option value="lb">lb</option></select>
+            <select id="settings-weight" v-model="form.defaultWeightUnit" class="select">
+              <option value="kg">kg</option>
+              <option value="lb">lb</option>
+            </select>
           </div>
         </div>
         <p v-if="errorMessage" class="message message-error" role="alert">{{ errorMessage }}</p>
         <p v-if="successMessage" class="message message-success" role="status">{{ successMessage }}</p>
-        <div class="studio-form-actions">
+        <div class="form-actions">
           <RouterLink class="btn btn-secondary" :to="{ name: 'studio-dashboard', params: { studioId } }">{{ t('common.cancel') }}</RouterLink>
           <button class="btn btn-primary" type="submit" :disabled="isSaving">
+            <span v-if="isSaving" class="spinner" aria-hidden="true"></span>
             {{ isSaving ? t('common.saving') : t('common.save') }}
           </button>
         </div>

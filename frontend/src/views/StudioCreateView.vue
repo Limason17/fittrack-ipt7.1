@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
+import PageHeader from '../components/ui/PageHeader.vue'
 import { t } from '../utils/i18n'
 import { createStudio } from '../utils/studioApi'
 import { addAndSelectStudio } from '../utils/studioContext'
@@ -56,11 +57,7 @@ async function submit() {
 <template>
   <section class="section">
     <div class="page-container studio-page">
-      <header>
-        <span class="eyebrow">{{ t('studios.eyebrow') }}</span>
-        <h1 class="page-title">{{ t('studios.create.title') }}</h1>
-        <p class="page-subtitle">{{ t('studios.create.subtitle') }}</p>
-      </header>
+      <PageHeader :eyebrow="t('studios.eyebrow')" :title="t('studios.create.title')" :subtitle="t('studios.create.subtitle')" />
 
       <form class="card studio-form-card studio-form" @submit.prevent="submit">
         <div class="studio-form-grid">
@@ -75,7 +72,7 @@ async function submit() {
           </div>
           <div class="form-group">
             <label class="form-label" for="studio-locale">{{ t('studios.fields.locale') }}</label>
-            <select id="studio-locale" v-model="defaultLocale" class="input"><option value="de">Deutsch</option><option value="en">English</option></select>
+            <select id="studio-locale" v-model="defaultLocale" class="select"><option value="de">Deutsch</option><option value="en">English</option></select>
           </div>
           <div class="form-group">
             <label class="form-label" for="studio-timezone">{{ t('studios.fields.timezone') }}</label>
@@ -83,14 +80,15 @@ async function submit() {
           </div>
           <div class="form-group">
             <label class="form-label" for="studio-weight-unit">{{ t('studios.fields.weightUnit') }}</label>
-            <select id="studio-weight-unit" v-model="defaultWeightUnit" class="input"><option value="kg">kg</option><option value="lb">lb</option></select>
+            <select id="studio-weight-unit" v-model="defaultWeightUnit" class="select"><option value="kg">kg</option><option value="lb">lb</option></select>
           </div>
         </div>
 
         <p v-if="errorMessage" class="message message-error" role="alert">{{ errorMessage }}</p>
-        <div class="studio-form-actions">
+        <div class="form-actions">
           <RouterLink class="btn btn-secondary" :to="{ name: 'studios' }">{{ t('common.cancel') }}</RouterLink>
           <button class="btn btn-primary" type="submit" :disabled="isSaving">
+            <span v-if="isSaving" class="spinner" aria-hidden="true"></span>
             {{ isSaving ? t('common.saving') : t('studios.create.submit') }}
           </button>
         </div>

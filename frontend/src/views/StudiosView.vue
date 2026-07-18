@@ -2,7 +2,11 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 
+import Badge from '../components/ui/Badge.vue'
+import EmptyState from '../components/ui/EmptyState.vue'
+import PageHeader from '../components/ui/PageHeader.vue'
 import { t } from '../utils/i18n'
+import { roleTone } from '../utils/studioBadges'
 import {
   activeStudioId,
   authorizedStudios,
@@ -38,27 +42,29 @@ function refresh() {
 <template>
   <section class="section">
     <div class="page-container studio-page">
-      <header class="studio-page-header">
-        <div>
-          <span class="eyebrow">{{ t('studios.eyebrow') }}</span>
-          <h1 class="page-title">{{ t('studios.title') }}</h1>
-          <p class="page-subtitle">{{ t('studios.subtitle') }}</p>
-        </div>
-        <RouterLink class="btn btn-primary" :to="{ name: 'studio-create' }">
-          {{ t('studios.create.action') }}
-        </RouterLink>
-      </header>
+      <PageHeader :eyebrow="t('studios.eyebrow')" :title="t('studios.title')" :subtitle="t('studios.subtitle')">
+        <template #actions>
+          <RouterLink class="btn btn-primary" :to="{ name: 'studio-create' }">
+            {{ t('studios.create.action') }}
+          </RouterLink>
+        </template>
+      </PageHeader>
 
       <p v-if="studioContextStatus === 'error'" class="message message-error" role="alert">
         {{ t('studios.loadError') }}
-        <button class="btn btn-secondary" type="button" @click="refresh">{{ t('common.retry') }}</button>
+        <button class="btn btn-secondary btn-sm" type="button" @click="refresh">{{ t('common.retry') }}</button>
       </p>
 
-      <div class="studio-grid" :aria-busy="studioContextStatus === 'loading'">
+      <div v-if="studioContextStatus === 'loading'" class="studio-grid" aria-busy="true">
+        <div class="card skeleton" style="height: 150px;"></div>
+        <div class="card skeleton" style="height: 150px;"></div>
+      </div>
+
+      <div v-else class="studio-grid">
         <article class="card studio-card" :class="{ 'studio-card-active': activeStudioId === null }">
           <div class="studio-card-header">
             <h2>{{ t('studios.personal') }}</h2>
-            <span v-if="activeStudioId === null" class="pill studio-pill-active">{{ t('studios.active') }}</span>
+            <Badge v-if="activeStudioId === null" tone="success">{{ t('studios.active') }}</Badge>
           </div>
           <p class="studio-muted">{{ t('studios.personalDescription') }}</p>
           <button class="btn btn-secondary" type="button" @click="openPersonal">
@@ -74,21 +80,23 @@ function refresh() {
         >
           <div class="studio-card-header">
             <h2>{{ studio.name }}</h2>
-            <span v-if="activeStudioId === studio.id" class="pill studio-pill-active">{{ t('studios.active') }}</span>
+            <Badge v-if="activeStudioId === studio.id" tone="success">{{ t('studios.active') }}</Badge>
           </div>
           <p class="studio-meta">
-            <span class="pill">{{ roleLabel(studio.membership.role) }}</span>
+            <Badge :tone="roleTone(studio.membership.role)">{{ roleLabel(studio.membership.role) }}</Badge>
             <span>{{ studio.slug }}</span>
           </p>
           <button class="btn btn-secondary" type="button" @click="openStudio(studio)">
             {{ t('studios.openStudio') }}
           </button>
         </article>
-      </div>
 
-      <p v-if="studioContextStatus === 'ready' && activeStudios.length === 0" class="card empty-state">
-        {{ t('studios.empty') }}
-      </p>
+        <EmptyState
+          v-if="studioContextStatus === 'ready' && activeStudios.length === 0"
+          :title="t('studios.emptyTitle')"
+          :description="t('studios.empty')"
+        />
+      </div>
     </div>
   </section>
 </template>

@@ -80,7 +80,7 @@ async function handleLogin() {
                 v-model="email"
                 type="email"
                 class="input"
-                placeholder="deine@email.ch"
+                :placeholder="t('auth.emailPlaceholder')"
                 autocomplete="email"
                 :aria-invalid="Boolean(errorMessage)"
                 :aria-describedby="errorMessage ? 'login-error' : undefined"
@@ -106,6 +106,7 @@ async function handleLogin() {
           </p>
 
           <button type="submit" class="btn btn-primary auth-btn" :disabled="isLoading">
+            <span v-if="isLoading" class="spinner" aria-hidden="true"></span>
             {{ isLoading ? t('auth.loginLoading') : t('auth.loginButton') }}
           </button>
         </form>

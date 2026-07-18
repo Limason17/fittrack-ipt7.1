@@ -100,7 +100,7 @@ async function handleRegister() {
                 v-model="email"
                 type="email"
                 class="input"
-                placeholder="deine@email.ch"
+                :placeholder="t('auth.emailPlaceholder')"
                 autocomplete="email"
                 :aria-invalid="Boolean(errorMessage)"
                 :aria-describedby="errorMessage ? 'register-error' : undefined"
@@ -130,6 +130,7 @@ async function handleRegister() {
           </p>
 
           <button type="submit" class="btn btn-primary auth-btn" :disabled="isLoading">
+            <span v-if="isLoading" class="spinner" aria-hidden="true"></span>
             {{ isLoading ? t('auth.registerLoading') : t('auth.registerButton') }}
           </button>
         </form>
