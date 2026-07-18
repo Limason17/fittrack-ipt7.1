@@ -3,26 +3,16 @@ const mysql = require("mysql2");
 const db = require("../config/db");
 const { createMigrationRunner } = require("../migrations/runner");
 const { createStructuredLogger } = require("../startup/logger");
+const { assertDestructiveTestTarget } = require("./databaseSafety");
 
-function assertTestDatabaseName(name) {
-    const safeTestName = /(^|[_-])test([_-]|$)/i.test(name);
-    if (
-        process.env.NODE_ENV !== "test" ||
-        process.env.ALLOW_TEST_DB_RESET !== "true" ||
-        !safeTestName
-    ) {
-        const error = new Error(
-            "Test reset requires NODE_ENV=test, ALLOW_TEST_DB_RESET=true and a DB_NAME containing a test segment."
-        );
-        error.code = "TEST_DB_RESET_FORBIDDEN";
-        throw error;
-    }
+function assertTestDatabaseName(name, env = process.env, host = env.DB_HOST || "localhost") {
+    return assertDestructiveTestTarget({ host, database: name }, env);
 }
 
 async function main() {
     const logger = createStructuredLogger();
     const config = db.readDatabaseConfig();
-    assertTestDatabaseName(config.database);
+    assertDestructiveTestTarget(config);
 
     const admin = db.createAdminConnection();
     try {
