@@ -450,6 +450,42 @@ test("a member sees only their own assignments; a trainer cannot see an unassign
     assert.equal(trainer1ListOnlyOwnCoached.data.programAssignments[0].id, assignmentMember1.id);
 });
 
+test("a member can read the full day and exercise detail of their own assignment, and only their own", async () => {
+    const detail = await api(
+        `/api/v1/studios/${studioA.id}/program-assignments/me/${assignmentMember1.id}`,
+        { token: accounts.member1A.token }
+    );
+    assert.equal(detail.response.status, 200, JSON.stringify(detail.data));
+    assert.equal(detail.data.programAssignment.id, assignmentMember1.id);
+    assert.equal(Object.hasOwn(detail.data.programAssignment, "member"), false);
+    assert.equal(detail.data.programAssignment.days.length, 1);
+    assert.equal(detail.data.programAssignment.days[0].exercises.length, 1);
+    assert.equal(detail.data.programAssignment.days[0].exercises[0].exerciseNameSnapshot, "Bench Press");
+
+    const foreignMemberAttempt = await api(
+        `/api/v1/studios/${studioA.id}/program-assignments/me/${assignmentMember1.id}`,
+        { token: accounts.member3A.token }
+    );
+    assert.equal(foreignMemberAttempt.response.status, 404, JSON.stringify(foreignMemberAttempt.data));
+    assert.equal(foreignMemberAttempt.data.error.code, "PROGRAM_ASSIGNMENT_NOT_FOUND");
+
+    const trainerAttempt = await api(
+        `/api/v1/studios/${studioA.id}/program-assignments/me/${assignmentMember1.id}`,
+        { token: accounts.trainer1A.token }
+    );
+    assert.equal(
+        trainerAttempt.response.status, 404,
+        "a trainer has no membership row matching this assignment's own member_membership_id, so this must 404 like any other mismatch"
+    );
+
+    const guessedAssignmentId = await api(
+        `/api/v1/studios/${studioA.id}/program-assignments/me/00000000-0000-4000-8000-000000000000`,
+        { token: accounts.member1A.token }
+    );
+    assert.equal(guessedAssignmentId.response.status, 404);
+    assert.equal(guessedAssignmentId.data.error.code, "PROGRAM_ASSIGNMENT_NOT_FOUND");
+});
+
 test("ending a coaching relationship immediately revokes the trainer's access to that member's assignment", async () => {
     const trainer1CanReadBeforeEnding = await api(
         `/api/v1/studios/${studioA.id}/program-assignments/${assignmentMember1.id}`,

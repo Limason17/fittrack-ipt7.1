@@ -111,6 +111,60 @@ const routes = [
         },
     },
     {
+        path: '/studios/:studioId/coaching',
+        name: 'studio-coaching',
+        component: () => import('../views/CoachingRelationshipsView.vue'),
+        meta: {
+            requiresAuth: true,
+            requiresStudio: true,
+            studioRoles: ['owner', 'admin', 'trainer'],
+            titleKey: 'routing.titles.studioCoaching',
+        },
+    },
+    {
+        path: '/studios/:studioId/training-programs',
+        name: 'studio-training-programs',
+        component: () => import('../views/TrainingProgramsView.vue'),
+        meta: {
+            requiresAuth: true,
+            requiresStudio: true,
+            studioRoles: ['owner', 'admin', 'trainer'],
+            titleKey: 'routing.titles.studioTrainingPrograms',
+        },
+    },
+    {
+        path: '/studios/:studioId/training-programs/:programId',
+        name: 'studio-training-program-detail',
+        component: () => import('../views/TrainingProgramBuilderView.vue'),
+        meta: {
+            requiresAuth: true,
+            requiresStudio: true,
+            studioRoles: ['owner', 'admin', 'trainer'],
+            titleKey: 'routing.titles.studioTrainingProgramDetail',
+        },
+    },
+    {
+        path: '/studios/:studioId/assignments',
+        name: 'studio-program-assignments',
+        component: () => import('../views/ProgramAssignmentsView.vue'),
+        meta: {
+            requiresAuth: true,
+            requiresStudio: true,
+            studioRoles: ['owner', 'admin', 'trainer'],
+            titleKey: 'routing.titles.studioAssignments',
+        },
+    },
+    {
+        path: '/studios/:studioId/my-training-plan',
+        name: 'studio-my-training-plan',
+        component: () => import('../views/MyTrainingPlanView.vue'),
+        meta: {
+            requiresAuth: true,
+            requiresStudio: true,
+            titleKey: 'routing.titles.studioMyTrainingPlan',
+        },
+    },
+    {
         path: '/studios/:studioId/access-denied',
         name: 'studio-access-denied',
         component: () => import('../views/StudioAccessDeniedView.vue'),

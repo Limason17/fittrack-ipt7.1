@@ -6,8 +6,10 @@ import { useModalFocus } from '../../utils/modalFocus'
 import {
   activeStudio,
   activeStudioRole,
+  canAccessTrainingManagement,
   canManageActiveStudio,
   canViewActiveStudioMembers,
+  isStudioMemberRole,
 } from '../../utils/studioContext'
 import StudioSwitcher from '../StudioSwitcher.vue'
 import fitTrackLogo from '../../assets/FitTrack Logo/FitTrack Logo.png'
@@ -91,6 +93,38 @@ const { handleModalKeydown } = useModalFocus({ isOpen, dialogRef, close })
           @click="emit('close')"
         >
           {{ t('nav.invitations') }}
+        </RouterLink>
+        <RouterLink
+          v-if="canAccessTrainingManagement"
+          :to="{ name: 'studio-coaching', params: { studioId: activeStudio.id } }"
+          class="app-sidebar-link"
+          @click="emit('close')"
+        >
+          {{ t('nav.coaching') }}
+        </RouterLink>
+        <RouterLink
+          v-if="canAccessTrainingManagement"
+          :to="{ name: 'studio-training-programs', params: { studioId: activeStudio.id } }"
+          class="app-sidebar-link"
+          @click="emit('close')"
+        >
+          {{ t('nav.trainingPrograms') }}
+        </RouterLink>
+        <RouterLink
+          v-if="canAccessTrainingManagement"
+          :to="{ name: 'studio-program-assignments', params: { studioId: activeStudio.id } }"
+          class="app-sidebar-link"
+          @click="emit('close')"
+        >
+          {{ t('nav.assignments') }}
+        </RouterLink>
+        <RouterLink
+          v-if="isStudioMemberRole"
+          :to="{ name: 'studio-my-training-plan', params: { studioId: activeStudio.id } }"
+          class="app-sidebar-link"
+          @click="emit('close')"
+        >
+          {{ t('nav.myTrainingPlan') }}
         </RouterLink>
         <RouterLink
           v-if="canManageActiveStudio"
