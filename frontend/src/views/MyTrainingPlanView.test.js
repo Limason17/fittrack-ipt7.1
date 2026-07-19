@@ -8,6 +8,16 @@ const trainingApi = vi.hoisted(() => ({
 }))
 vi.mock('../utils/studioTrainingApi', () => trainingApi)
 
+const sessionApi = vi.hoisted(() => ({
+  listOwnWorkoutSessions: vi.fn(),
+}))
+vi.mock('../utils/workoutSessionApi', () => sessionApi)
+
+const sessionState = vi.hoisted(() => ({
+  startWorkoutSession: vi.fn(),
+}))
+vi.mock('../utils/workoutSessionState', () => sessionState)
+
 import MyTrainingPlanView from './MyTrainingPlanView.vue'
 import { authToken, authUser } from '../utils/auth'
 import { locale } from '../utils/i18n'
@@ -62,6 +72,7 @@ async function mountView(actorRole = 'member') {
     history: createMemoryHistory(),
     routes: [
       { path: '/studios/:studioId/my-training-plan', name: 'studio-my-training-plan', component: MyTrainingPlanView },
+      { path: '/studios/:studioId/workout-sessions/:sessionId', name: 'studio-workout-session-detail', component: { template: '<div />' } },
     ],
   })
   await router.push('/studios/studio-a/my-training-plan')
@@ -80,8 +91,11 @@ describe('MyTrainingPlanView', () => {
     locale.value = 'de'
     trainingApi.listOwnProgramAssignments.mockReset()
     trainingApi.getOwnProgramAssignmentDetail.mockReset()
+    sessionApi.listOwnWorkoutSessions.mockReset()
+    sessionState.startWorkoutSession.mockReset()
     trainingApi.listOwnProgramAssignments.mockResolvedValue({ programAssignments: [ownAssignment], pagination: { total: 1 } })
     trainingApi.getOwnProgramAssignmentDetail.mockResolvedValue({ programAssignment: assignmentDetail })
+    sessionApi.listOwnWorkoutSessions.mockResolvedValue({ workoutSessions: [], pagination: { total: 0 } })
   })
 
   afterEach(() => {
@@ -89,7 +103,7 @@ describe('MyTrainingPlanView', () => {
     wrapper = null
   })
 
-  it("shows the member's own assigned program with version and dates but no training-start action", async () => {
+  it("shows the member's own assigned program with version and dates; the start action is nested inside the collapsed day details", async () => {
     await mountView()
 
     expect(wrapper.text()).toContain('Beginner Strength')
@@ -98,7 +112,7 @@ describe('MyTrainingPlanView', () => {
     expect(wrapper.findAll('button').some((b) => /training starten/i.test(b.text()))).toBe(false)
   })
 
-  it('lazily loads and displays days and exercises only after "Details anzeigen" is clicked', async () => {
+  it('lazily loads days and exercises after "Details anzeigen" is clicked, and offers a start action for the active, in-window day', async () => {
     await mountView()
     expect(trainingApi.getOwnProgramAssignmentDetail).not.toHaveBeenCalled()
 
@@ -108,7 +122,88 @@ describe('MyTrainingPlanView', () => {
     expect(trainingApi.getOwnProgramAssignmentDetail).toHaveBeenCalledWith('studio-a', 'assignment-1')
     expect(wrapper.text()).toContain('Day 1: Push')
     expect(wrapper.text()).toContain('Bench Press')
-    expect(wrapper.text()).toContain('Die Trainingsausführung ist in dieser Phase noch nicht verfügbar')
+    expect(wrapper.findAll('button').some((b) => /training starten/i.test(b.text()))).toBe(true)
+  })
+
+  it('starts a session and navigates to it when the start action is used', async () => {
+    sessionState.startWorkoutSession.mockResolvedValue({
+      session: { id: 'session-1' }, error: null,
+    })
+    await mountView()
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    const startButton = wrapper.findAll('button').find((b) => /training starten/i.test(b.text()))
+    await startButton.trigger('click')
+    await flushPromises()
+
+    expect(sessionState.startWorkoutSession).toHaveBeenCalledWith('studio-a', 'assignment-1', 'day-1')
+    expect(wrapper.vm.$route.name).toBe('studio-workout-session-detail')
+    expect(wrapper.vm.$route.params.sessionId).toBe('session-1')
+  })
+
+  it('shows an inline error and stays on the page when starting fails', async () => {
+    sessionState.startWorkoutSession.mockResolvedValue({
+      session: null, error: { status: 409, data: { error: { code: 'WORKOUT_DAY_NOT_AVAILABLE' } } },
+    })
+    await mountView()
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    const startButton = wrapper.findAll('button').find((b) => /training starten/i.test(b.text()))
+    await startButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Dieser Trainingstag gehört nicht zur zugewiesenen Programmversion.')
+    expect(wrapper.vm.$route.name).toBe('studio-my-training-plan')
+  })
+
+  it('offers "Fortsetzen" instead of "Training starten" when an in-progress session already exists for this assignment and day', async () => {
+    sessionApi.listOwnWorkoutSessions.mockResolvedValue({
+      workoutSessions: [{
+        id: 'session-existing', assignmentId: 'assignment-1', status: 'in_progress',
+        programDay: { id: 'day-1', name: 'Day 1: Push' },
+      }],
+      pagination: { total: 1 },
+    })
+    await mountView()
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('button').some((b) => /fortsetzen/i.test(b.text()))).toBe(true)
+    expect(wrapper.findAll('button').some((b) => /training starten/i.test(b.text()))).toBe(false)
+
+    const resumeButton = wrapper.findAll('button').find((b) => /fortsetzen/i.test(b.text()))
+    await resumeButton.trigger('click')
+    await flushPromises()
+
+    expect(sessionState.startWorkoutSession).not.toHaveBeenCalled()
+    expect(wrapper.vm.$route.params.sessionId).toBe('session-existing')
+  })
+
+  it('shows an explanatory reason instead of a start action when the assignment is not active', async () => {
+    trainingApi.listOwnProgramAssignments.mockResolvedValue({
+      programAssignments: [{ ...ownAssignment, status: 'cancelled' }], pagination: { total: 1 },
+    })
+    await mountView()
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Diese Zuweisung ist aktuell nicht aktiv.')
+    expect(wrapper.findAll('button').some((b) => /training starten/i.test(b.text()))).toBe(false)
+  })
+
+  it('shows an explanatory reason instead of a start action before the assignment start date', async () => {
+    const farFuture = new Date(Date.now() + 1000 * 60 * 60 * 24 * 365).toISOString().slice(0, 10)
+    trainingApi.listOwnProgramAssignments.mockResolvedValue({
+      programAssignments: [{ ...ownAssignment, startsOn: farFuture }], pagination: { total: 1 },
+    })
+    await mountView()
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Dieses Programm beginnt am')
+    expect(wrapper.findAll('button').some((b) => /training starten/i.test(b.text()))).toBe(false)
   })
 
   it('collapses details again without a second network call when toggled twice, then reloads on a third toggle', async () => {
