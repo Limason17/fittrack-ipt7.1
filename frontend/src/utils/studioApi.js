@@ -113,4 +113,15 @@ export function acceptInvitation(token, options) {
     )
 }
 
+export function listAuditEvents(studioId, options) {
+    const request = withPagination(
+        `/v1/studios/${publicId(studioId, 'Studio id')}/audit-events`,
+        options
+    )
+    return apiRequest(
+        request.path,
+        authenticated(request.options)
+    )
+}
+
 export { publicId }

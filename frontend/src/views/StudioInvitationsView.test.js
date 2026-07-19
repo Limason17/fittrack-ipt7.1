@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
 const api = vi.hoisted(() => ({
@@ -38,7 +38,7 @@ async function mountView(role = 'owner') {
   })
   await router.push('/studios/studio-a/invitations')
   await router.isReady()
-  const wrapper = mount(StudioInvitationsView, { global: { plugins: [router] } })
+  const wrapper = mount(StudioInvitationsView, { global: { plugins: [router] }, attachTo: document.body })
   await flushPromises()
   return wrapper
 }
@@ -56,6 +56,10 @@ describe('StudioInvitationsView', () => {
     api.revokeInvitation.mockReset()
     api.listInvitations.mockResolvedValue({ invitations: [], pagination: { total: 0 } })
     api.listStudios.mockResolvedValue({ studios: [studio('owner')] })
+  })
+
+  afterEach(() => {
+    document.body.innerHTML = ''
   })
 
   it('creates an invitation, displays the one-time delivery link and never persists it', async () => {
@@ -124,6 +128,30 @@ describe('StudioInvitationsView', () => {
     const wrapper = await mountView('owner')
 
     expect(wrapper.text()).toContain('E-Mail nach Abschluss redigiert')
+    wrapper.unmount()
+  })
+
+  it('asks for confirmation before revoking a pending invitation', async () => {
+    api.listInvitations.mockResolvedValue({
+      invitations: [{ id: 'invitation-pending', email: 'pending@example.test', role: 'member', status: 'pending', expiresAt: '2026-08-01T00:00:00.000Z' }],
+      pagination: { total: 1 },
+    })
+    const wrapper = await mountView('owner')
+    await wrapper.get('.btn-danger').trigger('click')
+    await flushPromises()
+
+    const dialog = document.body.querySelector('[role="dialog"]')
+    expect(dialog).not.toBeNull()
+    expect(dialog.textContent).toContain('Einladung widerrufen?')
+    expect(dialog.textContent).toContain('pending@example.test')
+    expect(api.revokeInvitation).not.toHaveBeenCalled()
+
+    const confirmButton = [...dialog.querySelectorAll('button')].find((button) => button.textContent.includes('Widerrufen'))
+    api.revokeInvitation.mockResolvedValue({})
+    confirmButton.click()
+    await flushPromises()
+
+    expect(api.revokeInvitation).toHaveBeenCalledWith('studio-a', 'invitation-pending')
     wrapper.unmount()
   })
 

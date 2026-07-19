@@ -40,12 +40,14 @@ test('Kernseiten haben keine schweren oder kritischen Axe-Verstöße', async ({ 
   for (const route of [
     '/workouts',
     '/progress',
+    '/profile',
     '/studios',
     '/studios/new',
     `/studios/${studio.id}`,
     `/studios/${studio.id}/settings`,
     `/studios/${studio.id}/members`,
     `/studios/${studio.id}/invitations`,
+    `/studios/${studio.id}/audit`,
     `/studios/${studio.id}/access-denied`,
     `/invitations/${'a'.repeat(43)}`,
   ]) {
@@ -97,13 +99,13 @@ test('Mobile Navigation meldet Zustand und schließt per Escape', async ({ page,
   await authenticateExisting(page, request)
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/workouts')
-  const menu = page.locator('.ft-burger')
+  const menu = page.locator('.app-header-burger')
   await expect(menu).toHaveAccessibleName('Menü öffnen')
   await expect(menu).toHaveAttribute('aria-expanded', 'false')
   await menu.click()
   await expect(menu).toHaveAttribute('aria-expanded', 'true')
   await expect(menu).toHaveAccessibleName('Menü schließen')
-  await expect(page.getByRole('menu', { name: 'Mobile Navigation' })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Hauptnavigation' })).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(menu).toHaveAttribute('aria-expanded', 'false')
   await expect(menu).toBeFocused()

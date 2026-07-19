@@ -43,6 +43,12 @@ const routes = [
         meta: { requiresAuth: true, personalContext: true, titleKey: 'routing.titles.progress' },
     },
     {
+        path: '/profile',
+        name: 'profile',
+        component: () => import('../views/ProfileView.vue'),
+        meta: { requiresAuth: true, titleKey: 'routing.titles.profile' },
+    },
+    {
         path: '/studios',
         name: 'studios',
         component: () => import('../views/StudiosView.vue'),
@@ -91,6 +97,17 @@ const routes = [
             requiresStudio: true,
             studioRoles: ['owner', 'admin'],
             titleKey: 'routing.titles.studioInvitations',
+        },
+    },
+    {
+        path: '/studios/:studioId/audit',
+        name: 'studio-audit',
+        component: () => import('../views/StudioAuditView.vue'),
+        meta: {
+            requiresAuth: true,
+            requiresStudio: true,
+            studioRoles: ['owner', 'admin'],
+            titleKey: 'routing.titles.studioAudit',
         },
     },
     {

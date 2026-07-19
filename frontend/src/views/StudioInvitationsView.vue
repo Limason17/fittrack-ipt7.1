@@ -2,10 +2,16 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import StudioSubnav from '../components/StudioSubnav.vue'
+import Badge from '../components/ui/Badge.vue'
+import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
+import EmptyState from '../components/ui/EmptyState.vue'
+import PageHeader from '../components/ui/PageHeader.vue'
+import Pagination from '../components/ui/Pagination.vue'
 import { formatDate, t } from '../utils/i18n'
+import { invitationStatusTone, roleTone } from '../utils/studioBadges'
 import { createInvitation, listInvitations, revokeInvitation } from '../utils/studioApi'
 import { MANAGEMENT_ROLES, activeStudio, refreshSelectedStudio } from '../utils/studioContext'
+import { toastError, toastSuccess } from '../utils/toast'
 
 const route = useRoute()
 const router = useRouter()
@@ -21,6 +27,7 @@ const isSaving = ref(false)
 const revokingId = ref(null)
 const errorMessage = ref('')
 const successMessage = ref('')
+const pendingRevoke = ref(null)
 let generation = 0
 const isOwner = computed(() => activeStudio.value?.membership?.role === 'owner')
 
@@ -92,11 +99,11 @@ async function load({ preserveTransient = false } = {}) {
   }
 }
 
-async function changePage(nextPage) {
+function changePage(nextPage) {
   const totalPages = pagination.value?.totalPages || 0
   if (!Number.isInteger(nextPage) || nextPage < 1 || nextPage > totalPages || nextPage === page.value) return
   page.value = nextPage
-  await load()
+  load()
 }
 
 async function submit() {
@@ -120,6 +127,7 @@ async function submit() {
     deliveryLink.value = safeDeliveryLink(result.delivery)
     email.value = ''
     successMessage.value = t('studios.invitations.created')
+    toastSuccess(t('studios.invitations.created'))
     page.value = 1
     await load({ preserveTransient: true })
     finalGeneration = generation
@@ -139,6 +147,20 @@ async function copyDeliveryLink() {
   successMessage.value = t('studios.invitations.copied')
 }
 
+function requestRevoke(invitation) {
+  pendingRevoke.value = invitation
+}
+
+function cancelRevoke() {
+  pendingRevoke.value = null
+}
+
+async function confirmRevoke() {
+  const invitation = pendingRevoke.value
+  pendingRevoke.value = null
+  if (invitation) await revoke(invitation)
+}
+
 async function revoke(invitation) {
   const current = generation
   const currentStudioId = studioId.value
@@ -151,11 +173,13 @@ async function revoke(invitation) {
     invitations.value = invitations.value.map((item) => item.id === invitation.id
       ? { ...item, status: 'revoked', email: null }
       : item)
-    successMessage.value = t('studios.invitations.revoked')
+    toastSuccess(t('studios.invitations.revoked'))
   } catch (error) {
     if (current === generation && currentStudioId === studioId.value) {
       if ([403, 404].includes(error.status) && !await reconcileStudioAccess(current, currentStudioId)) return
-      errorMessage.value = error.status === 403 ? t('studios.permissionDenied') : t('studios.invitations.revokeError')
+      const message = error.status === 403 ? t('studios.permissionDenied') : t('studios.invitations.revokeError')
+      errorMessage.value = message
+      toastError(message)
     }
   } finally {
     if (current === generation && currentStudioId === studioId.value) revokingId.value = null
@@ -172,13 +196,7 @@ onBeforeUnmount(() => { deliveryLink.value = '' })
 <template>
   <section class="section">
     <div class="page-container studio-page">
-      <header>
-        <span class="eyebrow">{{ activeStudio?.name }}</span>
-        <h1 class="page-title">{{ t('studios.invitations.title') }}</h1>
-        <p class="page-subtitle">{{ t('studios.invitations.subtitle') }}</p>
-      </header>
-
-      <StudioSubnav :studio-id="studioId" :role="activeStudio?.membership?.role" />
+      <PageHeader :eyebrow="activeStudio?.name" :title="t('studios.invitations.title')" :subtitle="t('studios.invitations.subtitle')" />
 
       <form class="card studio-form-card studio-form" @submit.prevent="submit">
         <div class="studio-form-grid">
@@ -188,7 +206,7 @@ onBeforeUnmount(() => { deliveryLink.value = '' })
           </div>
           <div class="form-group">
             <label class="form-label" for="invitation-role">{{ t('studios.invitations.role') }}</label>
-            <select id="invitation-role" v-model="role" class="input">
+            <select id="invitation-role" v-model="role" class="select">
               <option v-if="isOwner" value="admin">{{ t('studios.roles.admin') }}</option>
               <option value="trainer">{{ t('studios.roles.trainer') }}</option>
               <option value="member">{{ t('studios.roles.member') }}</option>
@@ -201,51 +219,95 @@ onBeforeUnmount(() => { deliveryLink.value = '' })
           <strong>{{ t('studios.invitations.devDeliveryTitle') }}</strong>
           <p>{{ t('studios.invitations.devDeliveryHint') }}</p>
           <a :href="deliveryLink" rel="noreferrer">{{ deliveryLink }}</a>
-          <button class="btn btn-secondary" type="button" @click="copyDeliveryLink">{{ t('studios.invitations.copy') }}</button>
+          <button class="btn btn-secondary btn-sm" type="button" @click="copyDeliveryLink">{{ t('studios.invitations.copy') }}</button>
         </aside>
-        <div class="studio-form-actions">
-          <span class="studio-help">{{ t('studios.invitations.serverAuthority') }}</span>
+        <div class="form-actions">
+          <span class="studio-help" style="margin-right: auto;">{{ t('studios.invitations.serverAuthority') }}</span>
           <button class="btn btn-primary" type="submit" :disabled="isSaving">
+            <span v-if="isSaving" class="spinner" aria-hidden="true"></span>
             {{ isSaving ? t('common.saving') : t('studios.invitations.submit') }}
           </button>
         </div>
       </form>
 
-      <div v-if="isLoading" class="card empty-state">{{ t('common.loading') }}</div>
-      <article v-else class="card studio-list-card">
-        <h2>{{ t('studios.invitations.openTitle') }}</h2>
-        <ul v-if="invitations.length" class="studio-list">
-          <li v-for="invitation in invitations" :key="invitation.id" class="studio-list-row">
-            <div class="studio-identity">
-              <strong>{{ displayEmail(invitation) }}</strong>
-              <span v-if="invitation.expiresAt">{{ t('studios.invitations.expires') }} {{ formatDate(invitation.expiresAt) }}</span>
-            </div>
-            <span class="pill">{{ t(`studios.roles.${invitation.role}`) }}</span>
-            <span class="pill" :class="{ 'studio-pill-active': invitation.status === 'pending' }">
-              {{ t(`studios.invitationStatuses.${invitation.status}`) }}
-            </span>
-            <button
-              class="btn btn-danger"
-              type="button"
-              :disabled="invitation.status !== 'pending' || revokingId === invitation.id"
-              @click="revoke(invitation)"
-            >
-              {{ t('studios.invitations.revoke') }}
-            </button>
-          </li>
-        </ul>
-        <p v-else class="empty-state">{{ t('studios.invitations.empty') }}</p>
-        <div v-if="pagination" class="studio-pagination">
-          <span class="studio-help">{{ t('studios.invitations.pagination', { count: pagination.total ?? invitations.length }) }}</span>
-          <button class="btn btn-secondary" type="button" :disabled="page <= 1" @click="changePage(page - 1)">
-            {{ t('common.previous') }}
-          </button>
-          <span class="studio-help">{{ t('common.pageOf', { page, total: pagination.totalPages || 1 }) }}</span>
-          <button class="btn btn-secondary" type="button" :disabled="page >= (pagination.totalPages || 1)" @click="changePage(page + 1)">
-            {{ t('common.next') }}
-          </button>
+      <div v-if="isLoading" class="card" aria-live="polite" aria-busy="true" style="padding: 1.25rem; display: grid; gap: 0.6rem;">
+        <div class="skeleton skeleton-text" style="height: 2.5rem;"></div>
+        <div class="skeleton skeleton-text" style="height: 2.5rem;"></div>
+      </div>
+
+      <article v-else class="card">
+        <h2 class="studio-invitations-list-title">{{ t('studios.invitations.openTitle') }}</h2>
+        <EmptyState v-if="!invitations.length" :title="t('studios.invitations.empty')" />
+        <div v-else class="table-wrap table-stack">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>{{ t('studios.invitations.email') }}</th>
+                <th>{{ t('studios.invitations.role') }}</th>
+                <th>{{ t('studios.members.columnStatus') }}</th>
+                <th>{{ t('studios.members.columnActions') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="invitation in invitations" :key="invitation.id">
+                <td :data-label="t('studios.invitations.email')">
+                  <div class="studio-identity">
+                    <strong>{{ displayEmail(invitation) }}</strong>
+                    <span v-if="invitation.expiresAt">{{ t('studios.invitations.expires') }} {{ formatDate(invitation.expiresAt) }}</span>
+                  </div>
+                </td>
+                <td :data-label="t('studios.invitations.role')">
+                  <Badge :tone="roleTone(invitation.role)">{{ t(`studios.roles.${invitation.role}`) }}</Badge>
+                </td>
+                <td :data-label="t('studios.members.columnStatus')">
+                  <Badge :tone="invitationStatusTone(invitation.status)">
+                    {{ t(`studios.invitationStatuses.${invitation.status}`) }}
+                  </Badge>
+                </td>
+                <td :data-label="t('studios.members.columnActions')">
+                  <div class="table-actions">
+                    <button
+                      class="btn btn-danger btn-sm"
+                      type="button"
+                      :disabled="invitation.status !== 'pending' || revokingId === invitation.id"
+                      @click="requestRevoke(invitation)"
+                    >
+                      <span v-if="revokingId === invitation.id" class="spinner" aria-hidden="true"></span>
+                      {{ t('studios.invitations.revoke') }}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
+
+        <Pagination
+          v-if="pagination && invitations.length"
+          :page="page"
+          :total-pages="pagination.totalPages || 1"
+          :item-label="t('studios.invitations.pagination', { count: pagination.total ?? invitations.length })"
+          @change="changePage"
+        />
       </article>
+
+      <ConfirmDialog
+        :open="!!pendingRevoke"
+        :title="t('studios.confirmRevoke.title')"
+        :description="pendingRevoke ? t('studios.confirmRevoke.description', { email: displayEmail(pendingRevoke) }) : ''"
+        :confirm-label="t('studios.invitations.revoke')"
+        tone="danger"
+        :busy="!!revokingId"
+        @confirm="confirmRevoke"
+        @cancel="cancelRevoke"
+      />
     </div>
   </section>
 </template>
+
+<style scoped>
+.studio-invitations-list-title {
+  font-size: var(--text-lg);
+  margin-bottom: 0.85rem;
+}
+</style>
