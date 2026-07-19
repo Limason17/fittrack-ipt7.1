@@ -105,7 +105,8 @@ function defaultRouters() {
         exercises: require("../routes/exercises"),
         workouts: require("../routes/workouts"),
         progress: require("../routes/progress"),
-        studioV1: require("../routes/studioV1")
+        studioV1: require("../routes/studioV1"),
+        trainingProgramV1: require("../routes/trainingProgramV1")
     };
 }
 
@@ -153,6 +154,9 @@ function createApp({
         app.use("/api/progress", routeSet.progress);
         if (routeSet.studioV1) {
             app.use("/api/v1", routeSet.studioV1);
+        }
+        if (routeSet.trainingProgramV1) {
+            app.use("/api/v1", routeSet.trainingProgramV1);
         }
     }
 
