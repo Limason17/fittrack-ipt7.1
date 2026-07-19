@@ -18,6 +18,7 @@ const {
 
 const VALID_UUID_A = "123e4567-e89b-42d3-a456-426614174000";
 const VALID_UUID_B = "223e4567-e89b-42d3-a456-426614174000";
+const VALID_UUID_C = "323e4567-e89b-42d3-a456-426614174000";
 
 function expectValidationError(fn, field) {
     assert.throws(fn, (error) => {
@@ -112,29 +113,51 @@ test("validateExercisePatchPayload accepts a partial update including position",
     expectValidationError(() => validateExercisePatchPayload({}), "body");
 });
 
-test("validateCreateAssignmentPayload requires both public ids and validates the date range", () => {
+test("validateCreateAssignmentPayload requires all three public ids and validates the date range", () => {
     const result = validateCreateAssignmentPayload({
         programVersionId: VALID_UUID_A,
         memberMembershipId: VALID_UUID_B,
+        coachingRelationshipId: VALID_UUID_C,
         startsOn: "2026-01-01",
         endsOn: "2026-02-01"
     });
     assert.equal(result.programVersionId, VALID_UUID_A);
     assert.equal(result.memberMembershipId, VALID_UUID_B);
+    assert.equal(result.coachingRelationshipId, VALID_UUID_C);
     assert.equal(result.starts_on, "2026-01-01");
     assert.equal(result.ends_on, "2026-02-01");
 
     expectValidationError(() => validateCreateAssignmentPayload({
         programVersionId: VALID_UUID_A,
         memberMembershipId: VALID_UUID_B,
+        coachingRelationshipId: VALID_UUID_C,
         startsOn: "2026-02-01",
         endsOn: "2026-01-01"
     }), "endsOn");
 
     expectValidationError(() => validateCreateAssignmentPayload({
         programVersionId: "not-a-uuid",
-        memberMembershipId: VALID_UUID_B
+        memberMembershipId: VALID_UUID_B,
+        coachingRelationshipId: VALID_UUID_C
     }), "programVersionId");
+
+    expectValidationError(() => validateCreateAssignmentPayload({
+        programVersionId: VALID_UUID_A,
+        memberMembershipId: VALID_UUID_B
+    }), "coachingRelationshipId");
+
+    expectValidationError(() => validateCreateAssignmentPayload({
+        programVersionId: VALID_UUID_A,
+        memberMembershipId: VALID_UUID_B,
+        coachingRelationshipId: "not-a-uuid"
+    }), "coachingRelationshipId");
+
+    expectValidationError(() => validateCreateAssignmentPayload({
+        programVersionId: VALID_UUID_A,
+        memberMembershipId: VALID_UUID_B,
+        coachingRelationshipId: VALID_UUID_C,
+        role: "trainer"
+    }), "role");
 });
 
 test("validateAssignmentPatchPayload only allows completing or cancelling", () => {

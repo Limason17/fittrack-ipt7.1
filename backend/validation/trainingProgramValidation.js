@@ -324,7 +324,7 @@ function buildExerciseFields(body, { requireName, partial = false }) {
 // ---- Program assignments ----
 
 function validateCreateAssignmentPayload(body) {
-    exactKeys(body, ["programVersionId", "memberMembershipId", "startsOn", "endsOn"]);
+    exactKeys(body, ["programVersionId", "memberMembershipId", "coachingRelationshipId", "startsOn", "endsOn"]);
     const startsOn = validateDate(body.startsOn, "startsOn");
     const endsOn = validateDate(body.endsOn, "endsOn");
     if (startsOn && endsOn && endsOn < startsOn) {
@@ -333,6 +333,7 @@ function validateCreateAssignmentPayload(body) {
     return {
         programVersionId: requiredPublicId(body.programVersionId, "programVersionId"),
         memberMembershipId: requiredPublicId(body.memberMembershipId, "memberMembershipId"),
+        coachingRelationshipId: requiredPublicId(body.coachingRelationshipId, "coachingRelationshipId"),
         starts_on: startsOn,
         ends_on: endsOn
     };

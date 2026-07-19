@@ -360,30 +360,54 @@ test("a published version is immutable and a new draft version does not alter th
     const draftAssignAttempt = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
         method: "POST",
         token: accounts.trainer1A.token,
-        body: { programVersionId: version2.data.programVersion.id, memberMembershipId: membershipIds.member1A }
+        body: {
+            programVersionId: version2.data.programVersion.id,
+            memberMembershipId: membershipIds.member1A,
+            coachingRelationshipId: relationship1.id
+        }
     });
     assert.equal(draftAssignAttempt.response.status, 409, JSON.stringify(draftAssignAttempt.data));
     assert.equal(draftAssignAttempt.data.error.code, "PROGRAM_VERSION_NOT_PUBLISHED");
 });
 
-test("assigning a published version requires an active coaching relationship to the target member", async () => {
+test("assigning a published version requires an explicit coaching relationship id that actually matches the target member", async () => {
     const okAssignment = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
         method: "POST",
         token: accounts.trainer1A.token,
-        body: { programVersionId: versionA1.id, memberMembershipId: membershipIds.member1A }
+        body: {
+            programVersionId: versionA1.id,
+            memberMembershipId: membershipIds.member1A,
+            coachingRelationshipId: relationship1.id
+        }
     });
     assert.equal(okAssignment.response.status, 201, JSON.stringify(okAssignment.data));
     assignmentMember1 = okAssignment.data.programAssignment;
     assert.equal(assignmentMember1.status, "active");
     assert.equal(assignmentMember1.programVersion.versionNumber, 1);
 
-    const uncoachedAttempt = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
+    // relationship1 is trainer1's relationship with member1, not member2 — a
+    // mismatched (relationship, member) pair must be rejected exactly like a
+    // non-existent relationship, not disclosed as "wrong member".
+    const mismatchedMemberAttempt = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
+        method: "POST",
+        token: accounts.trainer1A.token,
+        body: {
+            programVersionId: versionA1.id,
+            memberMembershipId: membershipIds.member2A,
+            coachingRelationshipId: relationship1.id
+        }
+    });
+    assert.equal(mismatchedMemberAttempt.response.status, 404, JSON.stringify(mismatchedMemberAttempt.data));
+    assert.equal(mismatchedMemberAttempt.data.error.code, "COACHING_RELATIONSHIP_NOT_FOUND");
+
+    const missingRelationshipId = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
         method: "POST",
         token: accounts.trainer1A.token,
         body: { programVersionId: versionA1.id, memberMembershipId: membershipIds.member2A }
     });
-    assert.equal(uncoachedAttempt.response.status, 409, JSON.stringify(uncoachedAttempt.data));
-    assert.equal(uncoachedAttempt.data.error.code, "COACHING_RELATIONSHIP_REQUIRED");
+    assert.equal(missingRelationshipId.response.status, 400, JSON.stringify(missingRelationshipId.data));
+    assert.equal(missingRelationshipId.data.error.code, "VALIDATION_ERROR");
+    assert.ok(Object.hasOwn(missingRelationshipId.data.error.fields, "coachingRelationshipId"));
 });
 
 test("a member sees only their own assignments; a trainer cannot see an unassigned member's list entry", async () => {
@@ -450,10 +474,14 @@ test("ending a coaching relationship immediately revokes the trainer's access to
     const newAssignmentAttempt = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
         method: "POST",
         token: accounts.trainer1A.token,
-        body: { programVersionId: versionA1.id, memberMembershipId: membershipIds.member1A }
+        body: {
+            programVersionId: versionA1.id,
+            memberMembershipId: membershipIds.member1A,
+            coachingRelationshipId: relationship1.id
+        }
     });
-    assert.equal(newAssignmentAttempt.response.status, 409, JSON.stringify(newAssignmentAttempt.data));
-    assert.equal(newAssignmentAttempt.data.error.code, "COACHING_RELATIONSHIP_REQUIRED");
+    assert.equal(newAssignmentAttempt.response.status, 404, JSON.stringify(newAssignmentAttempt.data));
+    assert.equal(newAssignmentAttempt.data.error.code, "COACHING_RELATIONSHIP_NOT_FOUND");
 
     const doubleEndAttempt = await api(
         `/api/v1/studios/${studioA.id}/coaching-relationships/${relationship1.id}`,
@@ -506,10 +534,205 @@ test("forged or foreign public ids are rejected with the same not-found as a non
     const foreignVersionInAssignment = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
         method: "POST",
         token: accounts.ownerA.token,
-        body: { programVersionId: neverExistedUuid, memberMembershipId: membershipIds.member3A }
+        body: {
+            programVersionId: neverExistedUuid,
+            memberMembershipId: membershipIds.member3A,
+            coachingRelationshipId: relationship2.id
+        }
     });
     assert.equal(foreignVersionInAssignment.response.status, 404);
     assert.equal(foreignVersionInAssignment.data.error.code, "PROGRAM_VERSION_NOT_FOUND");
+
+    const guessedCoachingRelationship = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
+        method: "POST",
+        token: accounts.ownerA.token,
+        body: {
+            programVersionId: versionA1.id,
+            memberMembershipId: membershipIds.member3A,
+            coachingRelationshipId: neverExistedUuid
+        }
+    });
+    assert.equal(guessedCoachingRelationship.response.status, 404);
+    assert.equal(guessedCoachingRelationship.data.error.code, "COACHING_RELATIONSHIP_NOT_FOUND");
+});
+
+test("assignment creation deterministically selects between two active coaches and rejects every invalid relationship reference", async () => {
+    // member3A already has an active relationship with trainer2A (relationship2).
+    // Give member3A a second, fully independent active coach: trainer1A.
+    const rel3Created = await createRelationship(
+        accounts.adminA, studioA.id, membershipIds.trainer1A, membershipIds.member3A
+    );
+    assert.equal(rel3Created.response.status, 201, JSON.stringify(rel3Created.data));
+    const relationship3 = rel3Created.data.coachingRelationship;
+
+    const viaCoachA = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
+        method: "POST",
+        token: accounts.ownerA.token,
+        body: {
+            programVersionId: versionA1.id,
+            memberMembershipId: membershipIds.member3A,
+            coachingRelationshipId: relationship3.id
+        }
+    });
+    assert.equal(viaCoachA.response.status, 201, JSON.stringify(viaCoachA.data));
+
+    // Owner explicitly picks coach B (trainer2A / relationship2) for the very
+    // same member — must independently succeed, proving there is no hidden
+    // "most recently started" or "first match" auto-selection left anywhere.
+    const viaCoachB = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
+        method: "POST",
+        token: accounts.ownerA.token,
+        body: {
+            programVersionId: versionA1.id,
+            memberMembershipId: membershipIds.member3A,
+            coachingRelationshipId: relationship2.id
+        }
+    });
+    assert.equal(viaCoachB.response.status, 201, JSON.stringify(viaCoachB.data));
+
+    const [[coachAAssignmentRow]] = await pool.query(
+        `SELECT cr.public_id AS relationship_public_id
+         FROM studio_program_assignments pa
+         INNER JOIN studio_coaching_relationships cr ON cr.id = pa.coaching_relationship_id
+         WHERE pa.public_id = ?`,
+        [viaCoachA.data.programAssignment.id]
+    );
+    const [[coachBAssignmentRow]] = await pool.query(
+        `SELECT cr.public_id AS relationship_public_id
+         FROM studio_program_assignments pa
+         INNER JOIN studio_coaching_relationships cr ON cr.id = pa.coaching_relationship_id
+         WHERE pa.public_id = ?`,
+        [viaCoachB.data.programAssignment.id]
+    );
+    assert.equal(
+        coachAAssignmentRow.relationship_public_id, relationship3.id,
+        "the assignment must persist exactly the relationship the caller chose"
+    );
+    assert.equal(coachBAssignmentRow.relationship_public_id, relationship2.id);
+
+    // A relationship that exists only in another studio must be rejected
+    // exactly like a non-existent one.
+    const foreignRelationship = await createRelationship(
+        accounts.ownerB, studioB.id, membershipIds.trainerB, membershipIds.memberB
+    );
+    assert.equal(foreignRelationship.response.status, 201, JSON.stringify(foreignRelationship.data));
+    const foreignStudioAttempt = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
+        method: "POST",
+        token: accounts.ownerA.token,
+        body: {
+            programVersionId: versionA1.id,
+            memberMembershipId: membershipIds.member3A,
+            coachingRelationshipId: foreignRelationship.data.coachingRelationship.id
+        }
+    });
+    assert.equal(foreignStudioAttempt.response.status, 404);
+    assert.equal(foreignStudioAttempt.data.error.code, "COACHING_RELATIONSHIP_NOT_FOUND");
+
+    // relationship1 (trainer1A / member1A) was ended in an earlier test; an
+    // already-ended relationship must be rejected the same way as a foreign one.
+    const endedRelationshipAttempt = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
+        method: "POST",
+        token: accounts.ownerA.token,
+        body: {
+            programVersionId: versionA1.id,
+            memberMembershipId: membershipIds.member1A,
+            coachingRelationshipId: relationship1.id
+        }
+    });
+    assert.equal(endedRelationshipAttempt.response.status, 404);
+    assert.equal(endedRelationshipAttempt.data.error.code, "COACHING_RELATIONSHIP_NOT_FOUND");
+
+    // A trainer must never be able to use another trainer's relationship, even
+    // though they themselves separately coach the very same member.
+    const foreignTrainerAttempt = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
+        method: "POST",
+        token: accounts.trainer2A.token,
+        body: {
+            programVersionId: versionA1.id,
+            memberMembershipId: membershipIds.member3A,
+            coachingRelationshipId: relationship3.id
+        }
+    });
+    assert.equal(foreignTrainerAttempt.response.status, 404, JSON.stringify(foreignTrainerAttempt.data));
+    assert.equal(foreignTrainerAttempt.data.error.code, "COACHING_RELATIONSHIP_NOT_FOUND");
+
+    // A relationship whose coach membership is no longer active (suspended or
+    // left) must be rejected, since eligibility is loaded fresh every request.
+    const suspendCoach = await api(
+        `/api/v1/studios/${studioA.id}/memberships/${membershipIds.trainer2A}`,
+        { method: "PATCH", token: accounts.ownerA.token, body: { status: "suspended" } }
+    );
+    assert.equal(suspendCoach.response.status, 200, JSON.stringify(suspendCoach.data));
+    try {
+        const suspendedCoachAttempt = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
+            method: "POST",
+            token: accounts.ownerA.token,
+            body: {
+                programVersionId: versionA1.id,
+                memberMembershipId: membershipIds.member3A,
+                coachingRelationshipId: relationship2.id
+            }
+        });
+        assert.equal(suspendedCoachAttempt.response.status, 404, JSON.stringify(suspendedCoachAttempt.data));
+        assert.equal(suspendedCoachAttempt.data.error.code, "COACHING_RELATIONSHIP_NOT_FOUND");
+    } finally {
+        const restoreCoach = await api(
+            `/api/v1/studios/${studioA.id}/memberships/${membershipIds.trainer2A}`,
+            { method: "PATCH", token: accounts.ownerA.token, body: { status: "active" } }
+        );
+        assert.equal(restoreCoach.response.status, 200, JSON.stringify(restoreCoach.data));
+    }
+
+    // Two concurrent, independently valid assignments through the same
+    // explicit relationship must both succeed consistently without deadlock
+    // or corruption.
+    const [concurrentA, concurrentB] = await Promise.all([
+        api(`/api/v1/studios/${studioA.id}/program-assignments`, {
+            method: "POST",
+            token: accounts.ownerA.token,
+            body: {
+                programVersionId: versionA1.id,
+                memberMembershipId: membershipIds.member3A,
+                coachingRelationshipId: relationship3.id,
+                startsOn: "2026-03-01"
+            }
+        }),
+        api(`/api/v1/studios/${studioA.id}/program-assignments`, {
+            method: "POST",
+            token: accounts.adminA.token,
+            body: {
+                programVersionId: versionA1.id,
+                memberMembershipId: membershipIds.member3A,
+                coachingRelationshipId: relationship3.id,
+                startsOn: "2026-04-01"
+            }
+        })
+    ]);
+    assert.equal(concurrentA.response.status, 201, JSON.stringify(concurrentA.data));
+    assert.equal(concurrentB.response.status, 201, JSON.stringify(concurrentB.data));
+    const [[concurrentCount]] = await pool.query(
+        `SELECT COUNT(*) AS total
+         FROM studio_program_assignments pa
+         INNER JOIN studio_coaching_relationships cr ON cr.id = pa.coaching_relationship_id
+         WHERE cr.public_id = ?`,
+        [relationship3.id]
+    );
+    assert.equal(
+        Number(concurrentCount.total), 3,
+        "coach A now has three consistent assignments through the same relationship (viaCoachA + two concurrent)"
+    );
+
+    // The audit trail correctly references the relationship the caller
+    // actually selected, not an internal id or an auto-picked alternative.
+    const [[auditRow]] = await pool.query(
+        `SELECT details_json
+         FROM studio_audit_events sae
+         INNER JOIN studios s ON s.id = sae.studio_id
+         WHERE s.public_id = ? AND sae.event_type = 'training_program_assignment.created'
+           AND sae.target_public_id = ?`,
+        [studioA.id, viaCoachA.data.programAssignment.id]
+    );
+    assert.equal(auditRow.details_json.memberMembershipId, membershipIds.member3A);
 });
 
 test("two concurrent attempts to create the same active coaching relationship leave exactly one active row", async () => {

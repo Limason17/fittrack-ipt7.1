@@ -1,4 +1,5 @@
 const {
+    CoachingRelationshipNotFoundError,
     CoachingRelationshipRequiredError,
     ProgramAssignmentNotFoundError,
     ProgramAssignmentStateError,
@@ -6,7 +7,8 @@ const {
     ProgramVersionNotPublishedError
 } = require("../errors/TrainingProgramErrors");
 const { createPublicId } = require("../domain/studioDomain");
-const { PERMISSIONS, canAssignProgramVersion, coachActionEligibility } = require("../domain/studioPolicy");
+const { PERMISSIONS, canAssignProgramVersion } = require("../domain/studioPolicy");
+const { COACH_ELIGIBLE_ROLES } = require("../domain/trainingProgramDomain");
 const {
     createTrainingServiceHelpers,
     paginationResult,
@@ -86,29 +88,36 @@ function createProgramAssignmentService({ database, generatePublicId = createPub
     const sql = promiseDatabase(database);
     const helpers = createTrainingServiceHelpers(sql);
 
-    async function resolveCoachingRelationship(connection, studioInternalId, actor, memberMembershipInternalId) {
-        if (actor.role === "trainer") {
-            const [rows] = await connection.query(
-                `SELECT id, public_id, coach_membership_id, member_membership_id, status
-                 FROM studio_coaching_relationships
-                 WHERE studio_id = ? AND coach_membership_id = ? AND member_membership_id = ? AND status = 'active'
-                 FOR UPDATE`,
-                [studioInternalId, actor.internalId, memberMembershipInternalId]
-            );
-            if (rows.length === 0) throw new CoachingRelationshipRequiredError();
-            return rows[0];
-        }
-
+    async function loadCoachingRelationshipForAssignment(
+        connection, studioInternalId, actor, memberMembershipInternalId, relationshipPublicId
+    ) {
         const [rows] = await connection.query(
-            `SELECT id, public_id, coach_membership_id, member_membership_id, status
-             FROM studio_coaching_relationships
-             WHERE studio_id = ? AND member_membership_id = ? AND status = 'active'
-             ORDER BY started_at DESC
+            `SELECT cr.id, cr.public_id, cr.coach_membership_id, cr.member_membership_id, cr.status,
+                    coach.status AS coach_status, coach.role AS coach_role
+             FROM studio_coaching_relationships cr
+             INNER JOIN studio_memberships coach ON coach.id = cr.coach_membership_id
+             WHERE cr.studio_id = ? AND cr.public_id = ?
              FOR UPDATE`,
-            [studioInternalId, memberMembershipInternalId]
+            [studioInternalId, relationshipPublicId]
         );
-        if (rows.length === 0) throw new CoachingRelationshipRequiredError();
-        return rows[0];
+        if (rows.length === 0) throw new CoachingRelationshipNotFoundError();
+        const relationship = rows[0];
+
+        const usable =
+            relationship.status === "active" &&
+            Number(relationship.member_membership_id) === memberMembershipInternalId &&
+            relationship.coach_status === "active" &&
+            COACH_ELIGIBLE_ROLES.includes(relationship.coach_role) &&
+            (actor.role !== "trainer" || Number(relationship.coach_membership_id) === actor.internalId);
+
+        if (!usable) {
+            // Deliberately identical to the "not found" branch above: a relationship
+            // that exists but belongs to another member, another trainer, a foreign
+            // studio, or is no longer active/eligible must not be distinguishable
+            // from one that never existed.
+            throw new CoachingRelationshipNotFoundError();
+        }
+        return relationship;
     }
 
     async function createAssignment(actorUserId, context, input) {
@@ -123,16 +132,10 @@ function createProgramAssignmentService({ database, generatePublicId = createPub
                     throw new CoachingRelationshipRequiredError();
                 }
 
-                const relationship = await resolveCoachingRelationship(
-                    connection, studio.internalId, actor, memberMembership.internalId
+                const relationship = await loadCoachingRelationshipForAssignment(
+                    connection, studio.internalId, actor, memberMembership.internalId,
+                    input.coachingRelationshipId
                 );
-                const eligibility = coachActionEligibility({
-                    actorRole: actor.role,
-                    coachingRelationship: relationship
-                });
-                if (!eligibility.allowed) {
-                    throw new CoachingRelationshipRequiredError();
-                }
 
                 const [versionRows] = await connection.query(
                     `SELECT pv.id, pv.version_number, pv.status AS version_status,
