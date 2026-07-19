@@ -292,6 +292,18 @@ function createTrainingProgramV1Router({
     );
 
     router.get(
+        "/studios/:studioId/program-assignments/me/:assignmentId",
+        authenticate, context, permission(PERMISSIONS.ASSIGNMENT_READ_SELF),
+        async (req, res) => {
+            const assignmentId = validatePublicId(req.params.assignmentId, "assignmentId");
+            const assignment = await programAssignmentService.getOwnAssignmentDetail(
+                req.user.id, req.studioContext, assignmentId
+            );
+            res.json({ programAssignment: assignment });
+        }
+    );
+
+    router.get(
         "/studios/:studioId/program-assignments",
         authenticate, context, permission(PERMISSIONS.ASSIGNMENT_LIST),
         async (req, res) => {

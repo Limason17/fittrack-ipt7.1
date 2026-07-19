@@ -14,6 +14,7 @@ const {
     paginationResult,
     promiseDatabase
 } = require("./trainingServiceHelpers");
+const { dayFromRow, exerciseFromRow, publicDay } = require("./trainingProgramService");
 
 function assignmentFromRow(row) {
     return {
@@ -334,9 +335,61 @@ function createProgramAssignmentService({ database, generatePublicId = createPub
         );
     }
 
+    async function getOwnAssignmentDetail(actorUserId, context, assignmentPublicId) {
+        return helpers.withLockedStudioAccess(
+            context,
+            PERMISSIONS.ASSIGNMENT_READ_SELF,
+            async (connection, studio, actor) => {
+                const [rows] = await connection.query(
+                    `${ASSIGNMENT_SELECT}
+                     WHERE pa.studio_id = ? AND pa.public_id = ? AND pa.member_membership_id = ?`,
+                    [studio.internalId, assignmentPublicId, actor.internalId]
+                );
+                if (rows.length === 0) throw new ProgramAssignmentNotFoundError();
+                const assignment = assignmentFromRow(rows[0]);
+
+                const [dayRows] = await connection.query(
+                    `SELECT id, public_id, program_version_id, position, name, instructions, created_at, updated_at
+                     FROM studio_training_program_days
+                     WHERE program_version_id = ?
+                     ORDER BY position ASC`,
+                    [assignment.programVersionInternalId]
+                );
+                let exercisesByDay = new Map();
+                if (dayRows.length > 0) {
+                    const [exerciseRows] = await connection.query(
+                        `SELECT id, public_id, program_day_id, position, exercise_name_snapshot, instructions,
+                                target_sets, target_reps_min, target_reps_max, target_weight,
+                                target_duration_minutes, target_distance_km, target_rpe, rest_seconds
+                         FROM studio_training_program_exercises
+                         WHERE program_day_id IN (?)
+                         ORDER BY position ASC`,
+                        [dayRows.map((row) => row.id)]
+                    );
+                    exercisesByDay = exerciseRows.reduce((map, row) => {
+                        const exercise = exerciseFromRow(row);
+                        const list = map.get(exercise.dayInternalId) || [];
+                        list.push(exercise);
+                        map.set(exercise.dayInternalId, list);
+                        return map;
+                    }, new Map());
+                }
+
+                return {
+                    ...publicAssignment(assignment, { includeMember: false }),
+                    days: dayRows.map((row) => {
+                        const day = dayFromRow(row);
+                        return publicDay(day, exercisesByDay.get(day.internalId) || []);
+                    })
+                };
+            }
+        );
+    }
+
     return {
         createAssignment,
         getAssignment,
+        getOwnAssignmentDetail,
         listAssignments,
         listOwnAssignments,
         updateAssignment
