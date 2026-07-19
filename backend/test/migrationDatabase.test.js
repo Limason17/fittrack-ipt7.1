@@ -123,7 +123,8 @@ test(
                     "002_legacy_schema_upgrade",
                     "003_seed_global_exercises",
                     "004_training_history_consistency",
-                    "005_studio_tenancy_and_rbac"
+                    "005_studio_tenancy_and_rbac",
+                    "006_coach_member_training"
                 ]
             );
 
@@ -141,7 +142,8 @@ test(
                 "002_legacy_schema_upgrade",
                 "003_seed_global_exercises",
                 "004_training_history_consistency",
-                "005_studio_tenancy_and_rbac"
+                "005_studio_tenancy_and_rbac",
+                "006_coach_member_training"
             ]);
 
             const [tables] = await pool.promise().query(
@@ -158,8 +160,14 @@ test(
                     "progress_entries",
                     "schema_migrations",
                     "studio_audit_events",
+                    "studio_coaching_relationships",
                     "studio_invitations",
                     "studio_memberships",
+                    "studio_program_assignments",
+                    "studio_training_program_days",
+                    "studio_training_program_exercises",
+                    "studio_training_program_versions",
+                    "studio_training_programs",
                     "studios",
                     "users",
                     "workout_exercises",
@@ -184,14 +192,18 @@ test(
                  ORDER BY TABLE_NAME, COLUMN_NAME`,
                 [database]
             );
-            assert.equal(historyColumns.length, 10);
+            assert.equal(
+                historyColumns.length,
+                11,
+                "includes the personal-schema snapshot columns plus studio_training_program_exercises.exercise_name_snapshot, which reuses the same snapshot naming pattern"
+            );
 
             const [ledgerSnapshot] = await pool.promise().query(
                 `SELECT migration_id, checksum, status, started_at, applied_at
                  FROM schema_migrations
                  ORDER BY migration_id`
             );
-            assert.equal(ledgerSnapshot.length, 5);
+            assert.equal(ledgerSnapshot.length, 6);
             assert.ok(ledgerSnapshot.every((row) => row.status === "applied"));
 
             const secondRun = await runner.migrate();
@@ -364,12 +376,15 @@ test(
                 logger: silentLogger()
             });
             const stage1Result = await stage1Runner.migrate();
-            assert.deepEqual(stage1Result.applied, ["005_studio_tenancy_and_rbac"]);
+            assert.deepEqual(stage1Result.applied, [
+                "005_studio_tenancy_and_rbac",
+                "006_coach_member_training"
+            ]);
             const afterStudioMigration = await personalDataSnapshot(sql);
             assert.deepEqual(
                 afterStudioMigration,
                 beforeStudioMigration,
-                "studio schema migration must not alter personal rows or links"
+                "studio and training schema migrations must not alter personal rows or links"
             );
 
             const secondRun = await stage1Runner.migrate();
@@ -642,6 +657,383 @@ test(
                 ),
                 { memberships: 0, invitations: 0, audit_events: 0 }
             );
+        } finally {
+            await db.closePool(pool);
+        }
+    }
+);
+
+test(
+    "Coaching- und Trainingsprogramm-Schema erzwingt Unique-, FK-, Check- und Löschregeln",
+    { skip: !RUN_INTEGRATION },
+    async () => {
+        const database = await createDisposableDatabase();
+        const pool = createTestPool(database);
+        const sql = pool.promise();
+
+        try {
+            const runner = createMigrationRunner({ pool, logger: silentLogger() });
+            await runner.migrate();
+
+            async function createUser(username) {
+                const [result] = await sql.query(
+                    `INSERT INTO users (username, email, password_hash)
+                     VALUES (?, ?, 'test-hash')`,
+                    [username, `${username}@example.test`]
+                );
+                return result.insertId;
+            }
+
+            const ownerId = await createUser("training-owner");
+            const coachId = await createUser("training-coach");
+            const memberId = await createUser("training-member");
+
+            const [studioResult] = await sql.query(
+                `INSERT INTO studios (public_id, name, slug, created_by_user_id)
+                 VALUES ('11000000-0000-4000-8000-000000000001',
+                         'Training Studio', 'training-studio', ?)`,
+                [ownerId]
+            );
+            const studioId = studioResult.insertId;
+
+            async function createMembership(publicId, userId, role) {
+                const [result] = await sql.query(
+                    `INSERT INTO studio_memberships (
+                        public_id, studio_id, user_id, role, status, joined_at
+                     ) VALUES (?, ?, ?, ?, 'active', CURRENT_TIMESTAMP(3))`,
+                    [publicId, studioId, userId, role]
+                );
+                return result.insertId;
+            }
+
+            const coachMembershipId = await createMembership(
+                "12000000-0000-4000-8000-000000000001", coachId, "trainer"
+            );
+            const memberMembershipId = await createMembership(
+                "12000000-0000-4000-8000-000000000002", memberId, "member"
+            );
+
+            // --- coaching relationships: uniqueness, distinctness, FKs ---
+            const [relationshipResult] = await sql.query(
+                `INSERT INTO studio_coaching_relationships (
+                    public_id, studio_id, coach_membership_id, member_membership_id,
+                    created_by_user_id
+                 ) VALUES ('13000000-0000-4000-8000-000000000001', ?, ?, ?, ?)`,
+                [studioId, coachMembershipId, memberMembershipId, ownerId]
+            );
+            const relationshipId = relationshipResult.insertId;
+
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_coaching_relationships (
+                        public_id, studio_id, coach_membership_id, member_membership_id,
+                        created_by_user_id
+                     ) VALUES ('13000000-0000-4000-8000-000000000002', ?, ?, ?, ?)`,
+                    [studioId, coachMembershipId, memberMembershipId, ownerId]
+                ),
+                "ER_DUP_ENTRY"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_coaching_relationships (
+                        public_id, studio_id, coach_membership_id, member_membership_id,
+                        created_by_user_id
+                     ) VALUES ('13000000-0000-4000-8000-000000000003', ?, ?, ?, ?)`,
+                    [studioId, coachMembershipId, coachMembershipId, ownerId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_coaching_relationships (
+                        public_id, studio_id, coach_membership_id, member_membership_id,
+                        status, created_by_user_id
+                     ) VALUES ('13000000-0000-4000-8000-000000000004', ?, ?, ?, 'pending', ?)`,
+                    [studioId, coachMembershipId, memberMembershipId, ownerId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_coaching_relationships (
+                        public_id, studio_id, coach_membership_id, member_membership_id,
+                        created_by_user_id
+                     ) VALUES ('13000000-0000-4000-8000-000000000005', 2147483647, ?, ?, ?)`,
+                    [memberMembershipId, coachMembershipId, ownerId]
+                ),
+                "ER_NO_REFERENCED_ROW_2"
+            );
+
+            // ending the relationship must free the (coach, member) pair for a fresh one
+            await sql.query(
+                `UPDATE studio_coaching_relationships
+                 SET status = 'ended', ended_at = CURRENT_TIMESTAMP(3)
+                 WHERE id = ?`,
+                [relationshipId]
+            );
+            const [reRelationshipResult] = await sql.query(
+                `INSERT INTO studio_coaching_relationships (
+                    public_id, studio_id, coach_membership_id, member_membership_id,
+                    created_by_user_id
+                 ) VALUES ('13000000-0000-4000-8000-000000000006', ?, ?, ?, ?)`,
+                [studioId, coachMembershipId, memberMembershipId, ownerId]
+            );
+            const activeRelationshipId = reRelationshipResult.insertId;
+            const [pairRows] = await sql.query(
+                `SELECT status, active_pair_marker
+                 FROM studio_coaching_relationships
+                 WHERE coach_membership_id = ? AND member_membership_id = ?
+                 ORDER BY id`,
+                [coachMembershipId, memberMembershipId]
+            );
+            assert.deepEqual(pairRows, [
+                { status: "ended", active_pair_marker: null },
+                { status: "active", active_pair_marker: 1 }
+            ]);
+
+            // --- training programs ---
+            const [programResult] = await sql.query(
+                `INSERT INTO studio_training_programs (
+                    public_id, studio_id, name, created_by_user_id
+                 ) VALUES ('14000000-0000-4000-8000-000000000001', ?, 'Beginner Strength', ?)`,
+                [studioId, coachId]
+            );
+            const programId = programResult.insertId;
+
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_training_programs (
+                        public_id, studio_id, name, status, created_by_user_id
+                     ) VALUES ('14000000-0000-4000-8000-000000000002', ?, 'Invalid', 'live', ?)`,
+                    [studioId, coachId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_training_programs (
+                        public_id, studio_id, name, created_by_user_id
+                     ) VALUES ('14000000-0000-4000-8000-000000000003', 2147483647, 'Orphan', ?)`,
+                    [coachId]
+                ),
+                "ER_NO_REFERENCED_ROW_2"
+            );
+
+            // --- program versions: uniqueness, positivity, status ---
+            const [versionResult] = await sql.query(
+                `INSERT INTO studio_training_program_versions (
+                    public_id, program_id, version_number, created_by_user_id
+                 ) VALUES ('15000000-0000-4000-8000-000000000001', ?, 1, ?)`,
+                [programId, coachId]
+            );
+            const versionId = versionResult.insertId;
+
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_training_program_versions (
+                        public_id, program_id, version_number, created_by_user_id
+                     ) VALUES ('15000000-0000-4000-8000-000000000002', ?, 1, ?)`,
+                    [programId, coachId]
+                ),
+                "ER_DUP_ENTRY"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_training_program_versions (
+                        public_id, program_id, version_number, created_by_user_id
+                     ) VALUES ('15000000-0000-4000-8000-000000000003', ?, 0, ?)`,
+                    [programId, coachId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_training_program_versions (
+                        public_id, program_id, version_number, status, created_by_user_id
+                     ) VALUES ('15000000-0000-4000-8000-000000000004', ?, 2, 'live', ?)`,
+                    [programId, coachId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+
+            // --- program days: uniqueness and positivity ---
+            const [dayResult] = await sql.query(
+                `INSERT INTO studio_training_program_days (
+                    public_id, program_version_id, position, name
+                 ) VALUES ('16000000-0000-4000-8000-000000000001', ?, 1, 'Day 1')`,
+                [versionId]
+            );
+            const dayId = dayResult.insertId;
+
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_training_program_days (
+                        public_id, program_version_id, position, name
+                     ) VALUES ('16000000-0000-4000-8000-000000000002', ?, 1, 'Duplicate position')`,
+                    [versionId]
+                ),
+                "ER_DUP_ENTRY"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_training_program_days (
+                        public_id, program_version_id, position, name
+                     ) VALUES ('16000000-0000-4000-8000-000000000003', ?, 0, 'Zero position')`,
+                    [versionId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+
+            // --- program exercises: uniqueness and metric range checks ---
+            await sql.query(
+                `INSERT INTO studio_training_program_exercises (
+                    public_id, program_day_id, position, exercise_name_snapshot,
+                    target_sets, target_reps_min, target_reps_max, target_rpe, rest_seconds
+                 ) VALUES (
+                    '17000000-0000-4000-8000-000000000001', ?, 1, 'Bench Press',
+                    4, 6, 10, 8.5, 90
+                 )`,
+                [dayId]
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_training_program_exercises (
+                        public_id, program_day_id, position, exercise_name_snapshot
+                     ) VALUES ('17000000-0000-4000-8000-000000000002', ?, 1, 'Duplicate position')`,
+                    [dayId]
+                ),
+                "ER_DUP_ENTRY"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_training_program_exercises (
+                        public_id, program_day_id, position, exercise_name_snapshot, target_sets
+                     ) VALUES ('17000000-0000-4000-8000-000000000003', ?, 2, 'Too many sets', 25)`,
+                    [dayId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_training_program_exercises (
+                        public_id, program_day_id, position, exercise_name_snapshot,
+                        target_reps_min, target_reps_max
+                     ) VALUES ('17000000-0000-4000-8000-000000000004', ?, 3, 'Inverted reps range', 12, 8)`,
+                    [dayId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_training_program_exercises (
+                        public_id, program_day_id, position, exercise_name_snapshot, target_rpe
+                     ) VALUES ('17000000-0000-4000-8000-000000000005', ?, 4, 'RPE too high', 12.0)`,
+                    [dayId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_training_program_exercises (
+                        public_id, program_day_id, position, exercise_name_snapshot, target_weight
+                     ) VALUES ('17000000-0000-4000-8000-000000000006', ?, 5, 'Negative weight', -1)`,
+                    [dayId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+
+            // --- publish the version, then assign it ---
+            await sql.query(
+                `UPDATE studio_training_program_versions
+                 SET status = 'published', published_at = CURRENT_TIMESTAMP(3)
+                 WHERE id = ?`,
+                [versionId]
+            );
+            const [assignmentResult] = await sql.query(
+                `INSERT INTO studio_program_assignments (
+                    public_id, studio_id, program_version_id, member_membership_id,
+                    assigned_by_user_id, coaching_relationship_id, starts_on, ends_on
+                 ) VALUES (
+                    '18000000-0000-4000-8000-000000000001', ?, ?, ?, ?, ?,
+                    '2026-01-01', '2026-02-01'
+                 )`,
+                [studioId, versionId, memberMembershipId, coachId, activeRelationshipId]
+            );
+            const assignmentId = assignmentResult.insertId;
+
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_program_assignments (
+                        public_id, studio_id, program_version_id, member_membership_id,
+                        assigned_by_user_id, coaching_relationship_id, starts_on, ends_on
+                     ) VALUES (
+                        '18000000-0000-4000-8000-000000000002', ?, ?, ?, ?, ?,
+                        '2026-02-01', '2026-01-01'
+                     )`,
+                    [studioId, versionId, memberMembershipId, coachId, activeRelationshipId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_program_assignments (
+                        public_id, studio_id, program_version_id, member_membership_id,
+                        assigned_by_user_id, coaching_relationship_id, status
+                     ) VALUES (
+                        '18000000-0000-4000-8000-000000000003', ?, ?, ?, ?, ?, 'paused'
+                     )`,
+                    [studioId, versionId, memberMembershipId, coachId, activeRelationshipId]
+                ),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query(
+                    `INSERT INTO studio_program_assignments (
+                        public_id, studio_id, program_version_id, member_membership_id,
+                        assigned_by_user_id, coaching_relationship_id
+                     ) VALUES (
+                        '18000000-0000-4000-8000-000000000004', ?, 2147483647, ?, ?, ?
+                     )`,
+                    [studioId, memberMembershipId, coachId, activeRelationshipId]
+                ),
+                "ER_NO_REFERENCED_ROW_2"
+            );
+
+            // a day cannot be removed from under a version without cascading its exercises,
+            // and deleting it must not orphan any exercise row
+            await sql.query("DELETE FROM studio_training_program_days WHERE id = ?", [dayId]);
+            const [orphanExercises] = await sql.query(
+                "SELECT COUNT(*) AS total FROM studio_training_program_exercises WHERE program_day_id = ?",
+                [dayId]
+            );
+            assert.equal(Number(orphanExercises[0].total), 0);
+
+            // deleting a whole studio must cascade through every Stage 1B.1 table with zero orphans,
+            // exactly like the existing Stage 1A studio cascade guarantee
+            await sql.query("DELETE FROM studios WHERE id = ?", [studioId]);
+            const [trainingCounts] = await sql.query(`
+                SELECT
+                    (SELECT COUNT(*) FROM studio_coaching_relationships) AS relationships,
+                    (SELECT COUNT(*) FROM studio_training_programs) AS programs,
+                    (SELECT COUNT(*) FROM studio_training_program_versions) AS versions,
+                    (SELECT COUNT(*) FROM studio_training_program_days) AS days,
+                    (SELECT COUNT(*) FROM studio_training_program_exercises) AS exercises,
+                    (SELECT COUNT(*) FROM studio_program_assignments) AS assignments
+            `);
+            assert.deepEqual(
+                Object.fromEntries(
+                    Object.entries(trainingCounts[0]).map(([name, value]) => [name, Number(value)])
+                ),
+                {
+                    relationships: 0,
+                    programs: 0,
+                    versions: 0,
+                    days: 0,
+                    exercises: 0,
+                    assignments: 0
+                }
+            );
+            assert.ok(assignmentId > 0, "sanity check that the assignment insert above actually ran");
         } finally {
             await db.closePool(pool);
         }

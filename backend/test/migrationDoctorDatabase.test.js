@@ -155,7 +155,7 @@ test(
 
             assert.equal(pending.exitCode, DOCTOR_EXIT_CODES.PENDING);
             assert.equal(pending.recoveryRequired, false);
-            assert.equal(pending.summary.pending, 5);
+            assert.equal(pending.summary.pending, 6);
             assert.equal(emptyBefore.hasLedger, false);
             assert.deepEqual(emptyAfter, emptyBefore, "doctor must not create the ledger");
 
@@ -237,6 +237,114 @@ test(
             );
             assert.ok(
                 report.issues.some((item) => item.code === "MIGRATION_SCHEMA_MISSING")
+            );
+            assert.deepEqual(afterDoctor, beforeDoctor);
+        } finally {
+            await db.closePool(pool);
+        }
+    }
+);
+
+test(
+    "migration doctor detects a partially applied Stage 1B.1 training schema without mutating it",
+    { skip: !RUN_INTEGRATION },
+    async () => {
+        const database = await createDisposableDatabase();
+        const pool = createTestPool(database);
+        const migrations = loadMigrations();
+        const runner = createMigrationRunner({
+            pool,
+            migrations: migrations.slice(0, 5),
+            logger: silentLogger()
+        });
+
+        try {
+            await runner.migrate();
+
+            const [studioRows] = await pool.promise().query(
+                `INSERT INTO users (username, email, password_hash)
+                 VALUES ('doctor-owner', 'doctor-owner@example.test', 'test-hash')`
+            );
+            await pool.promise().query(
+                `INSERT INTO studios (
+                    public_id, name, slug, created_by_user_id
+                 ) VALUES (
+                    '50000000-0000-4000-8000-000000000001',
+                    'Doctor Studio', 'doctor-studio', ?
+                 )`,
+                [studioRows.insertId]
+            );
+
+            await pool.promise().query(`
+                CREATE TABLE studio_coaching_relationships (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    public_id CHAR(36) NOT NULL,
+                    studio_id INT NOT NULL,
+                    coach_membership_id INT NOT NULL,
+                    member_membership_id INT NOT NULL,
+                    status VARCHAR(16) NOT NULL DEFAULT 'active',
+                    active_pair_marker TINYINT GENERATED ALWAYS AS (
+                        IF(status = 'active', 1, NULL)
+                    ) STORED,
+                    created_by_user_id INT NOT NULL,
+                    started_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+                    ended_at TIMESTAMP(3) NULL,
+                    created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+                    updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+                        ON UPDATE CURRENT_TIMESTAMP(3),
+                    UNIQUE INDEX uq_coaching_relationships_public_id (public_id),
+                    UNIQUE INDEX uq_coaching_relationships_active_pair (
+                        coach_membership_id, member_membership_id, active_pair_marker
+                    ),
+                    CONSTRAINT fk_coaching_relationships_studio
+                        FOREIGN KEY (studio_id) REFERENCES studios(id)
+                        ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            `);
+            const trainingMigration = migrations[5];
+            await pool.promise().query(
+                `INSERT INTO schema_migrations (
+                    migration_id, description, checksum, status,
+                    started_at, applied_at, execution_ms, failure_code
+                 ) VALUES (?, ?, ?, 'failed', ?, NULL, 40, 'INTENTIONAL_FAILURE')`,
+                [
+                    trainingMigration.id,
+                    trainingMigration.description,
+                    trainingMigration.checksum,
+                    new Date("2026-07-18T12:00:00.000Z")
+                ]
+            );
+
+            const beforeDoctor = await databaseSnapshot(pool, database);
+            const report = await createMigrationDoctor({ pool }).diagnose();
+            const afterDoctor = await databaseSnapshot(pool, database);
+
+            assert.equal(report.exitCode, DOCTOR_EXIT_CODES.RECOVERY_REQUIRED);
+            assert.equal(report.recoveryRequired, true);
+            assert.deepEqual(report.migrationStatus.dirty, [
+                {
+                    migrationId: "006_coach_member_training",
+                    status: "failed",
+                    startedAt: "2026-07-18T12:00:00.000Z",
+                    appliedAt: null,
+                    failureCode: "INTENTIONAL_FAILURE"
+                }
+            ]);
+            assert.ok(
+                report.issues.some(
+                    (item) =>
+                        item.code === "MIGRATION_SCHEMA_MISSING" &&
+                        item.migrationId === "006_coach_member_training"
+                ),
+                "the five training tables that never got created must be reported as missing"
+            );
+            assert.ok(
+                report.issues.some(
+                    (item) =>
+                        item.code === "MIGRATION_SCHEMA_PARTIAL" &&
+                        item.migrationId === "006_coach_member_training"
+                ),
+                "the one training table that did get created must be reported as a partial application"
             );
             assert.deepEqual(afterDoctor, beforeDoctor);
         } finally {
