@@ -344,6 +344,84 @@ test("Stage 1A schema contract covers every studio table, column, index and cons
     assert.equal(contract.checks.length, 83);
 });
 
+test("Stage 1B.1 schema contract covers every coaching, program, version, day, exercise and assignment table, column, index, FK and constraint", () => {
+    const contract = MIGRATION_SCHEMA_CONTRACT.find(
+        (item) => item.migrationId === "006_coach_member_training"
+    );
+    assert.ok(contract);
+
+    const keys = new Set(
+        contract.checks.map((check) => {
+            if (check.kind === "table") return `table:${check.table}`;
+            if (check.kind === "column") return `column:${check.table}.${check.column}`;
+            if (check.kind === "index") return `index:${check.table}.${check.index}`;
+            return `${check.kind}:${check.table}.${check.constraint}`;
+        })
+    );
+    const expected = [
+        "table:studio_coaching_relationships",
+        "table:studio_training_programs",
+        "table:studio_training_program_versions",
+        "table:studio_training_program_days",
+        "table:studio_training_program_exercises",
+        "table:studio_program_assignments",
+        "column:studio_coaching_relationships.active_pair_marker",
+        "column:studio_training_program_versions.version_number",
+        "column:studio_training_program_exercises.exercise_name_snapshot",
+        "column:studio_program_assignments.coaching_relationship_id",
+        "index:studio_coaching_relationships.uq_coaching_relationships_active_pair",
+        "index:studio_training_program_versions.uq_program_versions_program_number",
+        "index:studio_training_program_days.uq_program_days_version_position",
+        "index:studio_training_program_exercises.uq_program_exercises_day_position",
+        "foreign_key:studio_coaching_relationships.fk_coaching_relationships_coach_membership",
+        "foreign_key:studio_coaching_relationships.fk_coaching_relationships_member_membership",
+        "foreign_key:studio_program_assignments.fk_program_assignments_version",
+        "foreign_key:studio_program_assignments.fk_program_assignments_coaching_relationship",
+        "check_constraint:studio_coaching_relationships.chk_coaching_relationships_distinct_membership",
+        "check_constraint:studio_training_program_versions.chk_program_versions_number",
+        "check_constraint:studio_training_program_exercises.chk_program_exercises_reps_range",
+        "check_constraint:studio_program_assignments.chk_program_assignments_dates"
+    ];
+    for (const key of expected) assert.ok(keys.has(key), `missing schema check ${key}`);
+
+    const expectedColumnCounts = {
+        studio_coaching_relationships: 12,
+        studio_training_programs: 9,
+        studio_training_program_versions: 9,
+        studio_training_program_days: 8,
+        studio_training_program_exercises: 16,
+        studio_program_assignments: 15
+    };
+    for (const [tableName, count] of Object.entries(expectedColumnCounts)) {
+        assert.equal(
+            contract.checks.filter((check) => check.kind === "column" && check.table === tableName).length,
+            count,
+            `unexpected column count for ${tableName}`
+        );
+    }
+
+    assert.equal(
+        contract.checks.filter((check) => check.kind === "table").length,
+        6
+    );
+    assert.equal(
+        contract.checks.filter((check) => check.kind === "foreign_key").length,
+        15
+    );
+    assert.equal(
+        contract.checks.filter((check) => check.kind === "check_constraint").length,
+        18
+    );
+    assert.equal(contract.checks.length, 133);
+
+    assert.ok(
+        contract.checks
+            .filter((check) => check.kind !== "table")
+            .every((check) => check.pendingMissingAllowed === false),
+        "an already-applied Stage 1B.1 column, index, FK or constraint must never be treated as optionally missing"
+    );
+});
+
 test("CLI emits a safe JSON target without user or password and preserves exit 0", async () => {
     const lines = [];
     const logger = createStructuredLogger({
