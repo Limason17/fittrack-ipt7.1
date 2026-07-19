@@ -42,6 +42,18 @@ const ASSIGNMENT_STATUS_TONES = {
   cancelled: 'neutral',
 }
 
+const WORKOUT_SESSION_STATUS_TONES = {
+  in_progress: 'info',
+  completed: 'success',
+  aborted: 'neutral',
+}
+
+const WORKOUT_ITEM_STATUS_TONES = {
+  pending: 'warning',
+  completed: 'success',
+  skipped: 'neutral',
+}
+
 export function roleTone(role) {
   return ROLE_TONES[role] || 'neutral'
 }
@@ -68,4 +80,12 @@ export function programVersionStatusTone(status) {
 
 export function assignmentStatusTone(status) {
   return ASSIGNMENT_STATUS_TONES[status] || 'neutral'
+}
+
+export function workoutSessionStatusTone(status) {
+  return WORKOUT_SESSION_STATUS_TONES[status] || 'neutral'
+}
+
+export function workoutItemStatusTone(status) {
+  return WORKOUT_ITEM_STATUS_TONES[status] || 'neutral'
 }
