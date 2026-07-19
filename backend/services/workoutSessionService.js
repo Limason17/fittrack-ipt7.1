@@ -60,6 +60,7 @@ function sessionFromRow(row) {
 function publicSession(session, { includeMember = true } = {}) {
     return {
         id: session.id,
+        assignmentId: session.assignmentPublicId,
         status: session.status,
         revision: session.revision,
         program: { id: session.programId, name: session.programName },

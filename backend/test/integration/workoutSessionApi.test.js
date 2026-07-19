@@ -286,6 +286,7 @@ test("a member starts a workout session from an active assignment; the snapshot 
     );
     assert.equal(started1.response.status, 201, JSON.stringify(started1.data));
     sessionId1 = started1.data.workoutSession.id;
+    assert.equal(started1.data.workoutSession.assignmentId, assignment1.id);
     assert.equal(started1.data.workoutSession.status, "in_progress");
     assert.equal(started1.data.workoutSession.revision, 0);
     assert.equal(started1.data.workoutSession.exercises.length, 1);
@@ -307,6 +308,7 @@ test("a member starts a workout session from an active assignment; the snapshot 
     );
     assert.equal(started2.response.status, 201, JSON.stringify(started2.data));
     sessionId2 = started2.data.workoutSession.id;
+    assert.equal(started2.data.workoutSession.assignmentId, assignment1b.id);
     assert.notEqual(sessionId2, sessionId1);
 });
 
@@ -424,11 +426,16 @@ test("a member reads their own in-progress session; a different member gets a un
     const list = await api(`/api/v1/studios/${studioA.id}/workout-sessions/me`, { token: accounts.member1A.token });
     assert.equal(list.response.status, 200, JSON.stringify(list.data));
     assert.ok(list.data.workoutSessions.some((session) => session.id === sessionId1));
+    assert.equal(
+        list.data.workoutSessions.find((session) => session.id === sessionId1).assignmentId, assignment1.id,
+        "the assignment id must be resolvable from the list view so the frontend can distinguish sessions across assignments of the same program"
+    );
 
     const own = await api(`/api/v1/studios/${studioA.id}/workout-sessions/${sessionId1}`, {
         token: accounts.member1A.token
     });
     assert.equal(own.response.status, 200);
+    assert.equal(own.data.workoutSession.assignmentId, assignment1.id);
 
     const foreign = await api(`/api/v1/studios/${studioA.id}/workout-sessions/${sessionId1}`, {
         token: accounts.member2A.token
