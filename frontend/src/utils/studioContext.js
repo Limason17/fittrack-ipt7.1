@@ -6,6 +6,8 @@ import { listStudios } from './studioApi'
 export const PREFERRED_STUDIO_KEY = 'fittrack_preferred_studio_id'
 export const MANAGEMENT_ROLES = Object.freeze(['owner', 'admin'])
 export const MEMBERSHIP_VIEW_ROLES = Object.freeze(['owner', 'admin', 'trainer'])
+export const TRAINING_MANAGEMENT_ROLES = Object.freeze(['owner', 'admin', 'trainer'])
+export const COACHING_MANAGE_ROLES = Object.freeze(['owner', 'admin'])
 
 export const authorizedStudios = ref([])
 export const activeStudioId = ref(null)
@@ -26,6 +28,12 @@ export const canManageActiveStudio = computed(
 )
 export const canViewActiveStudioMembers = computed(
     () => MEMBERSHIP_VIEW_ROLES.includes(activeStudioRole.value) && activeMembership.value?.status === 'active'
+)
+export const canAccessTrainingManagement = computed(
+    () => TRAINING_MANAGEMENT_ROLES.includes(activeStudioRole.value) && activeMembership.value?.status === 'active'
+)
+export const isStudioMemberRole = computed(
+    () => activeStudioRole.value === 'member' && activeMembership.value?.status === 'active'
 )
 
 function normalizedStudio(studio) {

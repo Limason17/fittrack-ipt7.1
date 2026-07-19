@@ -34,6 +34,22 @@ async function mountSidebar() {
       { path: '/studios/:studioId/members', name: 'studio-members', component: { template: '<div />' } },
       { path: '/studios/:studioId/invitations', name: 'studio-invitations', component: { template: '<div />' } },
       { path: '/studios/:studioId/audit', name: 'studio-audit', component: { template: '<div />' } },
+      { path: '/studios/:studioId/coaching', name: 'studio-coaching', component: { template: '<div />' } },
+      {
+        path: '/studios/:studioId/training-programs',
+        name: 'studio-training-programs',
+        component: { template: '<div />' },
+      },
+      {
+        path: '/studios/:studioId/assignments',
+        name: 'studio-program-assignments',
+        component: { template: '<div />' },
+      },
+      {
+        path: '/studios/:studioId/my-training-plan',
+        name: 'studio-my-training-plan',
+        component: { template: '<div />' },
+      },
     ],
   })
   await router.push('/')
@@ -83,21 +99,40 @@ describe('AppSidebar role-dependent navigation', () => {
     expect(wrapper.text()).toContain('Mitglieder')
     expect(wrapper.text()).toContain('Einladungen')
     expect(wrapper.text()).toContain('Audit')
+    expect(wrapper.text()).toContain('Coaching')
+    expect(wrapper.text()).toContain('Trainingsprogramme')
+    expect(wrapper.text()).toContain('Zuweisungen')
+    expect(wrapper.text()).not.toContain('Mein Trainingsplan')
   })
 
-  it.each(['trainer', 'member'])('hides management navigation from %s users', async (role) => {
-    addAndSelectStudio(studio(role))
+  it('shows the training management group but not studio administration to trainers', async () => {
+    addAndSelectStudio(studio('trainer'))
     wrapper = await mountSidebar()
     await flushPromises()
 
     expect(wrapper.text()).not.toContain('Einstellungen')
     expect(wrapper.text()).not.toContain('Einladungen')
     expect(wrapper.text()).not.toContain('Audit')
-    if (role === 'trainer') {
-      expect(wrapper.text()).toContain('Mitglieder')
-    } else {
-      expect(wrapper.text()).not.toContain('Mitglieder')
-    }
+    expect(wrapper.text()).toContain('Mitglieder')
+    expect(wrapper.text()).toContain('Coaching')
+    expect(wrapper.text()).toContain('Trainingsprogramme')
+    expect(wrapper.text()).toContain('Zuweisungen')
+    expect(wrapper.text()).not.toContain('Mein Trainingsplan')
+  })
+
+  it('shows only "Mein Trainingsplan" from the training group to members', async () => {
+    addAndSelectStudio(studio('member'))
+    wrapper = await mountSidebar()
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('Einstellungen')
+    expect(wrapper.text()).not.toContain('Einladungen')
+    expect(wrapper.text()).not.toContain('Audit')
+    expect(wrapper.text()).not.toContain('Mitglieder')
+    expect(wrapper.text()).not.toContain('Coaching')
+    expect(wrapper.text()).not.toContain('Trainingsprogramme')
+    expect(wrapper.text()).not.toContain('Zuweisungen')
+    expect(wrapper.text()).toContain('Mein Trainingsplan')
   })
 
   it('shows the current studio role as sidebar section info', async () => {
