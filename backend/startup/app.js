@@ -106,7 +106,8 @@ function defaultRouters() {
         workouts: require("../routes/workouts"),
         progress: require("../routes/progress"),
         studioV1: require("../routes/studioV1"),
-        trainingProgramV1: require("../routes/trainingProgramV1")
+        trainingProgramV1: require("../routes/trainingProgramV1"),
+        workoutSessionV1: require("../routes/workoutSessionV1")
     };
 }
 
@@ -157,6 +158,9 @@ function createApp({
         }
         if (routeSet.trainingProgramV1) {
             app.use("/api/v1", routeSet.trainingProgramV1);
+        }
+        if (routeSet.workoutSessionV1) {
+            app.use("/api/v1", routeSet.workoutSessionV1);
         }
     }
 
