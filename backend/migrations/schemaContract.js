@@ -840,6 +840,227 @@ const trainingChecks = [
     )
 );
 
+const workoutMigrationId = "007_studio_workout_execution";
+const workoutExistingTableElement = { pendingMissingAllowed: false };
+
+const workoutTables = [
+    "studio_workout_sessions",
+    "studio_workout_session_exercises",
+    "studio_workout_session_sets"
+].map((name) => table(workoutMigrationId, name));
+
+const workoutColumns = [
+    ["studio_workout_sessions", "id", "int", false],
+    ["studio_workout_sessions", "public_id", "char(36)", false],
+    ["studio_workout_sessions", "studio_id", "int", false],
+    ["studio_workout_sessions", "assignment_id", "int", false],
+    ["studio_workout_sessions", "member_membership_id", "int", false],
+    ["studio_workout_sessions", "program_version_id", "int", false],
+    ["studio_workout_sessions", "program_day_id", "int", false],
+    ["studio_workout_sessions", "coaching_relationship_id", "int", false],
+    ["studio_workout_sessions", "status", "varchar(16)", false],
+    ["studio_workout_sessions", "client_start_key", "varchar(100)", false],
+    ["studio_workout_sessions", "revision", "int", false],
+    ["studio_workout_sessions", "started_at", "timestamp(3)", false],
+    ["studio_workout_sessions", "completed_at", "timestamp(3)", true],
+    ["studio_workout_sessions", "aborted_at", "timestamp(3)", true],
+    ["studio_workout_sessions", "member_note", "varchar(500)", true],
+    ["studio_workout_sessions", "created_at", "timestamp(3)", false],
+    ["studio_workout_sessions", "updated_at", "timestamp(3)", false],
+
+    ["studio_workout_session_exercises", "id", "int", false],
+    ["studio_workout_session_exercises", "public_id", "char(36)", false],
+    ["studio_workout_session_exercises", "workout_session_id", "int", false],
+    ["studio_workout_session_exercises", "source_program_exercise_id", "int", true],
+    ["studio_workout_session_exercises", "position", "int", false],
+    ["studio_workout_session_exercises", "exercise_name_snapshot", "varchar(80)", false],
+    ["studio_workout_session_exercises", "instructions_snapshot", "varchar(500)", true],
+    ["studio_workout_session_exercises", "target_sets", "smallint", true],
+    ["studio_workout_session_exercises", "target_reps_min", "smallint", true],
+    ["studio_workout_session_exercises", "target_reps_max", "smallint", true],
+    ["studio_workout_session_exercises", "target_weight", "decimal(6,2)", true],
+    ["studio_workout_session_exercises", "target_duration_minutes", "smallint", true],
+    ["studio_workout_session_exercises", "target_distance_km", "decimal(7,2)", true],
+    ["studio_workout_session_exercises", "target_rpe", "decimal(3,1)", true],
+    ["studio_workout_session_exercises", "rest_seconds", "smallint", true],
+    ["studio_workout_session_exercises", "status", "varchar(16)", false],
+    ["studio_workout_session_exercises", "member_note", "varchar(500)", true],
+    ["studio_workout_session_exercises", "revision", "int", false],
+    ["studio_workout_session_exercises", "created_at", "timestamp(3)", false],
+    ["studio_workout_session_exercises", "updated_at", "timestamp(3)", false],
+
+    ["studio_workout_session_sets", "id", "int", false],
+    ["studio_workout_session_sets", "public_id", "char(36)", false],
+    ["studio_workout_session_sets", "session_exercise_id", "int", false],
+    ["studio_workout_session_sets", "position", "int", false],
+    ["studio_workout_session_sets", "status", "varchar(16)", false],
+    ["studio_workout_session_sets", "actual_reps", "smallint", true],
+    ["studio_workout_session_sets", "actual_weight", "decimal(6,2)", true],
+    ["studio_workout_session_sets", "actual_duration_minutes", "smallint", true],
+    ["studio_workout_session_sets", "actual_distance_km", "decimal(7,2)", true],
+    ["studio_workout_session_sets", "actual_rpe", "decimal(3,1)", true],
+    ["studio_workout_session_sets", "member_note", "varchar(500)", true],
+    ["studio_workout_session_sets", "revision", "int", false],
+    ["studio_workout_session_sets", "completed_at", "timestamp(3)", true],
+    ["studio_workout_session_sets", "created_at", "timestamp(3)", false],
+    ["studio_workout_session_sets", "updated_at", "timestamp(3)", false]
+].map(([tableName, columnName, columnType, nullable]) =>
+    column(
+        workoutMigrationId,
+        tableName,
+        columnName,
+        columnType,
+        nullable,
+        workoutExistingTableElement
+    )
+);
+
+const workoutIndexes = [
+    ["studio_workout_sessions", "PRIMARY", ["id"], true],
+    ["studio_workout_sessions", "uq_workout_sessions_public_id", ["public_id"], true],
+    [
+        "studio_workout_sessions",
+        "uq_workout_sessions_start_key",
+        ["member_membership_id", "assignment_id", "client_start_key"],
+        true
+    ],
+    [
+        "studio_workout_sessions",
+        "idx_workout_sessions_studio_status",
+        ["studio_id", "status"],
+        false
+    ],
+    [
+        "studio_workout_sessions",
+        "idx_workout_sessions_member_status",
+        ["member_membership_id", "status"],
+        false
+    ],
+    [
+        "studio_workout_sessions",
+        "idx_workout_sessions_assignment",
+        ["assignment_id"],
+        false
+    ],
+    [
+        "studio_workout_sessions",
+        "idx_workout_sessions_coaching_relationship",
+        ["coaching_relationship_id"],
+        false
+    ],
+
+    ["studio_workout_session_exercises", "PRIMARY", ["id"], true],
+    ["studio_workout_session_exercises", "uq_session_exercises_public_id", ["public_id"], true],
+    [
+        "studio_workout_session_exercises",
+        "uq_session_exercises_session_position",
+        ["workout_session_id", "position"],
+        true
+    ],
+    [
+        "studio_workout_session_exercises",
+        "idx_session_exercises_session_status",
+        ["workout_session_id", "status"],
+        false
+    ],
+    [
+        "studio_workout_session_exercises",
+        "idx_session_exercises_source",
+        ["source_program_exercise_id"],
+        false
+    ],
+
+    ["studio_workout_session_sets", "PRIMARY", ["id"], true],
+    ["studio_workout_session_sets", "uq_session_sets_public_id", ["public_id"], true],
+    [
+        "studio_workout_session_sets",
+        "uq_session_sets_exercise_position",
+        ["session_exercise_id", "position"],
+        true
+    ],
+    [
+        "studio_workout_session_sets",
+        "idx_session_sets_exercise_status",
+        ["session_exercise_id", "status"],
+        false
+    ]
+].map(([tableName, indexName, columns, unique]) =>
+    index(
+        workoutMigrationId,
+        tableName,
+        indexName,
+        columns,
+        unique,
+        workoutExistingTableElement
+    )
+);
+
+const workoutForeignKeys = [
+    ["studio_workout_sessions", "fk_workout_sessions_studio", ["studio_id"], "studios", ["id"], "CASCADE"],
+    ["studio_workout_sessions", "fk_workout_sessions_assignment", ["assignment_id"], "studio_program_assignments", ["id"], "CASCADE"],
+    ["studio_workout_sessions", "fk_workout_sessions_member_membership", ["member_membership_id"], "studio_memberships", ["id"], "CASCADE"],
+    ["studio_workout_sessions", "fk_workout_sessions_program_version", ["program_version_id"], "studio_training_program_versions", ["id"], "CASCADE"],
+    ["studio_workout_sessions", "fk_workout_sessions_program_day", ["program_day_id"], "studio_training_program_days", ["id"], "CASCADE"],
+    ["studio_workout_sessions", "fk_workout_sessions_coaching_relationship", ["coaching_relationship_id"], "studio_coaching_relationships", ["id"], "CASCADE"],
+    ["studio_workout_session_exercises", "fk_session_exercises_session", ["workout_session_id"], "studio_workout_sessions", ["id"], "CASCADE"],
+    ["studio_workout_session_exercises", "fk_session_exercises_source", ["source_program_exercise_id"], "studio_training_program_exercises", ["id"], "SET NULL"],
+    ["studio_workout_session_sets", "fk_session_sets_exercise", ["session_exercise_id"], "studio_workout_session_exercises", ["id"], "CASCADE"]
+].map(([
+    tableName,
+    constraintName,
+    columns,
+    referencedTable,
+    referencedColumns,
+    deleteRule
+]) =>
+    foreignKey(
+        workoutMigrationId,
+        tableName,
+        constraintName,
+        columns,
+        referencedTable,
+        referencedColumns,
+        deleteRule,
+        workoutExistingTableElement
+    )
+);
+
+const workoutChecks = [
+    ["studio_workout_sessions", "chk_workout_sessions_status"],
+    ["studio_workout_sessions", "chk_workout_sessions_revision"],
+    ["studio_workout_sessions", "chk_workout_sessions_start_key"],
+    ["studio_workout_sessions", "chk_workout_sessions_completed_at"],
+    ["studio_workout_sessions", "chk_workout_sessions_aborted_at"],
+    ["studio_workout_session_exercises", "chk_session_exercises_position"],
+    ["studio_workout_session_exercises", "chk_session_exercises_status"],
+    ["studio_workout_session_exercises", "chk_session_exercises_revision"],
+    ["studio_workout_session_exercises", "chk_session_exercises_sets"],
+    ["studio_workout_session_exercises", "chk_session_exercises_reps_min"],
+    ["studio_workout_session_exercises", "chk_session_exercises_reps_max"],
+    ["studio_workout_session_exercises", "chk_session_exercises_reps_range"],
+    ["studio_workout_session_exercises", "chk_session_exercises_weight"],
+    ["studio_workout_session_exercises", "chk_session_exercises_duration"],
+    ["studio_workout_session_exercises", "chk_session_exercises_distance"],
+    ["studio_workout_session_exercises", "chk_session_exercises_rpe"],
+    ["studio_workout_session_exercises", "chk_session_exercises_rest"],
+    ["studio_workout_session_sets", "chk_session_sets_position"],
+    ["studio_workout_session_sets", "chk_session_sets_status"],
+    ["studio_workout_session_sets", "chk_session_sets_revision"],
+    ["studio_workout_session_sets", "chk_session_sets_reps"],
+    ["studio_workout_session_sets", "chk_session_sets_weight"],
+    ["studio_workout_session_sets", "chk_session_sets_duration"],
+    ["studio_workout_session_sets", "chk_session_sets_distance"],
+    ["studio_workout_session_sets", "chk_session_sets_rpe"],
+    ["studio_workout_session_sets", "chk_session_sets_completed_at"]
+].map(([tableName, constraintName]) =>
+    checkConstraint(
+        workoutMigrationId,
+        tableName,
+        constraintName,
+        workoutExistingTableElement
+    )
+);
+
 const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
     {
         migrationId: "001_initial_schema",
@@ -880,6 +1101,16 @@ const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
             ...trainingIndexes,
             ...trainingForeignKeys,
             ...trainingChecks
+        ]
+    },
+    {
+        migrationId: workoutMigrationId,
+        checks: [
+            ...workoutTables,
+            ...workoutColumns,
+            ...workoutIndexes,
+            ...workoutForeignKeys,
+            ...workoutChecks
         ]
     }
 ]);

@@ -124,7 +124,8 @@ test(
                     "003_seed_global_exercises",
                     "004_training_history_consistency",
                     "005_studio_tenancy_and_rbac",
-                    "006_coach_member_training"
+                    "006_coach_member_training",
+                    "007_studio_workout_execution"
                 ]
             );
 
@@ -143,7 +144,8 @@ test(
                 "003_seed_global_exercises",
                 "004_training_history_consistency",
                 "005_studio_tenancy_and_rbac",
-                "006_coach_member_training"
+                "006_coach_member_training",
+                "007_studio_workout_execution"
             ]);
 
             const [tables] = await pool.promise().query(
@@ -168,6 +170,9 @@ test(
                     "studio_training_program_exercises",
                     "studio_training_program_versions",
                     "studio_training_programs",
+                    "studio_workout_session_exercises",
+                    "studio_workout_session_sets",
+                    "studio_workout_sessions",
                     "studios",
                     "users",
                     "workout_exercises",
@@ -194,8 +199,9 @@ test(
             );
             assert.equal(
                 historyColumns.length,
-                11,
-                "includes the personal-schema snapshot columns plus studio_training_program_exercises.exercise_name_snapshot, which reuses the same snapshot naming pattern"
+                12,
+                "includes the personal-schema snapshot columns plus studio_training_program_exercises.exercise_name_snapshot " +
+                "and studio_workout_session_exercises.exercise_name_snapshot, which both reuse the same snapshot naming pattern"
             );
 
             const [ledgerSnapshot] = await pool.promise().query(
@@ -203,7 +209,7 @@ test(
                  FROM schema_migrations
                  ORDER BY migration_id`
             );
-            assert.equal(ledgerSnapshot.length, 6);
+            assert.equal(ledgerSnapshot.length, 7);
             assert.ok(ledgerSnapshot.every((row) => row.status === "applied"));
 
             const secondRun = await runner.migrate();
@@ -378,7 +384,8 @@ test(
             const stage1Result = await stage1Runner.migrate();
             assert.deepEqual(stage1Result.applied, [
                 "005_studio_tenancy_and_rbac",
-                "006_coach_member_training"
+                "006_coach_member_training",
+                "007_studio_workout_execution"
             ]);
             const afterStudioMigration = await personalDataSnapshot(sql);
             assert.deepEqual(
@@ -1034,6 +1041,402 @@ test(
                 }
             );
             assert.ok(assignmentId > 0, "sanity check that the assignment insert above actually ran");
+        } finally {
+            await db.closePool(pool);
+        }
+    }
+);
+
+test(
+    "Workout-Ausführungs-Schema erzwingt Unique-, FK-, Check- und Löschregeln",
+    { skip: !RUN_INTEGRATION },
+    async () => {
+        const database = await createDisposableDatabase();
+        const pool = createTestPool(database);
+        const sql = pool.promise();
+
+        try {
+            const runner = createMigrationRunner({ pool, logger: silentLogger() });
+            await runner.migrate();
+
+            async function createUser(username) {
+                const [result] = await sql.query(
+                    `INSERT INTO users (username, email, password_hash)
+                     VALUES (?, ?, 'test-hash')`,
+                    [username, `${username}@example.test`]
+                );
+                return result.insertId;
+            }
+
+            const ownerId = await createUser("workout-owner");
+            const coachId = await createUser("workout-coach");
+            const memberId = await createUser("workout-member");
+
+            const [studioResult] = await sql.query(
+                `INSERT INTO studios (public_id, name, slug, created_by_user_id)
+                 VALUES ('19000000-0000-4000-8000-000000000001',
+                         'Workout Studio', 'workout-studio', ?)`,
+                [ownerId]
+            );
+            const studioId = studioResult.insertId;
+
+            async function createMembership(publicId, userId, role) {
+                const [result] = await sql.query(
+                    `INSERT INTO studio_memberships (
+                        public_id, studio_id, user_id, role, status, joined_at
+                     ) VALUES (?, ?, ?, ?, 'active', CURRENT_TIMESTAMP(3))`,
+                    [publicId, studioId, userId, role]
+                );
+                return result.insertId;
+            }
+
+            const coachMembershipId = await createMembership(
+                "19100000-0000-4000-8000-000000000001", coachId, "trainer"
+            );
+            const memberMembershipId = await createMembership(
+                "19100000-0000-4000-8000-000000000002", memberId, "member"
+            );
+
+            const [relationshipResult] = await sql.query(
+                `INSERT INTO studio_coaching_relationships (
+                    public_id, studio_id, coach_membership_id, member_membership_id,
+                    created_by_user_id
+                 ) VALUES ('19200000-0000-4000-8000-000000000001', ?, ?, ?, ?)`,
+                [studioId, coachMembershipId, memberMembershipId, ownerId]
+            );
+            const relationshipId = relationshipResult.insertId;
+
+            const [programResult] = await sql.query(
+                `INSERT INTO studio_training_programs (
+                    public_id, studio_id, name, created_by_user_id
+                 ) VALUES ('19300000-0000-4000-8000-000000000001', ?, 'Workout Program', ?)`,
+                [studioId, coachId]
+            );
+            const [versionResult] = await sql.query(
+                `INSERT INTO studio_training_program_versions (
+                    public_id, program_id, version_number, status, published_at, created_by_user_id
+                 ) VALUES ('19400000-0000-4000-8000-000000000001', ?, 1, 'published', CURRENT_TIMESTAMP(3), ?)`,
+                [programResult.insertId, coachId]
+            );
+            const versionId = versionResult.insertId;
+            const [dayResult] = await sql.query(
+                `INSERT INTO studio_training_program_days (
+                    public_id, program_version_id, position, name
+                 ) VALUES ('19500000-0000-4000-8000-000000000001', ?, 1, 'Day 1')`,
+                [versionId]
+            );
+            const dayId = dayResult.insertId;
+            const [programExerciseResult] = await sql.query(
+                `INSERT INTO studio_training_program_exercises (
+                    public_id, program_day_id, position, exercise_name_snapshot, target_sets
+                 ) VALUES ('19600000-0000-4000-8000-000000000001', ?, 1, 'Bench Press', 4)`,
+                [dayId]
+            );
+            const programExerciseId = programExerciseResult.insertId;
+
+            const [assignmentResult] = await sql.query(
+                `INSERT INTO studio_program_assignments (
+                    public_id, studio_id, program_version_id, member_membership_id,
+                    assigned_by_user_id, coaching_relationship_id, starts_on
+                 ) VALUES (
+                    '19700000-0000-4000-8000-000000000001', ?, ?, ?, ?, ?, '2026-01-01'
+                 )`,
+                [studioId, versionId, memberMembershipId, coachId, relationshipId]
+            );
+            const assignmentId = assignmentResult.insertId;
+
+            // --- workout sessions: uniqueness, idempotency key scope, FKs, status/date checks ---
+            async function insertSession(publicId, overrides = {}) {
+                const [result] = await sql.query(
+                    `INSERT INTO studio_workout_sessions (
+                        public_id, studio_id, assignment_id, member_membership_id,
+                        program_version_id, program_day_id, coaching_relationship_id,
+                        status, client_start_key, revision, completed_at, aborted_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        publicId,
+                        overrides.studioId ?? studioId,
+                        overrides.assignmentId ?? assignmentId,
+                        overrides.memberMembershipId ?? memberMembershipId,
+                        overrides.programVersionId ?? versionId,
+                        overrides.programDayId ?? dayId,
+                        overrides.coachingRelationshipId ?? relationshipId,
+                        overrides.status ?? "in_progress",
+                        overrides.clientStartKey ?? "device-key-1",
+                        overrides.revision ?? 0,
+                        overrides.completedAt ?? null,
+                        overrides.abortedAt ?? null
+                    ]
+                );
+                return result.insertId;
+            }
+
+            const sessionId = await insertSession("19800000-0000-4000-8000-000000000001");
+
+            await expectMysqlError(
+                insertSession("19800000-0000-4000-8000-000000000001"),
+                "ER_DUP_ENTRY"
+            );
+            await expectMysqlError(
+                insertSession("19800000-0000-4000-8000-000000000002"),
+                "ER_DUP_ENTRY",
+                "the compound (member, assignment, client_start_key) key must reject a same-assignment retry"
+            );
+            await expectMysqlError(
+                insertSession("19800000-0000-4000-8000-000000000003", { status: "cancelled" }),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                insertSession("19800000-0000-4000-8000-000000000004", {
+                    clientStartKey: "device-key-2", revision: -1
+                }),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                insertSession("19800000-0000-4000-8000-000000000005", { clientStartKey: "" }),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                insertSession("19800000-0000-4000-8000-000000000006", {
+                    status: "completed", clientStartKey: "device-key-3"
+                }),
+                "ER_CHECK_CONSTRAINT_VIOLATED",
+                "status=completed requires completed_at to be set"
+            );
+            await expectMysqlError(
+                insertSession("19800000-0000-4000-8000-000000000007", {
+                    clientStartKey: "device-key-4", completedAt: new Date()
+                }),
+                "ER_CHECK_CONSTRAINT_VIOLATED",
+                "status=in_progress forbids completed_at from being set"
+            );
+            await expectMysqlError(
+                insertSession("19800000-0000-4000-8000-000000000008", {
+                    status: "aborted", clientStartKey: "device-key-5"
+                }),
+                "ER_CHECK_CONSTRAINT_VIOLATED",
+                "status=aborted requires aborted_at to be set"
+            );
+            await expectMysqlError(
+                insertSession("19800000-0000-4000-8000-000000000009", {
+                    studioId: 2147483647, clientStartKey: "device-key-6"
+                }),
+                "ER_NO_REFERENCED_ROW_2"
+            );
+            await expectMysqlError(
+                insertSession("19800000-0000-4000-8000-000000000010", {
+                    coachingRelationshipId: 2147483647, clientStartKey: "device-key-7"
+                }),
+                "ER_NO_REFERENCED_ROW_2"
+            );
+
+            // a different assignment reusing the same key is allowed at the DB layer
+            // (the service layer adds the cross-assignment idempotency guard on top)
+            const [secondAssignmentResult] = await sql.query(
+                `INSERT INTO studio_program_assignments (
+                    public_id, studio_id, program_version_id, member_membership_id,
+                    assigned_by_user_id, coaching_relationship_id, starts_on
+                 ) VALUES (
+                    '19700000-0000-4000-8000-000000000002', ?, ?, ?, ?, ?, '2026-01-01'
+                 )`,
+                [studioId, versionId, memberMembershipId, coachId, relationshipId]
+            );
+            const secondSessionId = await insertSession("19800000-0000-4000-8000-000000000011", {
+                assignmentId: secondAssignmentResult.insertId
+            });
+            assert.ok(secondSessionId > 0);
+
+            // --- session exercises: uniqueness, ranges, source FK with SET NULL ---
+            async function insertSessionExercise(publicId, overrides = {}) {
+                const [result] = await sql.query(
+                    `INSERT INTO studio_workout_session_exercises (
+                        public_id, workout_session_id, source_program_exercise_id, position,
+                        exercise_name_snapshot, target_sets, target_reps_min, target_reps_max,
+                        target_weight, target_duration_minutes, target_distance_km,
+                        target_rpe, rest_seconds, status, revision
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        publicId,
+                        overrides.workoutSessionId ?? sessionId,
+                        overrides.sourceProgramExerciseId === undefined
+                            ? programExerciseId : overrides.sourceProgramExerciseId,
+                        overrides.position ?? 1,
+                        overrides.exerciseNameSnapshot ?? "Bench Press",
+                        overrides.targetSets ?? null,
+                        overrides.targetRepsMin ?? null,
+                        overrides.targetRepsMax ?? null,
+                        overrides.targetWeight ?? null,
+                        overrides.targetDurationMinutes ?? null,
+                        overrides.targetDistanceKm ?? null,
+                        overrides.targetRpe ?? null,
+                        overrides.restSeconds ?? null,
+                        overrides.status ?? "pending",
+                        overrides.revision ?? 0
+                    ]
+                );
+                return result.insertId;
+            }
+
+            const sessionExerciseId = await insertSessionExercise("1a000000-0000-4000-8000-000000000001");
+
+            await expectMysqlError(
+                insertSessionExercise("1a000000-0000-4000-8000-000000000001"),
+                "ER_DUP_ENTRY"
+            );
+            await expectMysqlError(
+                insertSessionExercise("1a000000-0000-4000-8000-000000000002"),
+                "ER_DUP_ENTRY",
+                "duplicate position within the same session must be rejected"
+            );
+            await expectMysqlError(
+                insertSessionExercise("1a000000-0000-4000-8000-000000000003", { position: 0 }),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                insertSessionExercise("1a000000-0000-4000-8000-000000000004", { position: 2, targetSets: 25 }),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                insertSessionExercise("1a000000-0000-4000-8000-000000000005", {
+                    position: 3, targetRepsMin: 12, targetRepsMax: 8
+                }),
+                "ER_CHECK_CONSTRAINT_VIOLATED",
+                "inverted reps range must be rejected exactly like the program-exercise template"
+            );
+            await expectMysqlError(
+                insertSessionExercise("1a000000-0000-4000-8000-000000000006", { position: 4, targetRpe: 12.0 }),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                insertSessionExercise("1a000000-0000-4000-8000-000000000007", { position: 5, targetWeight: -1 }),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                insertSessionExercise("1a000000-0000-4000-8000-000000000008", {
+                    position: 6, workoutSessionId: 2147483647
+                }),
+                "ER_NO_REFERENCED_ROW_2"
+            );
+
+            // deleting the source program exercise must detach the snapshot, not delete it
+            await sql.query(
+                "DELETE FROM studio_training_program_exercises WHERE id = ?",
+                [programExerciseId]
+            );
+            const [detached] = await sql.query(
+                "SELECT source_program_exercise_id FROM studio_workout_session_exercises WHERE id = ?",
+                [sessionExerciseId]
+            );
+            assert.equal(detached[0].source_program_exercise_id, null);
+
+            // --- session sets: uniqueness, ranges, completion consistency, cascade from exercise ---
+            async function insertSessionSet(publicId, overrides = {}) {
+                const [result] = await sql.query(
+                    `INSERT INTO studio_workout_session_sets (
+                        public_id, session_exercise_id, position, status,
+                        actual_reps, actual_weight, actual_duration_minutes,
+                        actual_distance_km, actual_rpe, revision, completed_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        publicId,
+                        overrides.sessionExerciseId ?? sessionExerciseId,
+                        overrides.position ?? 1,
+                        overrides.status ?? "pending",
+                        overrides.actualReps ?? null,
+                        overrides.actualWeight ?? null,
+                        overrides.actualDurationMinutes ?? null,
+                        overrides.actualDistanceKm ?? null,
+                        overrides.actualRpe ?? null,
+                        overrides.revision ?? 0,
+                        overrides.completedAt ?? null
+                    ]
+                );
+                return result.insertId;
+            }
+
+            const sessionSetId = await insertSessionSet("1b000000-0000-4000-8000-000000000001");
+
+            await expectMysqlError(
+                insertSessionSet("1b000000-0000-4000-8000-000000000001"),
+                "ER_DUP_ENTRY"
+            );
+            await expectMysqlError(
+                insertSessionSet("1b000000-0000-4000-8000-000000000002"),
+                "ER_DUP_ENTRY",
+                "duplicate position within the same session exercise must be rejected"
+            );
+            await expectMysqlError(
+                insertSessionSet("1b000000-0000-4000-8000-000000000003", { position: 0 }),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                insertSessionSet("1b000000-0000-4000-8000-000000000004", { position: 2, actualReps: 101 }),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                insertSessionSet("1b000000-0000-4000-8000-000000000005", { position: 3, actualWeight: -1 }),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                insertSessionSet("1b000000-0000-4000-8000-000000000006", { position: 4, actualRpe: 10.5 }),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                insertSessionSet("1b000000-0000-4000-8000-000000000007", {
+                    position: 5, status: "completed"
+                }),
+                "ER_CHECK_CONSTRAINT_VIOLATED",
+                "status=completed requires completed_at to be set"
+            );
+            await expectMysqlError(
+                insertSessionSet("1b000000-0000-4000-8000-000000000008", {
+                    position: 6, completedAt: new Date()
+                }),
+                "ER_CHECK_CONSTRAINT_VIOLATED",
+                "status=pending forbids completed_at from being set"
+            );
+            await expectMysqlError(
+                insertSessionSet("1b000000-0000-4000-8000-000000000009", {
+                    position: 7, sessionExerciseId: 2147483647
+                }),
+                "ER_NO_REFERENCED_ROW_2"
+            );
+
+            // deleting the session exercise must cascade its sets, never orphan them
+            await sql.query(
+                "DELETE FROM studio_workout_session_exercises WHERE id = ?",
+                [sessionExerciseId]
+            );
+            const [orphanSets] = await sql.query(
+                "SELECT COUNT(*) AS total FROM studio_workout_session_sets WHERE session_exercise_id = ?",
+                [sessionExerciseId]
+            );
+            assert.equal(Number(orphanSets[0].total), 0);
+            assert.ok(sessionSetId > 0, "sanity check that the set insert above actually ran");
+
+            // deleting a whole studio must cascade through the full workout-execution chain,
+            // together with the pre-existing Stage 1A/1B.1 tables, with zero orphans anywhere
+            await sql.query("DELETE FROM studios WHERE id = ?", [studioId]);
+            const [workoutCounts] = await sql.query(`
+                SELECT
+                    (SELECT COUNT(*) FROM studio_workout_sessions) AS sessions,
+                    (SELECT COUNT(*) FROM studio_workout_session_exercises) AS session_exercises,
+                    (SELECT COUNT(*) FROM studio_workout_session_sets) AS session_sets,
+                    (SELECT COUNT(*) FROM studio_coaching_relationships) AS relationships,
+                    (SELECT COUNT(*) FROM studio_program_assignments) AS assignments
+            `);
+            assert.deepEqual(
+                Object.fromEntries(
+                    Object.entries(workoutCounts[0]).map(([name, value]) => [name, Number(value)])
+                ),
+                {
+                    sessions: 0,
+                    session_exercises: 0,
+                    session_sets: 0,
+                    relationships: 0,
+                    assignments: 0
+                }
+            );
         } finally {
             await db.closePool(pool);
         }
