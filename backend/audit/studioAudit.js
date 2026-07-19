@@ -38,7 +38,10 @@ const SAFE_DETAIL_KEYS = Object.freeze({
     "training_program_version.published": new Set(["versionNumber"]),
     "training_program_assignment.created": new Set(["memberMembershipId", "versionNumber"]),
     "training_program_assignment.completed": new Set(["memberMembershipId"]),
-    "training_program_assignment.cancelled": new Set(["memberMembershipId"])
+    "training_program_assignment.cancelled": new Set(["memberMembershipId"]),
+    "workout_session.started": new Set(["assignmentId", "programDayId", "versionNumber"]),
+    "workout_session.completed": new Set([]),
+    "workout_session.aborted": new Set([])
 });
 
 function sanitizeAuditDetails(value, seen = new WeakSet()) {
@@ -155,6 +158,18 @@ function allowlistedAuditDetails(eventType, details) {
             throw new TypeError("Audit member membership public id is invalid.");
         }
         output.memberMembershipId = details.memberMembershipId;
+    }
+    if (details.assignmentId !== undefined) {
+        if (!isPublicId(details.assignmentId)) {
+            throw new TypeError("Audit assignment public id is invalid.");
+        }
+        output.assignmentId = details.assignmentId;
+    }
+    if (details.programDayId !== undefined) {
+        if (!isPublicId(details.programDayId)) {
+            throw new TypeError("Audit program day public id is invalid.");
+        }
+        output.programDayId = details.programDayId;
     }
 
     const serialized = JSON.stringify(output);
