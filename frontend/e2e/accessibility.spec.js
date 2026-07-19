@@ -37,6 +37,14 @@ test('Kernseiten haben keine schweren oder kritischen Axe-Verstöße', async ({ 
   })
   expect(studioResponse.status()).toBe(201)
   const studio = (await studioResponse.json()).studio
+
+  const programResponse = await request.post(`/api/v1/studios/${studio.id}/training-programs`, {
+    headers: { Authorization: `Bearer ${auth.token}` },
+    data: { name: `Axe Program ${accessibilityUser.username}` },
+  })
+  expect(programResponse.status()).toBe(201)
+  const program = (await programResponse.json()).trainingProgram
+
   for (const route of [
     '/workouts',
     '/progress',
@@ -48,6 +56,11 @@ test('Kernseiten haben keine schweren oder kritischen Axe-Verstöße', async ({ 
     `/studios/${studio.id}/members`,
     `/studios/${studio.id}/invitations`,
     `/studios/${studio.id}/audit`,
+    `/studios/${studio.id}/coaching`,
+    `/studios/${studio.id}/training-programs`,
+    `/studios/${studio.id}/training-programs/${program.id}`,
+    `/studios/${studio.id}/assignments`,
+    `/studios/${studio.id}/my-training-plan`,
     `/studios/${studio.id}/access-denied`,
     `/invitations/${'a'.repeat(43)}`,
   ]) {
@@ -123,6 +136,76 @@ test('Pilot-Viewports haben auf Kernseiten keinen horizontalen Overflow', async 
   for (const viewport of viewports) {
     await page.setViewportSize(viewport)
     for (const route of ['/workouts', '/progress']) {
+      await page.goto(route)
+      const dimensions = await page.evaluate(() => ({
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: document.documentElement.clientWidth,
+        bodyWidth: document.body.scrollWidth,
+      }))
+      expect(dimensions.documentWidth, `${route} at ${viewport.width}x${viewport.height}`).toBeLessThanOrEqual(dimensions.viewportWidth)
+      expect(dimensions.bodyWidth, `${route} at ${viewport.width}x${viewport.height}`).toBeLessThanOrEqual(dimensions.viewportWidth)
+    }
+  }
+})
+
+test('Stage-1B.2A-Seiten haben bei 1440/1024/768/390 keinen horizontalen Overflow', async ({ page, request }) => {
+  const auth = await authenticate(page, request, userFixture('a11y-1b2a'))
+  const studioResponse = await request.post('/api/v1/studios', {
+    headers: { Authorization: `Bearer ${auth.token}` },
+    data: {
+      name: 'Responsive Studio',
+      slug: `responsive-${auth.user.id}`,
+      defaultLocale: 'de',
+      defaultTimezone: 'Europe/Zurich',
+      defaultWeightUnit: 'kg',
+    },
+  })
+  expect(studioResponse.status()).toBe(201)
+  const studio = (await studioResponse.json()).studio
+
+  const programResponse = await request.post(`/api/v1/studios/${studio.id}/training-programs`, {
+    headers: { Authorization: `Bearer ${auth.token}` },
+    data: { name: 'Responsive Program with a fairly long descriptive name' },
+  })
+  expect(programResponse.status()).toBe(201)
+  const program = (await programResponse.json()).trainingProgram
+  const versionResponse = await request.post(`/api/v1/studios/${studio.id}/training-programs/${program.id}/versions`, {
+    headers: { Authorization: `Bearer ${auth.token}` },
+    data: {},
+  })
+  expect(versionResponse.status()).toBe(201)
+  const version = (await versionResponse.json()).programVersion
+  const dayResponse = await request.post(
+    `/api/v1/studios/${studio.id}/training-programs/${program.id}/versions/${version.id}/days`,
+    { headers: { Authorization: `Bearer ${auth.token}` }, data: { name: 'Day with an unusually long training day name' } }
+  )
+  expect(dayResponse.status()).toBe(201)
+  const day = (await dayResponse.json()).programDay
+  await request.post(
+    `/api/v1/studios/${studio.id}/training-programs/${program.id}/versions/${version.id}/days/${day.id}/exercises`,
+    {
+      headers: { Authorization: `Bearer ${auth.token}` },
+      data: { exerciseNameSnapshot: 'An exercise with a rather long descriptive name', targetSets: 4, targetRepsMin: 6, targetRepsMax: 8 },
+    }
+  )
+
+  const viewports = [
+    { width: 1440, height: 900 },
+    { width: 1024, height: 768 },
+    { width: 768, height: 1024 },
+    { width: 390, height: 844 },
+  ]
+  const routes = [
+    `/studios/${studio.id}/coaching`,
+    `/studios/${studio.id}/training-programs`,
+    `/studios/${studio.id}/training-programs/${program.id}`,
+    `/studios/${studio.id}/assignments`,
+    `/studios/${studio.id}/my-training-plan`,
+  ]
+
+  for (const viewport of viewports) {
+    await page.setViewportSize(viewport)
+    for (const route of routes) {
       await page.goto(route)
       const dimensions = await page.evaluate(() => ({
         documentWidth: document.documentElement.scrollWidth,
