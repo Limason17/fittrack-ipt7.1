@@ -484,3 +484,76 @@ Zusätzliche Stage-1B.1-Smokes nach Freigabe:
 - [ ] Konkurrenz-Test für gleichzeitiges Anlegen derselben aktiven
       Coaching-Beziehung grün
 - [ ] Audit-Tests für alle zehn neuen Ereignistypen grün
+
+## Ergänzung für Stufe 1B.2B1
+
+Stufe 1B.2B1 ergänzt Migration `007_studio_workout_execution`. Sie erstellt
+`studio_workout_sessions`, `studio_workout_session_exercises` und
+`studio_workout_session_sets`, verändert aber weder die fünf persönlichen
+Trainingstabellen noch eine der elf Stage-1A-/1B.1-Tabellen. Vor der Migration
+müssen deshalb sowohl die fünf persönlichen als auch die elf bestehenden
+Studio-Tabellen als bereits vorhanden und die drei neuen Tabellen als noch nicht
+vorhanden im Preflight dokumentiert werden.
+
+Der kontrollierte Produktionsablauf bleibt unverändert: aktuelles verifiziertes
+Backup, Doctor, explizites Migrationsziel, genau ein Migrations-Owner, Migration,
+Doctor/Status und ein zweiter No-op-Lauf. Nach 007 muss der Doctor zusätzlich alle
+neuen Tabellen, Spalten, Indizes, Foreign Keys und benannten Checks als sauber
+melden.
+
+Abweichend von Stage 1B.1 sind auf `studio_workout_sessions` bewusst alle sechs
+Foreign Keys außer `fk_session_exercises_source` als `ON DELETE CASCADE`
+ausgelegt (statt teilweise `RESTRICT`), um die aus Stage 1B.1 bekannte
+Reihenfolge-Abhängigkeit bei kaskadierendem Löschen eines Studios proaktiv zu
+vermeiden. `fk_session_exercises_source` bleibt bewusst `ON DELETE SET NULL`, da
+`source_program_exercise_id` nur zur Herkunftsangabe dient und der Snapshot beim
+Löschen der Programm-Übung erhalten bleiben muss.
+
+Zusätzliche Stage-1B.2B1-Smokes nach Freigabe:
+
+- ein Mitglied kann aus einer aktiven, im Datumsfenster liegenden Zuweisung mit
+  aktiver Coaching-Beziehung eine Workout-Session starten; der wiederholte Start
+  mit demselben Idempotenzschlüssel und derselben Zuweisung liefert dieselbe
+  Session zurück, ein Idempotenzschlüssel gegen eine andere Zuweisung liefert
+  `WORKOUT_START_KEY_CONFLICT`;
+- eine stornierte/abgeschlossene Zuweisung, eine noch nicht gestartete oder
+  bereits beendete Zuweisung sowie eine beendete Coaching-Beziehung verhindern
+  den Start (`WORKOUT_ASSIGNMENT_NOT_AVAILABLE`); ein Tag aus einer anderen
+  Programmversion verhindert ihn ebenfalls (`WORKOUT_DAY_NOT_AVAILABLE`);
+- das Veröffentlichen einer neuen Programmversion verändert eine bereits
+  gestartete Session nicht (unveränderlicher Snapshot);
+- ein Mitglied sieht ausschließlich eigene Sessions; ein Coach sieht die
+  Sessions eines Mitglieds nur bei aktiver eigener Coaching-Beziehung — Owner
+  und Admin haben dabei **keinen** Rollen-Bypass;
+- das Beenden der Coaching-Beziehung oder das Suspendieren der eigenen
+  Mitgliedschaft entzieht dem Coach sofort den Lesezugriff, ohne den
+  Eigenzugriff des Mitglieds zu berühren;
+- Satz-/Übungs-Aktualisierungen verlangen `expectedRevision`; ein veralteter
+  Wert liefert `WORKOUT_SET_CONFLICT`/`WORKOUT_EXERCISE_CONFLICT`/
+  `WORKOUT_SESSION_CONFLICT`, zwei gleichzeitige Aktualisierungen mit demselben
+  erwarteten Stand lassen genau eine gewinnen;
+- ein Satz kann nur mit mindestens einem plausiblen Ergebniswert als
+  abgeschlossen markiert werden (`WORKOUT_RESULT_INVALID`);
+- eine unvollständige Session kann nicht abgeschlossen werden
+  (`WORKOUT_SESSION_INCOMPLETE`); eine abgeschlossene oder abgebrochene Session
+  ist für jede weitere Mutation unveränderlich
+  (`WORKOUT_SESSION_NOT_MUTABLE`/`WORKOUT_SESSION_ALREADY_TERMINAL`); ein Abbruch
+  verwirft bereits erfasste Werte nicht;
+- die Audit-Ereignisse `workout_session.started/completed/aborted` enthalten
+  niemals Gewichte, Wiederholungen, RPE, Dauer, Distanz oder Notizen;
+- persönliche Workouts/Fortschritt bleiben über die Stage-1B.2B1-API vollständig
+  unsichtbar und werden durch keine Workout-Session-Operation beschrieben.
+
+### Zusätzliche Release-Checks
+
+- [ ] Migration 007 auf leerer und bestehender Stage-1B.1-Datenbank grün
+- [ ] persönliche Tabellen-Counts und Verknüpfungen vor/nach 007 unverändert
+- [ ] Studio-Cascade-Delete-Test (kein Waisenrisiko über alle drei neuen Tabellen,
+      zusammen mit den bestehenden Stage-1A-/1B.1-Tabellen) grün
+- [ ] negative Zwei-Studio- und Zwei-Coach-Isolationstests für Sessions grün
+- [ ] Konkurrenz-Test für zwei gleichzeitige Satz-Updates mit derselben
+      `expectedRevision` grün (genau ein Erfolg, eine Kollision)
+- [ ] Audit-Tests für alle drei neuen Ereignistypen grün, keiner enthält
+      Leistungsdaten
+- [ ] Frontend liefert ausschließlich den API-Client aus; keine neue
+      Session-/Set-Logger-UI, kein Coach-Dashboard für Ergebnisse
