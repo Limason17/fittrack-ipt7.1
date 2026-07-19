@@ -416,3 +416,130 @@ Outbox, E-Mail-Provider und sonstige externe Benachrichtigungen bleiben deaktivi
 Die monatliche Drill-Dokumentation nimmt zusätzlich Migration-005-Status,
 Studio-/Membership-/Invitation-/Audit-Counts, Owner-Invariante und Ergebnis des
 negativen Tenant-Smokes auf.
+
+## Ergänzung für Stufe 1B.1
+
+Logische Backups enthalten nach Migration 006 zusätzlich die Tabellen
+`studio_coaching_relationships`, `studio_training_programs`,
+`studio_training_program_versions`, `studio_training_program_days`,
+`studio_training_program_exercises` und `studio_program_assignments`. Migration 006
+ist additiv: Sie legt ausschließlich neue Tabellen an und verändert weder die
+Stage-0/1A-Tabellen noch deren Zeilen. Personendaten aus persönlichen Trainings
+(`workouts`, `workout_exercises`, `progress_entries`) bleiben unverändert und von
+Stage-1B.1-Tabellen vollständig entkoppelt; Übungsnamen in Trainingsprogrammen sind
+Text-Snapshots (`exercise_name_snapshot`) ohne Fremdschlüssel auf die persönliche
+`exercises`-Tabelle. Ein Dump ist weiterhin personenbezogen: Er enthält u. a.
+Trainer-/Mitglied-Zuordnungen (Coaching-Beziehungen) und deren Zeitstempel; Zugriff,
+Verschlüsselung und Aufbewahrung bleiben entsprechend streng.
+
+Vor und nach einem Stage-1B.1-Backup/Restore mindestens diese Counts erfassen:
+
+```sql
+SELECT COUNT(*) FROM studio_coaching_relationships;
+SELECT COUNT(*) FROM studio_training_programs;
+SELECT COUNT(*) FROM studio_training_program_versions;
+SELECT COUNT(*) FROM studio_training_program_days;
+SELECT COUNT(*) FROM studio_training_program_exercises;
+SELECT COUNT(*) FROM studio_program_assignments;
+```
+
+Zusätzliche Restore-Invarianten:
+
+```sql
+-- höchstens eine aktive Coaching-Beziehung pro Coach-Mitglied-Paar
+SELECT coach_membership_id, member_membership_id, COUNT(*) AS total
+FROM studio_coaching_relationships
+WHERE status = 'active'
+GROUP BY coach_membership_id, member_membership_id
+HAVING COUNT(*) > 1;
+
+-- Coach und Mitglied einer Beziehung dürfen nie dieselbe Mitgliedschaft sein
+SELECT COUNT(*) AS total
+FROM studio_coaching_relationships
+WHERE coach_membership_id = member_membership_id;
+
+-- Versionsnummern sind pro Programm eindeutig und ab 1 fortlaufend positiv
+SELECT program_id, version_number, COUNT(*) AS total
+FROM studio_training_program_versions
+GROUP BY program_id, version_number
+HAVING COUNT(*) > 1;
+
+-- veröffentlichte Versionen besitzen einen Veröffentlichungszeitpunkt,
+-- Entwürfe keinen
+SELECT id, public_id FROM studio_training_program_versions
+WHERE (status = 'published' AND published_at IS NULL)
+   OR (status = 'draft' AND published_at IS NOT NULL);
+
+-- Positionen sind pro Version bzw. pro Tag eindeutig
+SELECT program_version_id, position, COUNT(*) AS total
+FROM studio_training_program_days
+GROUP BY program_version_id, position
+HAVING COUNT(*) > 1;
+SELECT program_day_id, position, COUNT(*) AS total
+FROM studio_training_program_exercises
+GROUP BY program_day_id, position
+HAVING COUNT(*) > 1;
+
+-- jede Zuweisung ist an eine aktive oder beendete Coaching-Beziehung gebunden,
+-- die zur selben Studio-ID gehört wie die Zuweisung selbst
+SELECT pa.id
+FROM studio_program_assignments pa
+INNER JOIN studio_coaching_relationships cr ON cr.id = pa.coaching_relationship_id
+WHERE cr.studio_id <> pa.studio_id;
+
+-- keine verwaisten Stage-1B.1-Zeilen unterhalb eines Studios
+SELECT 'coaching_relationships' AS source, COUNT(*) AS total
+FROM studio_coaching_relationships cr LEFT JOIN studios s ON s.id = cr.studio_id
+WHERE s.id IS NULL
+UNION ALL
+SELECT 'training_programs', COUNT(*)
+FROM studio_training_programs tp LEFT JOIN studios s ON s.id = tp.studio_id
+WHERE s.id IS NULL
+UNION ALL
+SELECT 'program_assignments', COUNT(*)
+FROM studio_program_assignments pa LEFT JOIN studios s ON s.id = pa.studio_id
+WHERE s.id IS NULL
+UNION ALL
+SELECT 'program_versions', COUNT(*)
+FROM studio_training_program_versions pv
+LEFT JOIN studio_training_programs tp ON tp.id = pv.program_id
+WHERE tp.id IS NULL
+UNION ALL
+SELECT 'program_days', COUNT(*)
+FROM studio_training_program_days d
+LEFT JOIN studio_training_program_versions pv ON pv.id = d.program_version_id
+WHERE pv.id IS NULL
+UNION ALL
+SELECT 'program_exercises', COUNT(*)
+FROM studio_training_program_exercises e
+LEFT JOIN studio_training_program_days d ON d.id = e.program_day_id
+WHERE d.id IS NULL;
+
+-- persönliche Trainingsdaten bleiben unverändert und ohne Bezug zu
+-- Stage-1B.1-Tabellen (Snapshot statt Fremdschlüssel)
+SELECT COUNT(*) FROM workouts;
+SELECT COUNT(*) FROM workout_exercises;
+SELECT COUNT(*) FROM progress_entries;
+```
+
+Alle Abfragen müssen null Zeilen beziehungsweise `total = 0` liefern und die beiden
+Zeilenzahlen-Blöcke vor und nach dem Restore müssen für alle sechs Stage-1B.1-Tabellen
+sowie für `workouts`, `workout_exercises` und `progress_entries` identisch sein.
+Zusätzlich muss `npm run db:migrate:doctor` nach dem Restore weiterhin `ready` mit
+Exitcode `0` melden und dabei auch die Migration `006_coach_member_training`
+abdecken.
+
+Ein Stage-1B.1-Restore-Drill ergänzt den Stage-1A-Drill um mindestens:
+
+1. read-only Abruf der eigenen Coaching-Beziehungen durch einen bekannten
+   Trainer-Testbenutzer;
+2. read-only Abruf der eigenen Programmzuweisungen (`/program-assignments/me`)
+   durch einen bekannten Mitglied-Testbenutzer;
+3. negative Abfrage derselben Trainingsprogramm- bzw. Zuweisungs-ID durch einen
+   fremden Testbenutzer aus einem anderen Studio;
+4. Vergleich eines bekannten `training_program_version.published`-Audit-Ereignisses
+   ohne Ausgabe von Trainingsergebnissen, Gewichten oder Wiederholungen.
+
+Die monatliche Drill-Dokumentation nimmt zusätzlich Migration-006-Status, die sechs
+Stage-1B.1-Counts, das Ergebnis der Coaching-/Zuweisungs-Invarianten und das Ergebnis
+des negativen Tenant-Smokes für Trainingsprogramme auf.

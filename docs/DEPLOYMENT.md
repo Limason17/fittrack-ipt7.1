@@ -435,3 +435,52 @@ trainingsdatenfreie Metadaten. Stufe 1A liefert keine vollständigen Rechtsdokum
 - [ ] Produktions-Delivery-Provider vorhanden oder Einladungsfunktion bewusst
       als nicht pilotfähig blockiert
 - [ ] Einladungs-/Left-Member-Retention und verantwortlicher Owner festgehalten
+
+## Ergänzung für Stufe 1B.1
+
+Stufe 1B.1 ergänzt Migration `006_coach_member_training`. Sie erstellt
+`studio_coaching_relationships`, `studio_training_programs`,
+`studio_training_program_versions`, `studio_training_program_days`,
+`studio_training_program_exercises` und `studio_program_assignments`, verändert
+aber weder die fünf persönlichen Trainingstabellen noch die vier Stage-1A-Tabellen.
+Vor der Migration müssen deshalb sowohl die fünf persönlichen als auch die vier
+Stage-1A-Tabellen als bereits vorhanden und die sechs neuen Tabellen als noch nicht
+vorhanden im Preflight dokumentiert werden.
+
+Der kontrollierte Produktionsablauf bleibt unverändert: aktuelles verifiziertes
+Backup, Doctor, explizites Migrationsziel, genau ein Migrations-Owner, Migration,
+Doctor/Status und ein zweiter No-op-Lauf. Nach 006 muss der Doctor zusätzlich alle
+neuen Tabellen, Spalten, Indizes, Foreign Keys und benannten Checks als sauber
+melden.
+
+Zusätzliche Stage-1B.1-Smokes nach Freigabe:
+
+- Owner/Admin können eine Coaching-Beziehung anlegen; ein Trainer kann keine
+  eigene Beziehung anlegen (`INSUFFICIENT_STUDIO_ROLE`);
+- ein Trainer sieht in der Liste ausschließlich eigene Coaching-Beziehungen;
+- Beenden einer Coaching-Beziehung entzieht dem Trainer sofort den Zugriff auf die
+  Zuweisungen des betroffenen Mitglieds;
+- ein veröffentlichter Programm-Entwurf kann nicht mehr verändert werden
+  (`PROGRAM_VERSION_NOT_DRAFT`), eine neue Entwurfsversion lässt die veröffentlichte
+  Version unverändert;
+- eine Zuweisung erfordert eine veröffentlichte Version und eine aktive
+  Coaching-Beziehung zum Zielmitglied (`PROGRAM_VERSION_NOT_PUBLISHED` bzw.
+  `COACHING_RELATIONSHIP_REQUIRED`);
+- ein Mitglied sieht über `/program-assignments/me` ausschließlich eigene
+  Zuweisungen;
+- ein fremder Studio-Benutzer erhält für Coaching-/Programm-/Zuweisungs-IDs
+  denselben Not-Found-Vertrag wie für eine unbekannte ID;
+- persönliche Workouts/Fortschritt bleiben über die Stage-1B.1-API vollständig
+  unsichtbar, auch für den zuständigen Coach.
+
+### Zusätzliche Release-Checks
+
+- [ ] Migration 006 auf leerer und bestehender Stage-1A-Datenbank grün
+- [ ] persönliche Tabellen-Counts und Verknüpfungen vor/nach 006 unverändert
+- [ ] Studio-Cascade-Delete-Test (kein Waisenrisiko über alle sechs neuen Tabellen)
+      grün
+- [ ] negative Zwei-Studio-Isolationstests für Coaching, Programme und Zuweisungen
+      grün
+- [ ] Konkurrenz-Test für gleichzeitiges Anlegen derselben aktiven
+      Coaching-Beziehung grün
+- [ ] Audit-Tests für alle zehn neuen Ereignistypen grün
