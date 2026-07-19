@@ -19,7 +19,9 @@ const PERMISSIONS = Object.freeze({
     PROGRAM_PUBLISH: "training_program.publish",
     ASSIGNMENT_LIST: "program_assignment.list",
     ASSIGNMENT_MANAGE: "program_assignment.manage",
-    ASSIGNMENT_READ_SELF: "program_assignment.read.self"
+    ASSIGNMENT_READ_SELF: "program_assignment.read.self",
+    WORKOUT_SESSION_MANAGE_SELF: "workout_session.manage.self",
+    WORKOUT_RESULT_READ_COACHED: "workout_session.result.read.coached"
 });
 
 const ROLE_PERMISSIONS = Object.freeze({
@@ -41,7 +43,9 @@ const ROLE_PERMISSIONS = Object.freeze({
         PERMISSIONS.PROGRAM_PUBLISH,
         PERMISSIONS.ASSIGNMENT_LIST,
         PERMISSIONS.ASSIGNMENT_MANAGE,
-        PERMISSIONS.ASSIGNMENT_READ_SELF
+        PERMISSIONS.ASSIGNMENT_READ_SELF,
+        PERMISSIONS.WORKOUT_SESSION_MANAGE_SELF,
+        PERMISSIONS.WORKOUT_RESULT_READ_COACHED
     ]),
     trainer: new Set([
         PERMISSIONS.STUDIO_READ,
@@ -53,12 +57,15 @@ const ROLE_PERMISSIONS = Object.freeze({
         PERMISSIONS.PROGRAM_PUBLISH,
         PERMISSIONS.ASSIGNMENT_LIST,
         PERMISSIONS.ASSIGNMENT_MANAGE,
-        PERMISSIONS.ASSIGNMENT_READ_SELF
+        PERMISSIONS.ASSIGNMENT_READ_SELF,
+        PERMISSIONS.WORKOUT_SESSION_MANAGE_SELF,
+        PERMISSIONS.WORKOUT_RESULT_READ_COACHED
     ]),
     member: new Set([
         PERMISSIONS.STUDIO_READ,
         PERMISSIONS.MEMBERSHIP_READ_SELF,
-        PERMISSIONS.ASSIGNMENT_READ_SELF
+        PERMISSIONS.ASSIGNMENT_READ_SELF,
+        PERMISSIONS.WORKOUT_SESSION_MANAGE_SELF
     ])
 });
 
@@ -189,18 +196,82 @@ function coachActionEligibility({ actorRole, coachingRelationship }) {
     return { allowed: true };
 }
 
+function canStartWorkoutSession({ assignment, coachingRelationship, programDay, today }) {
+    if (!assignment || assignment.status !== "active") {
+        return { allowed: false, reason: "WORKOUT_ASSIGNMENT_NOT_AVAILABLE" };
+    }
+    if (assignment.startsOn && String(assignment.startsOn) > today) {
+        return { allowed: false, reason: "WORKOUT_ASSIGNMENT_NOT_AVAILABLE" };
+    }
+    if (assignment.endsOn && String(assignment.endsOn) < today) {
+        return { allowed: false, reason: "WORKOUT_ASSIGNMENT_NOT_AVAILABLE" };
+    }
+    if (!coachingRelationship || coachingRelationship.status !== "active") {
+        return { allowed: false, reason: "WORKOUT_ASSIGNMENT_NOT_AVAILABLE" };
+    }
+    if (!programDay || Number(programDay.programVersionId) !== Number(assignment.programVersionId)) {
+        return { allowed: false, reason: "WORKOUT_DAY_NOT_AVAILABLE" };
+    }
+    return { allowed: true };
+}
+
+function canMutateWorkoutSession(session) {
+    return Boolean(session) && session.status === "in_progress";
+}
+
+function sessionCompletionEligibility({ exercises }) {
+    if (!Array.isArray(exercises) || exercises.length === 0) {
+        return { allowed: false, reason: "WORKOUT_SESSION_INCOMPLETE" };
+    }
+    let completedSetCount = 0;
+    for (const exercise of exercises) {
+        if (exercise.status === "pending") {
+            return { allowed: false, reason: "WORKOUT_SESSION_INCOMPLETE" };
+        }
+        const sets = Array.isArray(exercise.sets) ? exercise.sets : [];
+        const setsCompletedCount = sets.filter((set) => set.status === "completed").length;
+        if (exercise.status === "completed") {
+            if (sets.some((set) => set.status === "pending")) {
+                return { allowed: false, reason: "WORKOUT_SESSION_INCOMPLETE" };
+            }
+            completedSetCount += setsCompletedCount;
+        }
+        if (exercise.status === "skipped" && setsCompletedCount > 0) {
+            return { allowed: false, reason: "WORKOUT_SESSION_INCOMPLETE" };
+        }
+    }
+    if (completedSetCount === 0) {
+        return { allowed: false, reason: "WORKOUT_SESSION_INCOMPLETE" };
+    }
+    return { allowed: true };
+}
+
+function workoutResultReadEligibility({ actorRole, coachingRelationship }) {
+    if (!["owner", "admin", "trainer"].includes(actorRole)) {
+        return { allowed: false, reason: "WORKOUT_RESULT_ACCESS_FORBIDDEN" };
+    }
+    if (!coachingRelationship || coachingRelationship.status !== "active") {
+        return { allowed: false, reason: "COACHING_RELATIONSHIP_REQUIRED" };
+    }
+    return { allowed: true };
+}
+
 module.exports = {
     PERMISSIONS,
     ROLE_PERMISSIONS,
     ROLE_RANK,
     canAssignProgramVersion,
     canMutateProgramVersion,
+    canMutateWorkoutSession,
     canPublishProgramVersion,
+    canStartWorkoutSession,
     coachActionEligibility,
     coachingRelationshipEligibility,
     hasStudioPermission,
     invitationRoleDecision,
     leavesActiveOwnerSet,
+    sessionCompletionEligibility,
+    workoutResultReadEligibility,
     membershipChangeDecision,
     studioPatchPermission
 };

@@ -543,3 +543,115 @@ Ein Stage-1B.1-Restore-Drill ergänzt den Stage-1A-Drill um mindestens:
 Die monatliche Drill-Dokumentation nimmt zusätzlich Migration-006-Status, die sechs
 Stage-1B.1-Counts, das Ergebnis der Coaching-/Zuweisungs-Invarianten und das Ergebnis
 des negativen Tenant-Smokes für Trainingsprogramme auf.
+
+## Ergänzung für Stufe 1B.2B1
+
+Logische Backups enthalten nach Migration 007 zusätzlich die Tabellen
+`studio_workout_sessions`, `studio_workout_session_exercises` und
+`studio_workout_session_sets`. Migration 007 ist additiv: Sie legt ausschließlich
+neue Tabellen an und verändert weder die Stage-0/1A/1B.1-Tabellen noch deren Zeilen.
+Personendaten aus persönlichen Trainings (`workouts`, `workout_exercises`,
+`progress_entries`) bleiben unverändert und von den Stage-1B.2B1-Tabellen vollständig
+entkoppelt; eine Studio-Workout-Session schreibt zu keinem Zeitpunkt in eine dieser
+drei persönlichen Tabellen.
+
+**Schutzbedarf höher als bei Stage 1B.1.** Die Sätze in
+`studio_workout_session_sets` (`actual_reps`, `actual_weight`,
+`actual_duration_minutes`, `actual_distance_km`, `actual_rpe`) sind die einzigen
+tatsächlichen Trainingsleistungsdaten außerhalb der rein persönlichen Tabellen und
+sind laut ADR 003 als das sensibelste personenbezogene Datum der gesamten Anwendung
+einzustufen. Zugriff, Verschlüsselung und Aufbewahrung eines Dumps mit diesen Tabellen
+müssen mindestens so streng gehandhabt werden wie bei Stage 1B.1, im Zweifel strenger.
+Ein Restore-Zielsystem für diese Tabellen darf nie weniger geschützt sein als die
+Produktionsumgebung.
+
+Vor und nach einem Stage-1B.2B1-Backup/Restore mindestens diese Counts erfassen:
+
+```sql
+SELECT COUNT(*) FROM studio_workout_sessions;
+SELECT COUNT(*) FROM studio_workout_session_exercises;
+SELECT COUNT(*) FROM studio_workout_session_sets;
+```
+
+Zusätzliche Restore-Invarianten:
+
+```sql
+-- Status und die zugehörigen Zeitstempel müssen konsistent sein
+SELECT id FROM studio_workout_sessions
+WHERE (status = 'completed' AND completed_at IS NULL)
+   OR (status <> 'completed' AND completed_at IS NOT NULL)
+   OR (status = 'aborted' AND aborted_at IS NULL)
+   OR (status <> 'aborted' AND aborted_at IS NOT NULL);
+
+-- der Idempotenzschlüssel ist pro Mitglied und Zuweisung eindeutig
+SELECT member_membership_id, assignment_id, client_start_key, COUNT(*) AS total
+FROM studio_workout_sessions
+GROUP BY member_membership_id, assignment_id, client_start_key
+HAVING COUNT(*) > 1;
+
+-- Positionen sind pro Session bzw. pro Session-Übung eindeutig
+SELECT workout_session_id, position, COUNT(*) AS total
+FROM studio_workout_session_exercises
+GROUP BY workout_session_id, position
+HAVING COUNT(*) > 1;
+SELECT session_exercise_id, position, COUNT(*) AS total
+FROM studio_workout_session_sets
+GROUP BY session_exercise_id, position
+HAVING COUNT(*) > 1;
+
+-- revision ist auf jeder mutierbaren Zeile nie negativ
+SELECT 'sessions' AS source, COUNT(*) AS total FROM studio_workout_sessions WHERE revision < 0
+UNION ALL
+SELECT 'session_exercises', COUNT(*) FROM studio_workout_session_exercises WHERE revision < 0
+UNION ALL
+SELECT 'session_sets', COUNT(*) FROM studio_workout_session_sets WHERE revision < 0;
+
+-- keine verwaisten Stage-1B.2B1-Zeilen unterhalb eines Studios bzw. einer Session
+SELECT 'workout_sessions' AS source, COUNT(*) AS total
+FROM studio_workout_sessions ws LEFT JOIN studios s ON s.id = ws.studio_id
+WHERE s.id IS NULL
+UNION ALL
+SELECT 'session_exercises', COUNT(*)
+FROM studio_workout_session_exercises e
+LEFT JOIN studio_workout_sessions ws ON ws.id = e.workout_session_id
+WHERE ws.id IS NULL
+UNION ALL
+SELECT 'session_sets', COUNT(*)
+FROM studio_workout_session_sets st
+LEFT JOIN studio_workout_session_exercises e ON e.id = st.session_exercise_id
+WHERE e.id IS NULL;
+
+-- persönliche Trainingsdaten bleiben unverändert und ohne Bezug zu
+-- Stage-1B.2B1-Tabellen (Snapshot statt Fremdschlüssel, keine gemeinsame Zeile)
+SELECT COUNT(*) FROM workouts;
+SELECT COUNT(*) FROM workout_exercises;
+SELECT COUNT(*) FROM progress_entries;
+```
+
+Alle Abfragen müssen null Zeilen beziehungsweise `total = 0` liefern und die beiden
+Zeilenzahlen-Blöcke vor und nach dem Restore müssen für alle drei
+Stage-1B.2B1-Tabellen sowie für `workouts`, `workout_exercises` und
+`progress_entries` identisch sein. Zusätzlich muss `npm run db:migrate:doctor` nach
+dem Restore weiterhin `ready` mit Exitcode `0` melden und dabei auch die Migration
+`007_studio_workout_execution` abdecken.
+
+Ein Stage-1B.2B1-Restore-Drill ergänzt den Stage-1B.1-Drill um mindestens:
+
+1. read-only Abruf der eigenen, laufenden oder abgeschlossenen Workout-Session
+   (`/workout-sessions/me`) durch einen bekannten Mitglied-Testbenutzer, ohne dass
+   Trainingsergebnisse eines anderen Mitglieds sichtbar werden;
+2. read-only Abruf derselben Session durch den zugeordneten Trainer-Testbenutzer über
+   `/coached-members/:memberMembershipId/workout-sessions`, solange die
+   Coaching-Beziehung aktiv ist;
+3. negative Probe: derselbe Trainer-Testbenutzer erhält nach Beenden der
+   Coaching-Beziehung (oder ohne je eine gehabt zu haben) exakt denselben
+   Not-Found-Fehler wie bei einer nicht existierenden Session — kein Bypass über die
+   Rolle Owner/Admin;
+4. Vergleich eines bekannten `workout_session.started`-Audit-Ereignisses sowie eines
+   `workout_session.completed`- bzw. `workout_session.aborted`-Ereignisses: Keines
+   davon darf Gewichte, Wiederholungen, RPE, Dauer, Distanz, Notizen oder sonstige
+   Leistungsdaten enthalten.
+
+Die monatliche Drill-Dokumentation nimmt zusätzlich Migration-007-Status, die drei
+Stage-1B.2B1-Counts, das Ergebnis der Session-/Übungs-/Satz-Invarianten und das
+Ergebnis der negativen Coach-Zugriffsprobe auf.

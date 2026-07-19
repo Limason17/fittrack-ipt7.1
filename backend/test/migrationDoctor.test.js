@@ -422,6 +422,89 @@ test("Stage 1B.1 schema contract covers every coaching, program, version, day, e
     );
 });
 
+test("Stage 1B.2B1 schema contract covers every workout session, exercise and set table, column, index, FK and constraint", () => {
+    const contract = MIGRATION_SCHEMA_CONTRACT.find(
+        (item) => item.migrationId === "007_studio_workout_execution"
+    );
+    assert.ok(contract);
+
+    const keys = new Set(
+        contract.checks.map((check) => {
+            if (check.kind === "table") return `table:${check.table}`;
+            if (check.kind === "column") return `column:${check.table}.${check.column}`;
+            if (check.kind === "index") return `index:${check.table}.${check.index}`;
+            return `${check.kind}:${check.table}.${check.constraint}`;
+        })
+    );
+    const expected = [
+        "table:studio_workout_sessions",
+        "table:studio_workout_session_exercises",
+        "table:studio_workout_session_sets",
+        "column:studio_workout_sessions.client_start_key",
+        "column:studio_workout_sessions.revision",
+        "column:studio_workout_session_exercises.exercise_name_snapshot",
+        "column:studio_workout_session_exercises.source_program_exercise_id",
+        "column:studio_workout_session_sets.actual_reps",
+        "index:studio_workout_sessions.uq_workout_sessions_start_key",
+        "index:studio_workout_session_exercises.uq_session_exercises_session_position",
+        "index:studio_workout_session_sets.uq_session_sets_exercise_position",
+        "foreign_key:studio_workout_sessions.fk_workout_sessions_studio",
+        "foreign_key:studio_workout_sessions.fk_workout_sessions_assignment",
+        "foreign_key:studio_workout_sessions.fk_workout_sessions_member_membership",
+        "foreign_key:studio_workout_sessions.fk_workout_sessions_program_version",
+        "foreign_key:studio_workout_sessions.fk_workout_sessions_program_day",
+        "foreign_key:studio_workout_sessions.fk_workout_sessions_coaching_relationship",
+        "foreign_key:studio_workout_session_exercises.fk_session_exercises_session",
+        "foreign_key:studio_workout_session_exercises.fk_session_exercises_source",
+        "foreign_key:studio_workout_session_sets.fk_session_sets_exercise",
+        "check_constraint:studio_workout_sessions.chk_workout_sessions_status",
+        "check_constraint:studio_workout_sessions.chk_workout_sessions_revision",
+        "check_constraint:studio_workout_session_exercises.chk_session_exercises_reps_range",
+        "check_constraint:studio_workout_session_sets.chk_session_sets_completed_at"
+    ];
+    for (const key of expected) assert.ok(keys.has(key), `missing schema check ${key}`);
+
+    const expectedColumnCounts = {
+        studio_workout_sessions: 17,
+        studio_workout_session_exercises: 20,
+        studio_workout_session_sets: 15
+    };
+    for (const [tableName, count] of Object.entries(expectedColumnCounts)) {
+        assert.equal(
+            contract.checks.filter((check) => check.kind === "column" && check.table === tableName).length,
+            count,
+            `unexpected column count for ${tableName}`
+        );
+    }
+
+    assert.equal(contract.checks.filter((check) => check.kind === "table").length, 3);
+    assert.equal(contract.checks.filter((check) => check.kind === "index").length, 16);
+    assert.equal(contract.checks.filter((check) => check.kind === "foreign_key").length, 9);
+    assert.equal(contract.checks.filter((check) => check.kind === "check_constraint").length, 26);
+    assert.equal(contract.checks.length, 106);
+
+    // deliberate departure from Stage 1B.1: only source_program_exercise_id uses SET NULL,
+    // every other workout session FK is a proactive CASCADE to avoid the Stage 1B.1-class
+    // FK-ordering bug where a RESTRICT edge blocks studio deletion depending on cascade order
+    const deleteRules = Object.fromEntries(
+        contract.checks
+            .filter((check) => check.kind === "foreign_key")
+            .map((check) => [check.constraint, check.deleteRule])
+    );
+    assert.equal(deleteRules.fk_session_exercises_source, "SET NULL");
+    for (const [constraint, rule] of Object.entries(deleteRules)) {
+        if (constraint === "fk_session_exercises_source") continue;
+        assert.equal(rule, "CASCADE", `${constraint} must cascade so studio deletion never fails on cascade ordering`);
+    }
+
+    assert.ok(
+        contract.checks
+            .filter((check) => check.kind !== "table")
+            .every((check) => check.pendingMissingAllowed === false),
+        "an already-applied Stage 1B.2B1 column, index, FK or constraint must never be treated as optionally missing"
+    );
+});
+
 test("CLI emits a safe JSON target without user or password and preserves exit 0", async () => {
     const lines = [];
     const logger = createStructuredLogger({
