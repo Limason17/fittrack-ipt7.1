@@ -15,6 +15,8 @@ const SAFE_STUDIO_FIELDS = new Set([
     "defaultTimezone",
     "defaultWeightUnit"
 ]);
+const SAFE_PROGRAM_FIELDS = new Set(["name", "description"]);
+const MAX_PROGRAM_NAME_LENGTH = 120;
 const SAFE_DETAIL_KEYS = Object.freeze({
     "studio.created": new Set(["role"]),
     "studio.updated": new Set(["fields"]),
@@ -26,7 +28,17 @@ const SAFE_DETAIL_KEYS = Object.freeze({
     "invitation.delivery_failed": new Set(["role"]),
     "invitation.expired": new Set(["role"]),
     "invitation.revoked": new Set(["role"]),
-    "invitation.accepted": new Set(["membershipId", "role"])
+    "invitation.accepted": new Set(["membershipId", "role"]),
+    "coaching_relationship.created": new Set(["coachMembershipId", "memberMembershipId"]),
+    "coaching_relationship.ended": new Set(["coachMembershipId", "memberMembershipId"]),
+    "training_program.created": new Set(["name"]),
+    "training_program.updated": new Set(["fields"]),
+    "training_program.archived": new Set([]),
+    "training_program_version.created": new Set(["versionNumber"]),
+    "training_program_version.published": new Set(["versionNumber"]),
+    "training_program_assignment.created": new Set(["memberMembershipId", "versionNumber"]),
+    "training_program_assignment.completed": new Set(["memberMembershipId"]),
+    "training_program_assignment.cancelled": new Set(["memberMembershipId"])
 });
 
 function sanitizeAuditDetails(value, seen = new WeakSet()) {
@@ -90,11 +102,14 @@ function allowlistedAuditDetails(eventType, details) {
     const output = {};
     if (details.role !== undefined) output.role = safeRole(details.role);
     if (details.fields !== undefined) {
+        const fieldAllowlist = eventType === "training_program.updated"
+            ? SAFE_PROGRAM_FIELDS
+            : SAFE_STUDIO_FIELDS;
         if (
             !Array.isArray(details.fields) ||
-            details.fields.some((field) => !SAFE_STUDIO_FIELDS.has(field))
+            details.fields.some((field) => !fieldAllowlist.has(field))
         ) {
-            throw new TypeError("Audit studio field list is invalid.");
+            throw new TypeError("Audit field list is invalid.");
         }
         output.fields = [...new Set(details.fields)];
     }
@@ -112,6 +127,34 @@ function allowlistedAuditDetails(eventType, details) {
             throw new TypeError("Audit expiration timestamp is invalid.");
         }
         output.expiresAt = timestamp.toISOString();
+    }
+    if (details.name !== undefined) {
+        if (
+            typeof details.name !== "string" ||
+            !details.name.trim() ||
+            details.name.length > MAX_PROGRAM_NAME_LENGTH
+        ) {
+            throw new TypeError("Audit program name detail is invalid.");
+        }
+        output.name = details.name;
+    }
+    if (details.versionNumber !== undefined) {
+        if (!Number.isSafeInteger(details.versionNumber) || details.versionNumber < 1) {
+            throw new TypeError("Audit version number detail is invalid.");
+        }
+        output.versionNumber = details.versionNumber;
+    }
+    if (details.coachMembershipId !== undefined) {
+        if (!isPublicId(details.coachMembershipId)) {
+            throw new TypeError("Audit coach membership public id is invalid.");
+        }
+        output.coachMembershipId = details.coachMembershipId;
+    }
+    if (details.memberMembershipId !== undefined) {
+        if (!isPublicId(details.memberMembershipId)) {
+            throw new TypeError("Audit member membership public id is invalid.");
+        }
+        output.memberMembershipId = details.memberMembershipId;
     }
 
     const serialized = JSON.stringify(output);
