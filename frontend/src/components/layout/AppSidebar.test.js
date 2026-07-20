@@ -50,6 +50,11 @@ async function mountSidebar() {
         name: 'studio-my-training-plan',
         component: { template: '<div />' },
       },
+      {
+        path: '/studios/:studioId/workout-sessions',
+        name: 'studio-workout-sessions',
+        component: { template: '<div />' },
+      },
     ],
   })
   await router.push('/')
@@ -120,7 +125,7 @@ describe('AppSidebar role-dependent navigation', () => {
     expect(wrapper.text()).not.toContain('Mein Trainingsplan')
   })
 
-  it('shows only "Mein Trainingsplan" from the training group to members', async () => {
+  it('shows only "Mein Trainingsplan" and "Meine Trainings" from the training group to members', async () => {
     addAndSelectStudio(studio('member'))
     wrapper = await mountSidebar()
     await flushPromises()
@@ -133,6 +138,17 @@ describe('AppSidebar role-dependent navigation', () => {
     expect(wrapper.text()).not.toContain('Trainingsprogramme')
     expect(wrapper.text()).not.toContain('Zuweisungen')
     expect(wrapper.text()).toContain('Mein Trainingsplan')
+    expect(wrapper.text()).toContain('Meine Trainings')
+  })
+
+  it('does not show "Meine Trainings" to owners, admins, or trainers', async () => {
+    for (const role of ['owner', 'admin', 'trainer']) {
+      addAndSelectStudio(studio(role))
+      const roleWrapper = await mountSidebar()
+      await flushPromises()
+      expect(roleWrapper.text()).not.toContain('Meine Trainings')
+      roleWrapper.unmount()
+    }
   })
 
   it('shows the current studio role as sidebar section info', async () => {

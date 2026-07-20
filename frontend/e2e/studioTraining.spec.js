@@ -119,7 +119,9 @@ test('Coach- und Programmverwaltung: Trainer baut ein Programm, weist es über e
     await trainerPage.getByRole('button', { name: 'Zuweisung erstellen' }).click()
     await expect(trainerPage.getByText(member.username)).toBeVisible()
 
-    // 6: The assigned member sees their read-only plan with days and exercises, no "start training" action.
+    // 6: The assigned member sees their plan with days and exercises, and can start
+    // the training day since the assignment is active with no date restrictions
+    // (Stage 1B.2B2A: member-facing workout execution).
     const memberAuth = await loginApi(memberContext.request, member)
     const memberPage = await memberContext.newPage()
     await attachAuth(memberPage, memberAuth)
@@ -129,7 +131,7 @@ test('Coach- und Programmverwaltung: Trainer baut ein Programm, weist es über e
     await memberPage.getByRole('button', { name: 'Details anzeigen' }).click()
     await expect(memberPage.getByText('Tag 1: Ganzkörper')).toBeVisible()
     await expect(memberPage.getByText('Kniebeuge')).toBeVisible()
-    await expect(memberPage.getByRole('button', { name: /Training starten/i })).toHaveCount(0)
+    await expect(memberPage.getByRole('button', { name: /Training starten/i })).toBeVisible()
 
     // 7: A foreign member of the same studio sees no assignment at all.
     const foreignAuth = await loginApi(foreignContext.request, foreignMember)

@@ -70,7 +70,9 @@ function publicAssignment(assignment, { includeMember = true } = {}) {
 const ASSIGNMENT_SELECT = `
     SELECT
         pa.id, pa.public_id, pa.studio_id, pa.program_version_id, pa.member_membership_id,
-        pa.coaching_relationship_id, pa.status, pa.starts_on, pa.ends_on,
+        pa.coaching_relationship_id, pa.status,
+        DATE_FORMAT(pa.starts_on, '%Y-%m-%d') AS starts_on,
+        DATE_FORMAT(pa.ends_on, '%Y-%m-%d') AS ends_on,
         pa.assigned_at, pa.completed_at, pa.cancelled_at,
         pv.version_number, pv.status AS version_status,
         tp.public_id AS program_public_id, tp.name AS program_name, tp.description AS program_description,

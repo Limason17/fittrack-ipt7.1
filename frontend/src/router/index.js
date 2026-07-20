@@ -165,6 +165,26 @@ const routes = [
         },
     },
     {
+        path: '/studios/:studioId/workout-sessions',
+        name: 'studio-workout-sessions',
+        component: () => import('../views/WorkoutSessionHistoryView.vue'),
+        meta: {
+            requiresAuth: true,
+            requiresStudio: true,
+            titleKey: 'routing.titles.studioWorkoutSessions',
+        },
+    },
+    {
+        path: '/studios/:studioId/workout-sessions/:sessionId',
+        name: 'studio-workout-session-detail',
+        component: () => import('../views/WorkoutSessionView.vue'),
+        meta: {
+            requiresAuth: true,
+            requiresStudio: true,
+            titleKey: 'routing.titles.studioWorkoutSessionDetail',
+        },
+    },
+    {
         path: '/studios/:studioId/access-denied',
         name: 'studio-access-denied',
         component: () => import('../views/StudioAccessDeniedView.vue'),

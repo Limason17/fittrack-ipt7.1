@@ -1,6 +1,6 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import Badge from '../components/ui/Badge.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
@@ -9,8 +9,12 @@ import { formatDate, t } from '../utils/i18n'
 import { assignmentStatusTone, programVersionStatusTone } from '../utils/studioBadges'
 import { getOwnProgramAssignmentDetail, listOwnProgramAssignments } from '../utils/studioTrainingApi'
 import { activeStudio } from '../utils/studioContext'
+import { listOwnWorkoutSessions } from '../utils/workoutSessionApi'
+import { workoutErrorMessage } from '../utils/workoutSessionErrors'
+import { startWorkoutSession } from '../utils/workoutSessionState'
 
 const route = useRoute()
+const router = useRouter()
 const studioId = computed(() => String(route.params.studioId || ''))
 
 const assignments = ref([])
@@ -22,7 +26,48 @@ const expandedId = ref(null)
 const loadingDetailId = ref(null)
 const detailErrors = reactive({})
 
+// Maps `${assignmentId}:${programDayId}` -> the member's own in_progress
+// sessions for exactly that assignment+day, loaded via the server-side
+// status/assignmentId/programDayId filter (never a scan of a bounded/paginated
+// history page), so a day's resume state is deterministic regardless of how
+// many other sessions exist or which history page they would fall on.
+const runningSessionsByKey = reactive(new Map())
+const startingKeys = reactive(new Set())
+const startErrors = reactive({})
+
 let generation = 0
+
+function dayKey(assignmentId, dayId) {
+  return `${assignmentId}:${dayId}`
+}
+
+function dateOnly(value) {
+  if (!value) return null
+  return String(value).slice(0, 10)
+}
+
+function todayIso() {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+}
+
+// Loads the exact set of in_progress sessions for each of an assignment's days
+// in parallel, one targeted (status=in_progress, assignmentId, programDayId)
+// request per day. Awaited before the detail skeleton is hidden, so a day card
+// never briefly renders "Start" before a genuinely running session is known.
+async function loadRunningSessionsForAssignment(assignmentId, days) {
+  await Promise.all((days || []).map(async (day) => {
+    const key = dayKey(assignmentId, day.id)
+    try {
+      const result = await listOwnWorkoutSessions(studioId.value, {
+        status: 'in_progress', assignmentId, programDayId: day.id, limit: 5,
+      })
+      runningSessionsByKey.set(key, result.workoutSessions || [])
+    } catch {
+      runningSessionsByKey.set(key, [])
+    }
+  }))
+}
 
 async function load() {
   const current = ++generation
@@ -31,9 +76,9 @@ async function load() {
   isLoading.value = true
   errorMessage.value = ''
   try {
-    const result = await listOwnProgramAssignments(currentStudioId, { page: 1, limit: 50 })
+    const assignmentResult = await listOwnProgramAssignments(currentStudioId, { page: 1, limit: 50 })
     if (current !== generation || currentStudioId !== studioId.value) return
-    assignments.value = result.programAssignments || []
+    assignments.value = assignmentResult.programAssignments || []
   } catch (error) {
     if (current === generation) {
       errorMessage.value = error.status === 403 ? t('studios.permissionDenied') : t('studios.myTrainingPlan.loadError')
@@ -55,6 +100,7 @@ async function toggleDetails(assignment) {
   try {
     const result = await getOwnProgramAssignmentDetail(studioId.value, assignment.id)
     details[assignment.id] = result.programAssignment
+    await loadRunningSessionsForAssignment(assignment.id, result.programAssignment.days)
   } catch {
     detailErrors[assignment.id] = t('studios.myTrainingPlan.detailLoadError')
   } finally {
@@ -72,6 +118,52 @@ function exerciseSummary(exercise) {
   if (exercise.targetDistanceKm) parts.push(`${exercise.targetDistanceKm} ${t('common.km')}`)
   if (exercise.targetRpe) parts.push(`RPE ${exercise.targetRpe}`)
   return parts.join(' · ')
+}
+
+// UI-only guidance mirroring the backend's canStartWorkoutSession checks
+// (assignment active, within its date window). The backend independently
+// re-validates every condition on the actual start request and remains the
+// only real authority — this only decides which action a day is offered.
+function dayAvailability(assignment, day) {
+  const key = dayKey(assignment.id, day.id)
+  const running = runningSessionsByKey.get(key) || []
+  if (running.length === 1) return { state: 'resume', sessionId: running[0].id }
+  // Never silently pick one when more than one is running: surface it and let
+  // the member resolve it deliberately via the history view instead of a
+  // guessed "Resume" that could open the wrong session.
+  if (running.length > 1) return { state: 'multiple', count: running.length }
+
+  if (assignment.status !== 'active') {
+    return { state: 'unavailable', reason: t('studios.myTrainingPlan.dayUnavailableAssignment') }
+  }
+  const today = todayIso()
+  const startsOn = dateOnly(assignment.startsOn)
+  const endsOn = dateOnly(assignment.endsOn)
+  if (startsOn && today < startsOn) {
+    return { state: 'unavailable', reason: t('studios.myTrainingPlan.dayUnavailableBeforeStart', { date: formatDate(assignment.startsOn) }) }
+  }
+  if (endsOn && today > endsOn) {
+    return { state: 'unavailable', reason: t('studios.myTrainingPlan.dayUnavailableAfterEnd', { date: formatDate(assignment.endsOn) }) }
+  }
+  return { state: 'start' }
+}
+
+function goToSession(sessionId) {
+  router.push({ name: 'studio-workout-session-detail', params: { studioId: studioId.value, sessionId } })
+}
+
+async function startDay(assignment, day) {
+  const key = dayKey(assignment.id, day.id)
+  if (startingKeys.has(key)) return
+  startingKeys.add(key)
+  startErrors[key] = ''
+  const { session, error } = await startWorkoutSession(studioId.value, assignment.id, day.id)
+  startingKeys.delete(key)
+  if (session) {
+    goToSession(session.id)
+    return
+  }
+  startErrors[key] = workoutErrorMessage(error)
 }
 
 watch(studioId, load, { immediate: true })
@@ -130,7 +222,46 @@ watch(studioId, load, { immediate: true })
               <EmptyState v-if="!details[assignment.id].days.length" :title="t('studios.programBuilder.emptyDays')" />
               <ul v-else class="program-day-list">
                 <li v-for="day in details[assignment.id].days" :key="day.id" class="program-day-card">
-                  <h4>{{ day.name }}</h4>
+                  <div class="program-day-card-head">
+                    <h4>{{ day.name }}</h4>
+                    <template v-if="dayAvailability(assignment, day).state === 'resume'">
+                      <button
+                        type="button"
+                        class="btn btn-primary btn-sm"
+                        @click="goToSession(dayAvailability(assignment, day).sessionId)"
+                      >
+                        {{ t('studios.myTrainingPlan.resumeAction') }}
+                      </button>
+                    </template>
+                    <template v-else-if="dayAvailability(assignment, day).state === 'start'">
+                      <button
+                        type="button"
+                        class="btn btn-primary btn-sm"
+                        :disabled="startingKeys.has(dayKey(assignment.id, day.id))"
+                        @click="startDay(assignment, day)"
+                      >
+                        <span v-if="startingKeys.has(dayKey(assignment.id, day.id))" class="spinner" aria-hidden="true"></span>
+                        {{ t('studios.myTrainingPlan.startAction') }}
+                      </button>
+                    </template>
+                    <template v-else-if="dayAvailability(assignment, day).state === 'multiple'">
+                      <RouterLink
+                        class="btn btn-secondary btn-sm"
+                        :to="{ name: 'studio-workout-sessions', params: { studioId } }"
+                      >
+                        {{ t('studios.myTrainingPlan.viewRunningSessions') }}
+                      </RouterLink>
+                    </template>
+                  </div>
+                  <p v-if="dayAvailability(assignment, day).state === 'unavailable'" class="studio-help">
+                    {{ dayAvailability(assignment, day).reason }}
+                  </p>
+                  <p v-if="dayAvailability(assignment, day).state === 'multiple'" class="message message-warning">
+                    {{ t('studios.myTrainingPlan.multipleRunningSessions', { count: dayAvailability(assignment, day).count }) }}
+                  </p>
+                  <p v-if="startErrors[dayKey(assignment.id, day.id)]" class="message message-error" role="alert">
+                    {{ startErrors[dayKey(assignment.id, day.id)] }}
+                  </p>
                   <p class="studio-muted">{{ day.instructions || t('studios.myTrainingPlan.noInstructions') }}</p>
                   <ul v-if="day.exercises.length" class="program-exercise-list">
                     <li v-for="exercise in day.exercises" :key="exercise.id" class="program-exercise-row">
@@ -141,7 +272,6 @@ watch(studioId, load, { immediate: true })
                   </ul>
                 </li>
               </ul>
-              <p class="studio-help">{{ t('studios.myTrainingPlan.notStartedHint') }}</p>
             </template>
           </div>
         </article>
@@ -175,6 +305,14 @@ watch(studioId, load, { immediate: true })
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface-soft);
+}
+
+.program-day-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  flex-wrap: wrap;
 }
 
 .program-exercise-row {

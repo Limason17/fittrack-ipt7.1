@@ -40,8 +40,15 @@ let assignment1b;
 let assignment2;
 let assignment3;
 let assignment4;
+let assignment5;
+let assignment6;
+let dayFilterA;
+let dayA2;
 let sessionId1;
 let sessionId2;
+let sessionId3;
+let sessionId4;
+let sessionId5;
 
 function fixture(name) {
     return {
@@ -138,6 +145,13 @@ async function startSession(actor, assignmentId, { programDayId, clientStartKey 
         method: "POST",
         token: actor.token,
         body: { programDayId, clientStartKey }
+    });
+}
+
+function listOwnSessions(actor, query = {}) {
+    const params = new URLSearchParams(query).toString();
+    return api(`/api/v1/studios/${studioA.id}/workout-sessions/me${params ? `?${params}` : ""}`, {
+        token: actor.token
     });
 }
 
@@ -286,6 +300,7 @@ test("a member starts a workout session from an active assignment; the snapshot 
     );
     assert.equal(started1.response.status, 201, JSON.stringify(started1.data));
     sessionId1 = started1.data.workoutSession.id;
+    assert.equal(started1.data.workoutSession.assignmentId, assignment1.id);
     assert.equal(started1.data.workoutSession.status, "in_progress");
     assert.equal(started1.data.workoutSession.revision, 0);
     assert.equal(started1.data.workoutSession.exercises.length, 1);
@@ -307,6 +322,7 @@ test("a member starts a workout session from an active assignment; the snapshot 
     );
     assert.equal(started2.response.status, 201, JSON.stringify(started2.data));
     sessionId2 = started2.data.workoutSession.id;
+    assert.equal(started2.data.workoutSession.assignmentId, assignment1b.id);
     assert.notEqual(sessionId2, sessionId1);
 });
 
@@ -424,11 +440,16 @@ test("a member reads their own in-progress session; a different member gets a un
     const list = await api(`/api/v1/studios/${studioA.id}/workout-sessions/me`, { token: accounts.member1A.token });
     assert.equal(list.response.status, 200, JSON.stringify(list.data));
     assert.ok(list.data.workoutSessions.some((session) => session.id === sessionId1));
+    assert.equal(
+        list.data.workoutSessions.find((session) => session.id === sessionId1).assignmentId, assignment1.id,
+        "the assignment id must be resolvable from the list view so the frontend can distinguish sessions across assignments of the same program"
+    );
 
     const own = await api(`/api/v1/studios/${studioA.id}/workout-sessions/${sessionId1}`, {
         token: accounts.member1A.token
     });
     assert.equal(own.response.status, 200);
+    assert.equal(own.data.workoutSession.assignmentId, assignment1.id);
 
     const foreign = await api(`/api/v1/studios/${studioA.id}/workout-sessions/${sessionId1}`, {
         token: accounts.member2A.token
@@ -740,6 +761,188 @@ test("aborting a session preserves whatever was already logged, and an aborted s
     });
     assert.equal(mutationAfterAbort.response.status, 409);
     assert.equal(mutationAfterAbort.data.error.code, "WORKOUT_SESSION_NOT_MUTABLE");
+});
+
+test("setup: a second member starts sessions across two assignments and two days for deterministic list-filter coverage", async () => {
+    // A fresh draft version with two days, published once: a published version is
+    // frozen and cannot gain a second day afterwards, so both days are added while
+    // still in draft, exactly like a real coach building a program.
+    const filterVersion = await api(
+        `/api/v1/studios/${studioA.id}/training-programs/${programAId}/versions`,
+        { method: "POST", token: accounts.trainer1A.token, body: {} }
+    );
+    assert.equal(filterVersion.response.status, 201, JSON.stringify(filterVersion.data));
+    const filterVersionId = filterVersion.data.programVersion.id;
+
+    const dayAResult = await api(
+        `/api/v1/studios/${studioA.id}/training-programs/${programAId}/versions/${filterVersionId}/days`,
+        { method: "POST", token: accounts.trainer1A.token, body: { name: "Day A: Filter Coverage" } }
+    );
+    assert.equal(dayAResult.response.status, 201, JSON.stringify(dayAResult.data));
+    dayFilterA = dayAResult.data.programDay;
+    await api(
+        `/api/v1/studios/${studioA.id}/training-programs/${programAId}/versions/${filterVersionId}/days/${dayFilterA.id}/exercises`,
+        { method: "POST", token: accounts.trainer1A.token, body: { exerciseNameSnapshot: "Lat Pulldown", targetSets: 2 } }
+    );
+
+    const dayBResult = await api(
+        `/api/v1/studios/${studioA.id}/training-programs/${programAId}/versions/${filterVersionId}/days`,
+        { method: "POST", token: accounts.trainer1A.token, body: { name: "Day B: Filter Coverage" } }
+    );
+    assert.equal(dayBResult.response.status, 201, JSON.stringify(dayBResult.data));
+    dayA2 = dayBResult.data.programDay;
+    await api(
+        `/api/v1/studios/${studioA.id}/training-programs/${programAId}/versions/${filterVersionId}/days/${dayA2.id}/exercises`,
+        { method: "POST", token: accounts.trainer1A.token, body: { exerciseNameSnapshot: "Seated Row", targetSets: 2 } }
+    );
+
+    const publishedFilterVersion = await api(
+        `/api/v1/studios/${studioA.id}/training-programs/${programAId}/versions/${filterVersionId}/publish`,
+        { method: "POST", token: accounts.trainer1A.token }
+    );
+    assert.equal(publishedFilterVersion.response.status, 200, JSON.stringify(publishedFilterVersion.data));
+
+    assignment5 = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
+        method: "POST", token: accounts.trainer2A.token,
+        body: { programVersionId: filterVersionId, memberMembershipId: membershipIds.member2A, coachingRelationshipId: rel2.id }
+    }).then((result) => {
+        assert.equal(result.response.status, 201, JSON.stringify(result.data));
+        return result.data.programAssignment;
+    });
+    assignment6 = await api(`/api/v1/studios/${studioA.id}/program-assignments`, {
+        method: "POST", token: accounts.trainer2A.token,
+        body: { programVersionId: versionA1.id, memberMembershipId: membershipIds.member2A, coachingRelationshipId: rel2.id }
+    }).then((result) => {
+        assert.equal(result.response.status, 201, JSON.stringify(result.data));
+        return result.data.programAssignment;
+    });
+
+    const started3 = await startSession(accounts.member2A, assignment5.id, { programDayId: dayFilterA.id, clientStartKey: "filter-3" });
+    assert.equal(started3.response.status, 201, JSON.stringify(started3.data));
+    sessionId3 = started3.data.workoutSession.id;
+
+    const started4 = await startSession(accounts.member2A, assignment5.id, { programDayId: dayA2.id, clientStartKey: "filter-4" });
+    assert.equal(started4.response.status, 201, JSON.stringify(started4.data));
+    sessionId4 = started4.data.workoutSession.id;
+    const aborted4 = await api(`/api/v1/studios/${studioA.id}/workout-sessions/${sessionId4}/abort`, {
+        method: "POST", token: accounts.member2A.token
+    });
+    assert.equal(aborted4.response.status, 200, JSON.stringify(aborted4.data));
+
+    const started5 = await startSession(accounts.member2A, assignment6.id, { programDayId: dayA1.id, clientStartKey: "filter-5" });
+    assert.equal(started5.response.status, 201, JSON.stringify(started5.data));
+    sessionId5 = started5.data.workoutSession.id;
+
+    // session3: assignment5 / dayFilterA / in_progress
+    // session4: assignment5 / dayA2      / aborted
+    // session5: assignment6 / dayA1 (versionA1) / in_progress
+});
+
+test("status=in_progress returns only running sessions, applied server-side before pagination", async () => {
+    const result = await listOwnSessions(accounts.member2A, { status: "in_progress" });
+    assert.equal(result.response.status, 200, JSON.stringify(result.data));
+    const ids = result.data.workoutSessions.map((session) => session.id);
+    assert.ok(ids.includes(sessionId3));
+    assert.ok(ids.includes(sessionId5));
+    assert.ok(!ids.includes(sessionId4), "an aborted session must not match status=in_progress");
+    assert.equal(result.data.pagination.total, ids.length);
+});
+
+test("status=aborted returns only the aborted session", async () => {
+    const result = await listOwnSessions(accounts.member2A, { status: "aborted" });
+    assert.equal(result.response.status, 200, JSON.stringify(result.data));
+    const ids = result.data.workoutSessions.map((session) => session.id);
+    assert.deepEqual(ids, [sessionId4]);
+});
+
+test("assignmentId filters to exactly that assignment's sessions, independent of status", async () => {
+    const result = await listOwnSessions(accounts.member2A, { assignmentId: assignment5.id });
+    assert.equal(result.response.status, 200, JSON.stringify(result.data));
+    const ids = result.data.workoutSessions.map((session) => session.id).sort();
+    assert.deepEqual(ids.sort(), [sessionId3, sessionId4].sort());
+});
+
+test("programDayId filters to exactly that day's sessions across assignments", async () => {
+    const result = await listOwnSessions(accounts.member2A, { programDayId: dayFilterA.id });
+    assert.equal(result.response.status, 200, JSON.stringify(result.data));
+    assert.deepEqual(result.data.workoutSessions.map((session) => session.id), [sessionId3]);
+});
+
+test("combined status + assignmentId + programDayId filters narrow to exactly one deterministic session", async () => {
+    const result = await listOwnSessions(accounts.member2A, {
+        status: "in_progress", assignmentId: assignment5.id, programDayId: dayFilterA.id
+    });
+    assert.equal(result.response.status, 200, JSON.stringify(result.data));
+    assert.deepEqual(result.data.workoutSessions.map((session) => session.id), [sessionId3]);
+
+    const dayA2Filter = await listOwnSessions(accounts.member2A, { assignmentId: assignment5.id, programDayId: dayA2.id });
+    assert.deepEqual(dayA2Filter.data.workoutSessions.map((session) => session.id), [sessionId4]);
+});
+
+test("filters are applied before pagination, not as a client-side reduction of an already-paginated page", async () => {
+    const firstPage = await listOwnSessions(accounts.member2A, { status: "in_progress", limit: "1", page: "1" });
+    assert.equal(firstPage.response.status, 200, JSON.stringify(firstPage.data));
+    assert.equal(firstPage.data.workoutSessions.length, 1);
+    assert.equal(firstPage.data.pagination.total, 2, "the total must reflect the filtered set, not the unfiltered one");
+
+    const secondPage = await listOwnSessions(accounts.member2A, { status: "in_progress", limit: "1", page: "2" });
+    assert.equal(secondPage.data.workoutSessions.length, 1);
+    assert.notEqual(secondPage.data.workoutSessions[0].id, firstPage.data.workoutSessions[0].id);
+});
+
+test("an unknown status value, a malformed UUID, and an unlisted query parameter are all rejected", async () => {
+    const badStatus = await listOwnSessions(accounts.member2A, { status: "in-progress" });
+    assert.equal(badStatus.response.status, 400, JSON.stringify(badStatus.data));
+
+    const badAssignmentId = await listOwnSessions(accounts.member2A, { assignmentId: "not-a-uuid" });
+    assert.equal(badAssignmentId.response.status, 400, JSON.stringify(badAssignmentId.data));
+
+    const badProgramDayId = await listOwnSessions(accounts.member2A, { programDayId: "12345" });
+    assert.equal(badProgramDayId.response.status, 400, JSON.stringify(badProgramDayId.data));
+
+    const unknownParam = await listOwnSessions(accounts.member2A, { foo: "bar" });
+    assert.equal(unknownParam.response.status, 400, JSON.stringify(unknownParam.data));
+});
+
+test("filtering by another member's assignment or another studio's session yields zero results, never an error or disclosure", async () => {
+    const foreignAssignment = await listOwnSessions(accounts.member1A, { assignmentId: assignment5.id });
+    assert.equal(foreignAssignment.response.status, 200, JSON.stringify(foreignAssignment.data));
+    assert.deepEqual(foreignAssignment.data.workoutSessions, []);
+
+    const differentMember = await listOwnSessions(accounts.member3A, { programDayId: dayA1.id });
+    assert.equal(differentMember.response.status, 200, JSON.stringify(differentMember.data));
+    assert.deepEqual(differentMember.data.workoutSessions, []);
+
+    const foreignStudio = await api(`/api/v1/studios/${studioA.id}/workout-sessions/me?status=in_progress`, {
+        token: accounts.memberB.token
+    });
+    assert.equal(foreignStudio.response.status, 404, JSON.stringify(foreignStudio.data));
+    assert.equal(foreignStudio.data.error.code, "STUDIO_NOT_FOUND");
+});
+
+test("startsOn/endsOn are returned as plain calendar dates, never a timestamp or timezone-shifted value", async () => {
+    assert.equal(assignment3.startsOn, "2099-01-01", "the create response must echo the exact calendar date that was sent");
+    assert.equal(assignment1.endsOn, null, "an assignment created without an end date must serialize to null, not a date-like string");
+
+    const listed = await api(`/api/v1/studios/${studioA.id}/program-assignments/me`, { token: accounts.member3A.token });
+    assert.equal(listed.response.status, 200, JSON.stringify(listed.data));
+    const listedAssignment3 = listed.data.programAssignments.find((assignment) => assignment.id === assignment3.id);
+    assert.equal(listedAssignment3.startsOn, "2099-01-01");
+
+    // rel3 (trainer1A <-> member3A) was already ended in an earlier test, which
+    // correctly revokes the trainer's own read access; the owner's ASSIGNMENT_LIST
+    // permission needs no active coaching relationship, so it is used here instead.
+    const fetched = await api(`/api/v1/studios/${studioA.id}/program-assignments/${assignment3.id}`, {
+        token: accounts.ownerA.token
+    });
+    assert.equal(fetched.response.status, 200, JSON.stringify(fetched.data));
+    assert.equal(fetched.data.programAssignment.startsOn, "2099-01-01");
+
+    for (const value of [assignment3.startsOn, listedAssignment3.startsOn, fetched.data.programAssignment.startsOn]) {
+        assert.match(value, /^\d{4}-\d{2}-\d{2}$/, "must be exactly YYYY-MM-DD");
+        assert.equal(value.includes("T"), false, "must never carry a time component");
+        assert.equal(value.includes("Z"), false, "must never carry a UTC offset marker");
+    }
 });
 
 test("the workout session audit trail records that sessions happened, but never any performance value, note, or request body", async () => {

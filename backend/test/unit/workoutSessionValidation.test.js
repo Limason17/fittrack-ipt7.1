@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {
     LIMITS,
     validateCreateSetPayload,
+    validateListOwnSessionsQuery,
     validateSessionExercisePatchPayload,
     validateSessionPatchPayload,
     validateSessionSetPatchPayload,
@@ -11,6 +12,7 @@ const {
 } = require("../../validation/workoutSessionValidation");
 
 const VALID_UUID_A = "123e4567-e89b-42d3-a456-426614174000";
+const VALID_UUID_B = "223e4567-e89b-42d3-a456-426614174001";
 
 function expectValidationError(fn, field) {
     assert.throws(fn, (error) => {
@@ -36,6 +38,46 @@ test("validateStartSessionPayload requires a program day public id and a bounded
         "extra"
     );
     expectValidationError(() => validateStartSessionPayload({ clientStartKey: "k" }), "programDayId");
+});
+
+test("validateListOwnSessionsQuery defaults to unfiltered pagination when no filters are given", () => {
+    assert.deepEqual(validateListOwnSessionsQuery({}), { page: 1, limit: 20, offset: 0 });
+    assert.deepEqual(validateListOwnSessionsQuery({ page: "2", limit: "5" }), { page: 2, limit: 5, offset: 5 });
+});
+
+test("validateListOwnSessionsQuery accepts status/assignmentId/programDayId and rejects anything not on that list", () => {
+    assert.deepEqual(
+        validateListOwnSessionsQuery({ status: "in_progress" }),
+        { page: 1, limit: 20, offset: 0, status: "in_progress" }
+    );
+    assert.equal(validateListOwnSessionsQuery({ status: "completed" }).status, "completed");
+    assert.equal(validateListOwnSessionsQuery({ status: "aborted" }).status, "aborted");
+    assert.deepEqual(
+        validateListOwnSessionsQuery({ assignmentId: VALID_UUID_A, programDayId: VALID_UUID_B }),
+        { page: 1, limit: 20, offset: 0, assignmentId: VALID_UUID_A, programDayId: VALID_UUID_B }
+    );
+    assert.deepEqual(
+        validateListOwnSessionsQuery({ page: "3", limit: "10", status: "in_progress", assignmentId: VALID_UUID_A, programDayId: VALID_UUID_B }),
+        { page: 3, limit: 10, offset: 20, status: "in_progress", assignmentId: VALID_UUID_A, programDayId: VALID_UUID_B }
+    );
+});
+
+test("validateListOwnSessionsQuery rejects an unknown status", () => {
+    expectValidationError(() => validateListOwnSessionsQuery({ status: "in-progress" }), "status");
+    expectValidationError(() => validateListOwnSessionsQuery({ status: "pending" }), "status");
+    expectValidationError(() => validateListOwnSessionsQuery({ status: "" }), "status");
+});
+
+test("validateListOwnSessionsQuery rejects a malformed assignmentId or programDayId", () => {
+    expectValidationError(() => validateListOwnSessionsQuery({ assignmentId: "not-a-uuid" }), "assignmentId");
+    expectValidationError(() => validateListOwnSessionsQuery({ assignmentId: "12345" }), "assignmentId");
+    expectValidationError(() => validateListOwnSessionsQuery({ programDayId: "not-a-uuid" }), "programDayId");
+});
+
+test("validateListOwnSessionsQuery rejects any query parameter outside the documented list", () => {
+    expectValidationError(() => validateListOwnSessionsQuery({ sort: "asc" }), "sort");
+    expectValidationError(() => validateListOwnSessionsQuery({ memberId: VALID_UUID_A }), "memberId");
+    expectValidationError(() => validateListOwnSessionsQuery({ status: "in_progress", foo: "bar" }), "foo");
 });
 
 test("validateSessionPatchPayload requires both memberNote and expectedRevision keys, even when memberNote is null", () => {

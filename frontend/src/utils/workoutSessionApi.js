@@ -29,9 +29,16 @@ export function startWorkoutSession(studioId, assignmentId, body, options) {
 
 // ---- Member self-access ----
 
-export function listOwnWorkoutSessions(studioId, options) {
-  const request = withPagination(`${sessionsPath(studioId)}/me`, options)
-  return apiRequest(request.path, authenticated(request.options))
+export function listOwnWorkoutSessions(studioId, options = {}) {
+  const { status, assignmentId, programDayId, ...paginationOptions } = options || {}
+  const request = withPagination(`${sessionsPath(studioId)}/me`, paginationOptions)
+  const params = new URLSearchParams(request.path.includes('?') ? request.path.split('?')[1] : '')
+  if (status !== undefined) params.set('status', status)
+  if (assignmentId !== undefined) params.set('assignmentId', String(assignmentId))
+  if (programDayId !== undefined) params.set('programDayId', String(programDayId))
+  const query = params.toString()
+  const path = query ? `${sessionsPath(studioId)}/me?${query}` : `${sessionsPath(studioId)}/me`
+  return apiRequest(path, authenticated(request.options))
 }
 
 export function getOwnWorkoutSession(studioId, sessionId, options) {
