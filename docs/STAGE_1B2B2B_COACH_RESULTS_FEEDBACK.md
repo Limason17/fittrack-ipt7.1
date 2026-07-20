@@ -8,6 +8,19 @@ Entfernung des bestehenden Anwendungs-Footers. Aufbauend auf Stage 1B.2B1
 (Frontend: Mitglieds-Ausführungs-UI). Migration 008 ist additiv; keine
 bestehende Tabelle wurde verändert.
 
+> **Nachtrag (2026-07-20, Release-Gate-Prüfung):** Der ursprüngliche
+> Abschlussbericht dieser Phase behauptete unter „Bekannte Einschränkungen"
+> fälschlich, der aus Stage 1B.1/1B.2B1 bekannte kosmetische
+> Datum/Zeitzonen-Anzeigefehler in der Zuweisungs-API bestehe weiterhin. Das
+> war zum Zeitpunkt der Behauptung bereits falsch: Der direkte
+> Stage-1B.2B2A-Folgecommit `08310cf` hatte den Fehler schon vorher behoben.
+> Verifiziert anhand des tatsächlichen Codes (`programAssignmentService.js`,
+> gemeinsamer `ASSIGNMENT_SELECT` mit `DATE_FORMAT(..., '%Y-%m-%d')`, genutzt
+> von create/list/get/update/listOwn/getOwnDetail) und des bestehenden,
+> weiterhin grünen Regressionstests in `workoutSessionApi.test.js`. Der
+> entsprechende Absatz wurde entfernt; siehe auch die Korrektur in
+> `STAGE_1B2B2A_MEMBER_WORKOUT_UI.md`.
+
 ## Zugriffsmodell (serverseitig, default-deny)
 
 Coach-Resultatzugriff (Lesen **und** Feedback erstellen) erfordert **alle**
@@ -245,9 +258,6 @@ letzten Inhaltsblock natürlich endet, ohne künstlichen Leerraum.
 - Feedback ist rein textuell (kein Markdown/Rich-Text, kein Anhang).
 - Kein Antworten/Threads/Reaktionen/Push-/E-Mail-Benachrichtigungen — bewusst
   außerhalb des Auftragsumfangs.
-- Der aus früheren Phasen bekannte, dokumentierte kosmetische
-  Datum/Zeitzonen-Anzeigefehler in der Zuweisungs-API besteht unverändert
-  fort (außerhalb dieses Auftragsumfangs).
 
 ## Klare Grenze zu späteren Phasen
 
@@ -289,3 +299,10 @@ Oberfläche mit neuer, expliziter Freigabe.
 - **Weitere Regressionsgates:** Produktionsbuild (`vite build`) erfolgreich;
   `npm audit --audit-level=high` ohne Befunde in Backend und Frontend;
   `git diff --check` ohne Whitespace-Fehler.
+- **Nachtrag (2026-07-20, Release-Gate-Prüfung):** Zusätzlich zu
+  `coachFeedback.spec.js` wurde die vollständige bestehende Chromium-E2E-Suite
+  (`accessibility.spec.js`, `auth.spec.js`, `coachFeedback.spec.js`,
+  `studioTraining.spec.js`, `studios.spec.js`, `training.spec.js`,
+  `workoutSessions.spec.js`) frisch ausgeführt: 22/22 Tests grün, Browser
+  Chromium (Desktop Chrome), Laufzeit ~1,6 Minuten, geprüfter Commit
+  `4e8adea15158eaa50eb88893117ac965695874bd`.
