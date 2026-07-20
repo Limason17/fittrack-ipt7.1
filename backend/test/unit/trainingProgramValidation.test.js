@@ -12,6 +12,7 @@ const {
     validateCreateVersionPayload,
     validateDayPatchPayload,
     validateExercisePatchPayload,
+    validateListOwnCoachingRelationshipsQuery,
     validatePagination,
     validateProgramPatchPayload
 } = require("../../validation/trainingProgramValidation");
@@ -41,6 +42,26 @@ test("validateCoachingRelationshipPatchPayload only accepts ending the relations
     assert.deepEqual(validateCoachingRelationshipPatchPayload({ status: "ended" }), { status: "ended" });
     expectValidationError(() => validateCoachingRelationshipPatchPayload({ status: "active" }), "status");
     expectValidationError(() => validateCoachingRelationshipPatchPayload({}), "body");
+});
+
+test("validateListOwnCoachingRelationshipsQuery defaults to status=active for the results view", () => {
+    assert.deepEqual(
+        validateListOwnCoachingRelationshipsQuery({}),
+        { page: 1, limit: 20, offset: 0, status: "active" }
+    );
+    assert.deepEqual(
+        validateListOwnCoachingRelationshipsQuery({ status: "ended" }),
+        { page: 1, limit: 20, offset: 0, status: "ended" }
+    );
+    assert.deepEqual(
+        validateListOwnCoachingRelationshipsQuery({ page: "2", limit: "5", status: "active" }),
+        { page: 2, limit: 5, offset: 5, status: "active" }
+    );
+});
+
+test("validateListOwnCoachingRelationshipsQuery rejects an unknown status or query parameter", () => {
+    expectValidationError(() => validateListOwnCoachingRelationshipsQuery({ status: "pending" }), "status");
+    expectValidationError(() => validateListOwnCoachingRelationshipsQuery({ coachMembershipId: VALID_UUID_A }), "coachMembershipId");
 });
 
 test("validateCreateProgramPayload requires a bounded name and rejects unknown fields", () => {

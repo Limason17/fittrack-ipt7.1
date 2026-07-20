@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {
     LIMITS,
     validateCreateSetPayload,
+    validateListCoachedSessionsQuery,
     validateListOwnSessionsQuery,
     validateSessionExercisePatchPayload,
     validateSessionPatchPayload,
@@ -78,6 +79,21 @@ test("validateListOwnSessionsQuery rejects any query parameter outside the docum
     expectValidationError(() => validateListOwnSessionsQuery({ sort: "asc" }), "sort");
     expectValidationError(() => validateListOwnSessionsQuery({ memberId: VALID_UUID_A }), "memberId");
     expectValidationError(() => validateListOwnSessionsQuery({ status: "in_progress", foo: "bar" }), "foo");
+});
+
+test("validateListCoachedSessionsQuery is unfiltered by default and accepts a status filter", () => {
+    assert.deepEqual(validateListCoachedSessionsQuery({}), { page: 1, limit: 20, offset: 0 });
+    assert.deepEqual(
+        validateListCoachedSessionsQuery({ status: "completed" }),
+        { page: 1, limit: 20, offset: 0, status: "completed" }
+    );
+    assert.equal(validateListCoachedSessionsQuery({ status: "in_progress" }).status, "in_progress");
+    assert.equal(validateListCoachedSessionsQuery({ status: "aborted" }).status, "aborted");
+});
+
+test("validateListCoachedSessionsQuery rejects an unknown status or query parameter", () => {
+    expectValidationError(() => validateListCoachedSessionsQuery({ status: "cancelled" }), "status");
+    expectValidationError(() => validateListCoachedSessionsQuery({ memberMembershipId: VALID_UUID_A }), "memberMembershipId");
 });
 
 test("validateSessionPatchPayload requires both memberNote and expectedRevision keys, even when memberNote is null", () => {

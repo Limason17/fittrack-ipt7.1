@@ -256,6 +256,17 @@ function workoutResultReadEligibility({ actorRole, coachingRelationship }) {
     return { allowed: true };
 }
 
+function workoutFeedbackCreateEligibility({ actorRole, coachingRelationship, sessionStatus }) {
+    const resultDecision = workoutResultReadEligibility({ actorRole, coachingRelationship });
+    if (!resultDecision.allowed) {
+        return resultDecision;
+    }
+    if (!["completed", "aborted"].includes(sessionStatus)) {
+        return { allowed: false, reason: "WORKOUT_FEEDBACK_SESSION_NOT_TERMINAL" };
+    }
+    return { allowed: true };
+}
+
 module.exports = {
     PERMISSIONS,
     ROLE_PERMISSIONS,
@@ -271,6 +282,7 @@ module.exports = {
     invitationRoleDecision,
     leavesActiveOwnerSet,
     sessionCompletionEligibility,
+    workoutFeedbackCreateEligibility,
     workoutResultReadEligibility,
     membershipChangeDecision,
     studioPatchPermission

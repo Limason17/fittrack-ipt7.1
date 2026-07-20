@@ -22,6 +22,7 @@ const {
     validateCreateVersionPayload,
     validateDayPatchPayload,
     validateExercisePatchPayload,
+    validateListOwnCoachingRelationshipsQuery,
     validatePagination,
     validateProgramPatchPayload,
     validatePublicId,
@@ -66,6 +67,17 @@ function createTrainingProgramV1Router({
             const input = validateCoachingRelationshipPayload(req.body);
             const relationship = await coachingService.createRelationship(req.user.id, req.studioContext, input);
             res.status(201).json({ coachingRelationship: relationship });
+        }
+    );
+
+    router.get(
+        "/studios/:studioId/coaching-relationships/me",
+        authenticate, context, permission(PERMISSIONS.COACHING_LIST),
+        async (req, res) => {
+            const result = await coachingService.listOwnRelationships(
+                req.studioContext, validateListOwnCoachingRelationshipsQuery(req.query)
+            );
+            res.json(result);
         }
     );
 

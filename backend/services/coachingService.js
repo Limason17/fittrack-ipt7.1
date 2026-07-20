@@ -225,6 +225,41 @@ function createCoachingService({ database, generatePublicId = createPublicId } =
         );
     }
 
+    async function listOwnRelationships(context, queryOptions) {
+        return helpers.withLockedStudioAccess(
+            context,
+            PERMISSIONS.COACHING_LIST,
+            async (connection, studio, actor) => {
+                // Always scoped to the actor's own membership as coach, regardless of role -
+                // this is the one property listRelationships() above does not give owner/admin
+                // (it only narrows to coach_membership_id for the trainer role). A studio-wide
+                // "all relationships" read must never be usable as this endpoint's data source.
+                const conditions = ["cr.studio_id = ?", "cr.coach_membership_id = ?"];
+                const params = [studio.internalId, actor.internalId];
+                if (queryOptions.status) {
+                    conditions.push("cr.status = ?");
+                    params.push(queryOptions.status);
+                }
+                const whereClause = conditions.join(" AND ");
+
+                const [[countRow]] = await connection.query(
+                    `SELECT COUNT(*) AS total FROM studio_coaching_relationships cr WHERE ${whereClause}`,
+                    params
+                );
+                const [rows] = await connection.query(
+                    `${RELATIONSHIP_SELECT} WHERE ${whereClause}
+                     ORDER BY cr.created_at DESC, cr.id DESC
+                     LIMIT ? OFFSET ?`,
+                    [...params, queryOptions.limit, queryOptions.offset]
+                );
+                return {
+                    coachingRelationships: rows.map((row) => publicRelationship(relationshipFromRow(row))),
+                    pagination: paginationResult(Number(countRow.total), queryOptions)
+                };
+            }
+        );
+    }
+
     async function loadActiveRelationshipForMember(connection, studioInternalId, coachMembershipInternalId, memberMembershipInternalId) {
         const [rows] = await connection.query(
             `SELECT id, public_id, status
@@ -239,6 +274,7 @@ function createCoachingService({ database, generatePublicId = createPublicId } =
     return {
         createRelationship,
         endRelationship,
+        listOwnRelationships,
         listRelationships,
         loadActiveRelationshipForMember
     };

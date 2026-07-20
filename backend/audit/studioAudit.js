@@ -41,7 +41,8 @@ const SAFE_DETAIL_KEYS = Object.freeze({
     "training_program_assignment.cancelled": new Set(["memberMembershipId"]),
     "workout_session.started": new Set(["assignmentId", "programDayId", "versionNumber"]),
     "workout_session.completed": new Set([]),
-    "workout_session.aborted": new Set([])
+    "workout_session.aborted": new Set([]),
+    "workout_feedback.created": new Set(["feedbackId", "sessionId"])
 });
 
 function sanitizeAuditDetails(value, seen = new WeakSet()) {
@@ -170,6 +171,18 @@ function allowlistedAuditDetails(eventType, details) {
             throw new TypeError("Audit program day public id is invalid.");
         }
         output.programDayId = details.programDayId;
+    }
+    if (details.feedbackId !== undefined) {
+        if (!isPublicId(details.feedbackId)) {
+            throw new TypeError("Audit feedback public id is invalid.");
+        }
+        output.feedbackId = details.feedbackId;
+    }
+    if (details.sessionId !== undefined) {
+        if (!isPublicId(details.sessionId)) {
+            throw new TypeError("Audit session public id is invalid.");
+        }
+        output.sessionId = details.sessionId;
     }
 
     const serialized = JSON.stringify(output);
