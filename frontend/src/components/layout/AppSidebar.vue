@@ -119,6 +119,14 @@ const { handleModalKeydown } = useModalFocus({ isOpen, dialogRef, close })
           {{ t('nav.assignments') }}
         </RouterLink>
         <RouterLink
+          v-if="canAccessTrainingManagement"
+          :to="{ name: 'studio-coach-results', params: { studioId: activeStudio.id } }"
+          class="app-sidebar-link"
+          @click="emit('close')"
+        >
+          {{ t('nav.coachResults') }}
+        </RouterLink>
+        <RouterLink
           v-if="isStudioMemberRole"
           :to="{ name: 'studio-my-training-plan', params: { studioId: activeStudio.id } }"
           class="app-sidebar-link"

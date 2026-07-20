@@ -505,6 +505,65 @@ test("Stage 1B.2B1 schema contract covers every workout session, exercise and se
     );
 });
 
+test("Stage 1B.2B2B schema contract covers every workout session feedback table, column, index, FK and constraint", () => {
+    const contract = MIGRATION_SCHEMA_CONTRACT.find(
+        (item) => item.migrationId === "008_studio_workout_session_feedback"
+    );
+    assert.ok(contract);
+
+    const keys = new Set(
+        contract.checks.map((check) => {
+            if (check.kind === "table") return `table:${check.table}`;
+            if (check.kind === "column") return `column:${check.table}.${check.column}`;
+            if (check.kind === "index") return `index:${check.table}.${check.index}`;
+            return `${check.kind}:${check.table}.${check.constraint}`;
+        })
+    );
+    const expected = [
+        "table:studio_workout_session_feedback",
+        "column:studio_workout_session_feedback.client_feedback_key",
+        "column:studio_workout_session_feedback.body",
+        "column:studio_workout_session_feedback.author_user_id",
+        "index:studio_workout_session_feedback.uq_workout_session_feedback_idempotency",
+        "index:studio_workout_session_feedback.uq_workout_session_feedback_public_id",
+        "foreign_key:studio_workout_session_feedback.fk_workout_session_feedback_studio",
+        "foreign_key:studio_workout_session_feedback.fk_workout_session_feedback_session",
+        "foreign_key:studio_workout_session_feedback.fk_workout_session_feedback_relationship",
+        "foreign_key:studio_workout_session_feedback.fk_workout_session_feedback_coach_membership",
+        "foreign_key:studio_workout_session_feedback.fk_workout_session_feedback_author",
+        "check_constraint:studio_workout_session_feedback.chk_workout_session_feedback_body"
+    ];
+    for (const key of expected) assert.ok(keys.has(key), `missing schema check ${key}`);
+
+    assert.equal(contract.checks.filter((check) => check.kind === "table").length, 1);
+    assert.equal(contract.checks.filter((check) => check.kind === "column").length, 10);
+    assert.equal(contract.checks.filter((check) => check.kind === "index").length, 8);
+    assert.equal(contract.checks.filter((check) => check.kind === "foreign_key").length, 5);
+    assert.equal(contract.checks.filter((check) => check.kind === "check_constraint").length, 1);
+    assert.equal(contract.checks.length, 25);
+
+    // author_user_id is the one deliberate RESTRICT (matching every other *_user_id FK in this
+    // schema, e.g. fk_studios_created_by_user): a user who authored feedback can never be
+    // hard-deleted out from under it. Every other edge cascades with the studio/session chain.
+    const deleteRules = Object.fromEntries(
+        contract.checks
+            .filter((check) => check.kind === "foreign_key")
+            .map((check) => [check.constraint, check.deleteRule])
+    );
+    assert.equal(deleteRules.fk_workout_session_feedback_author, "RESTRICT");
+    for (const [constraint, rule] of Object.entries(deleteRules)) {
+        if (constraint === "fk_workout_session_feedback_author") continue;
+        assert.equal(rule, "CASCADE", `${constraint} must cascade so studio/session deletion never orphans feedback`);
+    }
+
+    assert.ok(
+        contract.checks
+            .filter((check) => check.kind !== "table")
+            .every((check) => check.pendingMissingAllowed === false),
+        "an already-applied Stage 1B.2B2B column, index, FK or constraint must never be treated as optionally missing"
+    );
+});
+
 test("CLI emits a safe JSON target without user or password and preserves exit 0", async () => {
     const lines = [];
     const logger = createStructuredLogger({

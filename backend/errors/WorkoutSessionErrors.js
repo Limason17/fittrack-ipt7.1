@@ -119,11 +119,33 @@ class WorkoutStartKeyConflictError extends AppError {
     }
 }
 
+class WorkoutFeedbackSessionNotTerminalError extends AppError {
+    constructor() {
+        super({
+            status: 409,
+            code: "WORKOUT_FEEDBACK_SESSION_NOT_TERMINAL",
+            message: "Feedback can only be added once the workout session is completed or aborted."
+        });
+    }
+}
+
+class WorkoutFeedbackKeyConflictError extends AppError {
+    constructor() {
+        super({
+            status: 409,
+            code: "WORKOUT_FEEDBACK_KEY_CONFLICT",
+            message: "This idempotency key was already used to submit different feedback."
+        });
+    }
+}
+
 module.exports = {
     WorkoutAssignmentNotAvailableError,
     WorkoutDayNotAvailableError,
     WorkoutExerciseConflictError,
     WorkoutExerciseNotFoundError,
+    WorkoutFeedbackKeyConflictError,
+    WorkoutFeedbackSessionNotTerminalError,
     WorkoutResultInvalidError,
     WorkoutSessionAlreadyTerminalError,
     WorkoutSessionConflictError,

@@ -1,49 +1,101 @@
 # Empfehlung für die nächste Entwicklungsphase
 
-Basierend auf `FITTRACK_CURRENT_STATUS.md`, geprüfter Stand `main`@`8a8da30`. Diese Empfehlung trifft keine Entscheidung — sie liefert eine begründete Grundlage für eine explizite Freigabe durch den Auftraggeber.
+Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
+integrierten Phasen Stage 1B.2B2A (PR #9, Member-Workout-Ausführungs-UI) und
+Stage 1B.2B2B (Coach-Ergebnisansicht, kontrollierter Feedback-Flow,
+vollständige Footer-Entfernung — siehe
+`STAGE_1B2B2B_COACH_RESULTS_FEEDBACK.md`). Diese Empfehlung trifft keine
+Entscheidung — sie liefert eine begründete Grundlage für eine explizite
+Freigabe durch den Auftraggeber.
+
+## Was diese Empfehlung ablöst
+
+Die vorherige Version dieses Dokuments empfahl Stage 1B.2B2 (Member-Session-
+Ausführung). Diese Empfehlung ist erfüllt: Stage 1B.2B2A lieferte die
+Member-seitige Ausführungs-/Historien-UI, Stage 1B.2B2B lieferte darauf
+aufbauend die Coach-Ergebnisansicht mit kontrolliertem, append-only
+Feedback-Flow. Mit Stage 1B.2B2B ist die zentrale funktionale Lücke aus dem
+ursprünglichen Audit — „Workout-Ausführung ohne jede Oberfläche" — für beide
+beteiligten Rollen (Mitglied und Coach) geschlossen.
 
 ## Was als Nächstes gebaut werden sollte
 
-**Stage 1B.2B2 — Studio-Workout-Ausführung: Member-Oberfläche.** Das ist die naheliegende, bereits im Stage-1B.2B1-Abschlussbericht angekündigte Fortsetzung, und dieser Audit bestätigt unabhängig, dass es der größte einzelne Hebel ist: ein vollständig fertiges, getestetes Backend (10 Endpunkte, 68 im Gesamtsystem, alle mit Unit- und Integrationstests) hat aktuell keinen einzigen Aufrufer im Frontend.
+**Betriebs-/Produktionsreife statt weiterer Coach-Feedback-Funktionen.**
+Stage 1B.2B2B hat den Feedback-Flow bewusst minimal und append-only
+gehalten (kein Antworten, keine Threads, keine Benachrichtigungen — siehe
+„Klare Grenze zu späteren Phasen" im Stage-Dokument). Die naheliegende
+Versuchung wäre, als Nächstes eine dieser ausgeschlossenen Funktionen
+(insbesondere Mitglieds-Antworten auf Feedback) zu bauen. Diese Empfehlung
+rät stattdessen dazu, zuerst die bereits mehrfach über Phasen hinweg
+dokumentierten **operativen Pilot-Blocker** zu schließen, weil sie — anders
+als eine weitere UI-Funktion — jede Rolle und jede bisher gebaute Funktion
+gleichermaßen betreffen und ohne sie kein echter Pilotbetrieb mit realen
+Nutzerdaten vertretbar ist:
 
-## Warum
+1. **Produktions-E-Mail-Provider für Einladungen.** Ohne verdrahteten
+   Zustellprovider verweigert das System jede Einladungserstellung in
+   Produktion fail-closed (503) — Studios können in der Praxis aktuell
+   niemanden einladen.
+2. **Backup-Verschlüsselung im Ruhezustand.** Betrifft am stärksten genau
+   die sensibelsten Daten im System (P4: Satzresultate, Member-Notizen,
+   jetzt auch Trainer-Feedback) — alle unverschlüsselt auf Platte.
+3. **Off-host-Backup-Kopie.** Aktuell nur dokumentierte Absicht, kein
+   Upload-Adapter — ein einzelner Host-Verlust ist nicht wiederherstellbar.
+4. **Getrennte DB-Rolle für Runtime vs. Migration/Restore.** Aktuell eine
+   einzige DB-Rolle für alles.
 
-- Es ist die einzige Funktion in der gesamten Funktionsmatrix (Abschnitt 4 des Statusberichts), die als "nur Backend" statt "vollständig" markiert ist, obwohl die Backend-Seite bereits denselben Reifegrad wie jede andere Stage hat.
-- Ohne sie hat ein Studio-Mitglied — die zahlenmäßig größte Zielrolle des Systems — praktisch keinen Mehrwert aus der gesamten Stage-1B-Linie: Es kann sich einen zugewiesenen Trainingsplan ansehen (`MyTrainingPlanView.vue`), aber nirgends ein tatsächliches Training protokollieren.
-- Sie ist der einzige der drei identifizierten kritischen Pilot-Blocker, der rein im Verantwortungsbereich der Produktentwicklung liegt (im Gegensatz zu Produktions-E-Mail-Provider und Off-host-Backup, die Infrastrukturentscheidungen sind, keine Programmierarbeit).
+## Warum operativ vor funktional
 
-## Bereits erfüllte Voraussetzungen
+- Alle vier Punkte sind seit mindestens dem in `FITTRACK_CURRENT_STATUS.md`
+  dokumentierten Audit bekannt und wurden über mehrere Feature-Phasen hinweg
+  bewusst zurückgestellt, weil sie „keine Programmierarbeit im engeren Sinn,
+  sondern Infrastrukturentscheidungen" sind — das bleibt richtig, ändert
+  aber nichts daran, dass sie inzwischen der limitierende Faktor für einen
+  echten Pilotbetrieb sind, nicht mehr fehlende Coach-Funktionalität.
+- Jede weitere Feature-Phase (Antworten auf Feedback, Benachrichtigungen
+  etc.) vergrößert die Menge an P2/P4-Daten, die von den bestehenden Lücken
+  betroffen ist, ohne die Lücken selbst zu schließen — technische Schuld
+  wächst schneller als sie durch neue Features sichtbar würde.
+- Diese Punkte sind rollenunabhängig: Sie verbessern nicht eine einzelne
+  Nutzergruppe (wie die letzten beiden Phasen: erst Mitglieder, dann
+  Coaches), sondern die Betriebssicherheit für alle Rollen gleichzeitig.
 
-- API-Client (`frontend/src/utils/workoutSessionApi.js`) ist fertig und deckt alle 10 Endpunkte ab.
-- Backend-Verhalten ist vollständig spezifiziert und getestet: Idempotenz, Optimistic Concurrency, Statusübergänge, Fehlercodes — die UI muss sich nur an ein bereits stabiles Vertrag halten, nicht gleichzeitig Backend-Verhalten mitentwerfen.
-- Das Design-System und die Views-Konventionen aus Stage 1B.2A (Loading/Empty/Error-States, `ConfirmDialog`, Statustabs, `reconcileStudioAccess()`-Muster) sind etabliert und wiederverwendbar.
-- ADR 003 dokumentiert bereits explizit, was Stage 1B.2B2 NICHT umfasst (Coach-Feedback-UI, Live-Timer, Offline-Sync) — der Zuschnitt ist bereits vorentschieden.
+## Falls stattdessen funktional priorisiert werden soll
 
-## Altlasten, die vorher (oder im selben Zuge) korrigiert werden sollten
+Sollte der Auftraggeber trotzdem zuerst mit einer weiteren Funktion
+fortfahren wollen, ist die naheliegende, bereits im Stage-1B.2B2B-Dokument
+vorgezeichnete Fortsetzung eine **kontrollierte Mitglieds-Antwort auf
+Feedback** (einfacher Thread statt freiem Chat, weiterhin ohne Bearbeiten/
+Löschen, weiterhin ohne Push-/E-Mail-Benachrichtigungen) — das ist die
+kleinste, konsistenteste Erweiterung des in Stage 1B.2B2B etablierten
+append-only-Modells. Diese Empfehlung rät jedoch aus den oben genannten
+Gründen davon ab, dies vor den operativen Punkten zu priorisieren.
 
-Keine davon blockiert den Start von Stage 1B.2B2 technisch, aber zwei sollten mit geringem Zusatzaufwand mitgenommen werden, weil sie dieselben Codepfade berühren:
+## Weiterhin nicht blockierend, aber vormerken
 
-1. **Uneinheitliche Frontend-403-Behandlung.** `MyTrainingPlanView.vue` hat (im Unterschied zu den Owner/Admin/Trainer-Management-Views) kein `reconcileStudioAccess()`. Eine neue Session-UI für Mitglieder sollte dieses Muster von Anfang an konsistent übernehmen, statt eine dritte Variante einzuführen.
-2. **Toter Policy-Code (`coachActionEligibility`).** Sollte entweder entfernt oder tatsächlich verdrahtet werden, bevor weitere Coach-bezogene UI-Logik (z. B. eine künftige Coach-Feedback-Funktion) darauf aufbaut und die Drift vergrößert.
-
-Explizit NICHT als Vorbedingung empfohlen (können parallel oder danach laufen, ohne Stage 1B.2B2 zu blockieren):
-- Backup-Verschlüsselung, Off-host-Kopie, DB-Rollentrennung — reine Betriebsthemen ohne Berührungspunkt zum Frontend-Code.
-- Produktions-E-Mail-Provider — betrifft Einladungen, nicht Workout-Sessions.
-- Login-Timing-Seitenkanal — betrifft Auth, nicht die Session-UI.
-
-## Empfohlene Aufteilung der nächsten Phase
-
-Passend zum in den Vorphasen etablierten Muster (Backend-Grundlage getrennt von UI-Grundlage, siehe Stage 1A → Stage-1A-UI und Stage 1B.1 → Stage 1B.2A):
-
-1. **Member-Session-Flow**: Zuweisung → Session starten → Übungen/Sätze durchgehen → Satzresultate erfassen → abschließen/abbrechen. Das ist der Kern; ohne ihn ist nichts nutzbar.
-2. **Member-Session-Historie**: eigene abgeschlossene/abgebrochene Sessions einsehen (Liste + Detail), auf Basis der bereits vorhandenen `GET .../workout-sessions/me`-Endpunkte.
-3. Bewusst NICHT in diese Phase: Coach-seitige Ergebnisansicht (`GET .../coached-members/...`) — das ist ein eigener Verwaltungs-Screen mit eigenen Rollenfragen und sollte, konsistent mit dem bisherigen Muster, eine eigene, spätere Phase sein (z. B. Stage 1B.2B3), nicht in derselben Phase wie die Member-Erfassung mitgezogen werden.
+- **Toter Policy-Code (`coachActionEligibility` in `studioPolicy.js`).**
+  Weiterhin unverdrahtet; sollte bereinigt oder tatsächlich verwendet
+  werden, bevor weitere Coach-Logik entsteht, die die Drift vergrößert.
+- **CORS-Konfiguration ungetestet.**
+- **Login-Timing-Seitenkanal** (Konto-Enumeration über `bcrypt.compare`-
+  Timing).
+- **Rate Limiter pro Prozess** (Skalierungsgrenze bei mehreren Instanzen).
+- **Kein Recht-auf-Löschung-/Anonymisierungspfad** für Benutzer- oder
+  Trainingsdaten — inzwischen zusätzlich relevant für Trainer-Feedback
+  (Stage 1B.2B2B), das dauerhaft beim Mitglied verbleibt.
 
 ## Klare Grenze des nächsten Auftrags
 
-Der nächste Auftrag sollte sich ausdrücklich auf **Member-seitige Session-Ausführung und -Historie** beschränken (Punkte 1–2 oben) und explizit ausschließen:
-- Coach-Resultatansicht/-Dashboard (eigener späterer Auftrag),
-- jede Änderung am bereits stabilen, getesteten Backend-Vertrag aus Stage 1B.2B1 (nur konsumieren, nicht ändern),
-- Betriebs-/Infrastrukturthemen (Backup, E-Mail-Provider, DB-Rollen) — diese sind unabhängige, nicht-blockierende Stränge, die separat beauftragt werden sollten.
+Unabhängig davon, ob operativ oder funktional priorisiert wird, sollte der
+nächste Auftrag ausdrücklich ausschließen:
+- jede Änderung am bereits stabilen, getesteten Feedback-Datenmodell aus
+  Stage 1B.2B2B (append-only bleibt append-only, außer explizit neu
+  beauftragt),
+- die in Stage 1B.2B2B Abschnitt „Klare Grenze zu späteren Phasen"
+  aufgeführten Themen (Chat, Reaktionen, KI-Feedback, Analytics-Dashboard,
+  Churn-Risk, Körpergewicht/Fotos, Check-ins, Zahlungen, Community,
+  Wearables, native Apps, Offline/PWA, White Label, Microservices,
+  Kubernetes) ohne explizite neue Freigabe.
 
-Diese Empfehlung ersetzt keine explizite Freigabe. Eine neue Phase — einschließlich Stage 1B.2B2 — wird erst nach ausdrücklicher Zustimmung des Auftraggebers begonnen.
+Diese Empfehlung ersetzt keine explizite Freigabe. Eine neue Phase wird erst
+nach ausdrücklicher Zustimmung des Auftraggebers begonnen.

@@ -557,3 +557,68 @@ Zusätzliche Stage-1B.2B1-Smokes nach Freigabe:
       Leistungsdaten
 - [ ] Frontend liefert ausschließlich den API-Client aus; keine neue
       Session-/Set-Logger-UI, kein Coach-Dashboard für Ergebnisse
+      *(Hinweis: dieser Punkt beschrieb den Stand unmittelbar nach Stufe
+      1B.2B1; Stufe 1B.2B2A hat die Member-UI und Stufe 1B.2B2B das
+      Coach-Ergebnis-Dashboard seither bewusst nachgeliefert, siehe unten.)*
+
+## Ergänzung für Stufe 1B.2B2B
+
+Stufe 1B.2B2B ergänzt Migration `008_studio_workout_session_feedback`. Sie
+erstellt ausschließlich die Tabelle `studio_workout_session_feedback` und
+verändert weder die drei Stage-1B.2B1-Tabellen noch eine der übrigen
+bestehenden Studio- oder persönlichen Tabellen. Vor der Migration müssen
+deshalb alle bisherigen Tabellen als bereits vorhanden und die neue Tabelle
+als noch nicht vorhanden im Preflight dokumentiert werden.
+
+Der kontrollierte Produktionsablauf bleibt unverändert: aktuelles
+verifiziertes Backup, Doctor, explizites Migrationsziel, genau ein
+Migrations-Owner, Migration, Doctor/Status und ein zweiter No-op-Lauf. Nach
+008 muss der Doctor zusätzlich Tabelle, Spalten, Indizes, Foreign Keys und
+den benannten Check der neuen Tabelle als sauber melden.
+
+Alle Foreign Keys von `studio_workout_session_feedback` sind `ON DELETE
+CASCADE` (Studio, Session, Beziehung, Coach-Mitgliedschaft), mit einer
+bewussten Ausnahme: `fk_workout_session_feedback_author` (auf `users`) ist
+`ON DELETE RESTRICT` — ein Autor-Benutzerdatensatz darf nicht verschwinden,
+solange sein Feedback noch existiert (anders als bei den Stage-1B.2B1-
+Tabellen, wo kein direkter Bezug zu `users` besteht).
+
+Zusätzliche Stage-1B.2B2B-Smokes nach Freigabe:
+
+- ein Coach mit aktiver, session-pinnender Beziehung kann auf einer
+  `completed`/`aborted`-Session Feedback erstellen; auf einer `in_progress`-
+  Session liefert derselbe Versuch `WORKOUT_FEEDBACK_SESSION_NOT_TERMINAL`;
+- wiederholtes Senden mit demselben `clientFeedbackKey` und identischem Text
+  liefert denselben Datensatz zurück (kein Duplikat); derselbe Schlüssel mit
+  abweichendem Text liefert `WORKOUT_FEEDBACK_KEY_CONFLICT`;
+- Owner und Admin ohne eigene aktive Beziehung zum Mitglied erhalten
+  identisch `WORKOUT_SESSION_NOT_FOUND` wie ein fremder Trainer — **kein**
+  Rollen-Bypass für Feedback-Lesen oder -Erstellen;
+- ein neuer Coach, der nach Ende einer früheren Beziehung erneut mit
+  demselben Mitglied verknüpft wird, erhält **keinen** automatischen Zugriff
+  auf Sessions oder Feedback aus der früheren Beziehung
+  (`coaching_relationship_id`-Pinning);
+- das Beenden der Coaching-Beziehung entzieht dem Coach sofort Lese- und
+  Schreibzugriff auf Feedback, ohne bereits erhaltenes Feedback beim
+  Mitglied zu löschen;
+- das Audit-Ereignis `workout_feedback.created` enthält ausschließlich
+  `feedbackId` und `sessionId`, niemals den Feedbacktext;
+- der bestehende Footer wurde vollständig entfernt (kein `<footer>`-Element
+  auf irgendeiner Route, kein horizontaler Overflow bei 1440/1024/768/390px).
+
+### Zusätzliche Release-Checks
+
+- [ ] Migration 008 auf leerer und bestehender Stage-1B.2B1-Datenbank grün
+- [ ] Studio-Cascade-Delete-Test (kein Waisenrisiko für die neue Tabelle,
+      zusammen mit allen bestehenden Tabellen) grün
+- [ ] Idempotenz-/Konflikt-Test für `clientFeedbackKey` grün (inkl.
+      `ER_DUP_ENTRY`-Race-Zweig)
+- [ ] negative Tenant-/Beziehungs-Isolationstests für Feedback grün, inkl.
+      Beziehungs-Pinning-Test (neue Beziehung erbt keinen Zugriff auf alte
+      Session/altes Feedback)
+- [ ] Audit-Test für `workout_feedback.created` grün, enthält nie den
+      Feedbacktext
+- [ ] Chromium-E2E `coachFeedback.spec.js` grün (Coach-Flow, Mitglieds-
+      Ansicht, Zugriffsverweigerung, Footer-Entfernung, Axe-Smokes)
+- [ ] Produktionsbuild und `npm audit --audit-level=high` in Backend und
+      Frontend ohne Befunde

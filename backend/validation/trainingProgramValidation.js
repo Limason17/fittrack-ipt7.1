@@ -167,6 +167,17 @@ function validateCoachingRelationshipPatchPayload(body) {
     };
 }
 
+function validateListOwnCoachingRelationshipsQuery(query = {}) {
+    exactKeys(query, ["page", "limit", "status"]);
+    const page = positiveQueryInteger(query.page, "page", 1, 1_000_000);
+    const limit = positiveQueryInteger(query.limit, "limit", 20, 100);
+    const result = { page, limit, offset: (page - 1) * limit, status: "active" };
+    if (Object.hasOwn(query, "status")) {
+        result.status = requiredChoice(query.status, "status", ["active", "ended"]);
+    }
+    return result;
+}
+
 // ---- Training programs ----
 
 function validateCreateProgramPayload(body) {
@@ -367,6 +378,7 @@ module.exports = {
     validateCreateVersionPayload,
     validateDayPatchPayload,
     validateExercisePatchPayload,
+    validateListOwnCoachingRelationshipsQuery,
     validatePagination,
     validateProgramPatchPayload,
     validatePublicId,

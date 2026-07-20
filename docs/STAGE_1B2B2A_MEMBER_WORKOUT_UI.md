@@ -314,10 +314,23 @@ mobilen Bildschirmtastatur.
 - Der Status-Filter in der Historie wirkt nur auf die aktuell geladene Seite
   (identischer, bereits etablierter Präzedenzfall wie in
   `ProgramAssignmentsView.vue`).
-- Der aus Stage 1B.1/1B.2B1 bekannte, dokumentierte kosmetische
+- ~~Der aus Stage 1B.1/1B.2B1 bekannte, dokumentierte kosmetische
   Datum/Zeitzonen-Anzeigefehler bei `DATE_FORMAT`-Vergleichen in der
   Zuweisungs-API besteht unverändert fort und wurde in dieser Phase nicht
-  behoben (außerhalb des Auftragsumfangs).
+  behoben (außerhalb des Auftragsumfangs).~~ **Nachtrag (2026-07-20):** Dieser
+  Punkt war zum Zeitpunkt der Erstdokumentation zutreffend, ist aber
+  inzwischen überholt. Der direkte Folgecommit `08310cf` ("Stabilize member
+  workout continuation and date handling") hat den gemeinsam genutzten
+  `ASSIGNMENT_SELECT` in `programAssignmentService.js` auf
+  `DATE_FORMAT(starts_on, '%Y-%m-%d')`/`DATE_FORMAT(ends_on, '%Y-%m-%d')`
+  umgestellt. Verifiziert im Zuge der Stage-1B.2B2B-Release-Gate-Prüfung: Alle
+  sechs Zuweisungs-Endpunkte (create/list/get/update/listOwn/getOwnDetail)
+  nutzen denselben Query- und Mapper-Pfad und liefern `startsOn`/`endsOn`
+  ausschließlich als `null` oder exaktes `YYYY-MM-DD`, nie mit Zeit- oder
+  Zeitzonenanteil — bestätigt durch den bestehenden, weiterhin grünen
+  Regressionstest „startsOn/endsOn are returned as plain calendar dates,
+  never a timestamp or timezone-shifted value" in
+  `backend/test/integration/workoutSessionApi.test.js`.
 
 ## Klare Grenze zu Stage 1B.2B2B
 

@@ -655,3 +655,97 @@ Ein Stage-1B.2B1-Restore-Drill ergänzt den Stage-1B.1-Drill um mindestens:
 Die monatliche Drill-Dokumentation nimmt zusätzlich Migration-007-Status, die drei
 Stage-1B.2B1-Counts, das Ergebnis der Session-/Übungs-/Satz-Invarianten und das
 Ergebnis der negativen Coach-Zugriffsprobe auf.
+
+## Ergänzung für Stufe 1B.2B2B
+
+Logische Backups enthalten nach Migration 008 zusätzlich die Tabelle
+`studio_workout_session_feedback`. Migration 008 ist additiv: Sie legt
+ausschließlich eine neue Tabelle an und verändert weder die Stage-0/1A/1B.1/
+1B.2B1-Tabellen noch deren Zeilen. Persönliche Trainingsdaten (`workouts`,
+`workout_exercises`, `progress_entries`) bleiben unverändert und vollständig
+entkoppelt.
+
+**Gleicher Schutzbedarf wie die Stage-1B.2B1-Satzresultate.** Feedbacktext
+in `studio_workout_session_feedback.body` ist personenbezogene, sensible
+Trainingskommunikation und laut `STAGE_1B2B2B_COACH_RESULTS_FEEDBACK.md`
+derselben höchsten Schutzstufe (P4) wie die Satzresultate zuzuordnen. Anders
+als bei Satzresultaten gibt es hier **keinen** Update-/Delete-Pfad überhaupt
+— die Tabelle ist per Schema-Design append-only (kein PATCH/DELETE-Endpunkt).
+
+Vor und nach einem Stage-1B.2B2B-Backup/Restore mindestens diesen Count
+erfassen:
+
+```sql
+SELECT COUNT(*) FROM studio_workout_session_feedback;
+```
+
+Zusätzliche Restore-Invarianten:
+
+```sql
+-- der Idempotenzschlüssel ist pro Session und Coach-Mitgliedschaft eindeutig
+SELECT workout_session_id, coach_membership_id, client_feedback_key, COUNT(*) AS total
+FROM studio_workout_session_feedback
+GROUP BY workout_session_id, coach_membership_id, client_feedback_key
+HAVING COUNT(*) > 1;
+
+-- body respektiert die Längengrenze (Schema-CHECK, hier zusätzlich verifiziert)
+SELECT COUNT(*) FROM studio_workout_session_feedback
+WHERE CHAR_LENGTH(body) < 1 OR CHAR_LENGTH(body) > 2000;
+
+-- keine verwaisten Feedback-Zeilen unterhalb Studio, Session, Beziehung oder Mitgliedschaft
+SELECT 'studio' AS source, COUNT(*) AS total
+FROM studio_workout_session_feedback f LEFT JOIN studios s ON s.id = f.studio_id
+WHERE s.id IS NULL
+UNION ALL
+SELECT 'session', COUNT(*)
+FROM studio_workout_session_feedback f
+LEFT JOIN studio_workout_sessions ws ON ws.id = f.workout_session_id
+WHERE ws.id IS NULL
+UNION ALL
+SELECT 'relationship', COUNT(*)
+FROM studio_workout_session_feedback f
+LEFT JOIN studio_coaching_relationships r ON r.id = f.coaching_relationship_id
+WHERE r.id IS NULL
+UNION ALL
+SELECT 'coach_membership', COUNT(*)
+FROM studio_workout_session_feedback f
+LEFT JOIN studio_memberships m ON m.id = f.coach_membership_id
+WHERE m.id IS NULL;
+
+-- jede Feedback-Zeile referenziert die Coaching-Beziehung, die zu ihrer
+-- eigenen coach_membership_id passt (kein Bezug auf eine fremde Beziehung)
+SELECT f.id
+FROM studio_workout_session_feedback f
+JOIN studio_coaching_relationships r ON r.id = f.coaching_relationship_id
+WHERE r.coach_membership_id <> f.coach_membership_id;
+
+-- persönliche Trainingsdaten bleiben unverändert und ohne Bezug zur
+-- Stage-1B.2B2B-Tabelle
+SELECT COUNT(*) FROM workouts;
+SELECT COUNT(*) FROM workout_exercises;
+SELECT COUNT(*) FROM progress_entries;
+```
+
+Alle Invarianten-Abfragen müssen null Zeilen bzw. `total = 0` liefern, und der
+Count-Block vor und nach dem Restore muss identisch sein. Zusätzlich muss
+`npm run db:migrate:doctor` nach dem Restore weiterhin `ready` mit Exitcode
+`0` melden und dabei auch die Migration `008_studio_workout_session_feedback`
+abdecken.
+
+Ein Stage-1B.2B2B-Restore-Drill ergänzt den Stage-1B.2B1-Drill um mindestens:
+
+1. read-only Abruf des eigenen Feedbacks durch einen bekannten
+   Mitglied-Testbenutzer (`GET .../workout-sessions/:id/feedback`), ohne dass
+   Feedback eines anderen Mitglieds sichtbar wird;
+2. negative Probe: ein Trainer-Testbenutzer ohne (mehr) aktive Beziehung zu
+   diesem Mitglied erhält denselben Not-Found-Fehler wie bei einer nicht
+   existierenden Session — kein Bypass über die Rolle Owner/Admin, kein
+   automatischer Zugriff über eine neuere, andere Beziehung zum selben
+   Mitglied auf ein Feedback aus einer früheren Beziehung;
+3. Vergleich eines bekannten `workout_feedback.created`-Audit-Ereignisses:
+   Es darf ausschließlich `feedbackId` und `sessionId` enthalten, nie den
+   Feedbacktext selbst.
+
+Die monatliche Drill-Dokumentation nimmt zusätzlich Migration-008-Status, den
+Stage-1B.2B2B-Count, das Ergebnis der Feedback-Invarianten und das Ergebnis
+der negativen Feedback-Zugriffsprobe auf.

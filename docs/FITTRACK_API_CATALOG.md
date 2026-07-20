@@ -1,6 +1,6 @@
 # FitTrack API-Katalog
 
-Stand: 2026-07-19, geprüfter Commit `8a8da30` (main, PR #7 zuletzt integriert). Diese Liste wurde ausschließlich durch vollständiges Lesen aller sieben Router-Dateien, beider Middleware-Dateien, der Policy-/Domain-Module, aller fünf Validierungsmodule und aller Service-Module erstellt — keine erfundenen Endpunkte.
+Stand: 2026-07-20, Branch `feature/stage-1b2b2b-coach-results-feedback` (Stage 1B.2B2B). Ergänzt um `GET .../coaching-relationships/me`, den Statusfilter auf `.../coached-members/:membershipId/workout-sessions` sowie die neuen Feedback-Routen; alle übrigen Zeilen unverändert aus dem vorherigen Stand übernommen.
 
 ## Globale Konventionen
 
@@ -18,7 +18,7 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main, PR #7 zuletzt integriert).
 | **P1 – Konto/Identität** | Account-Metadaten, Einstellungen | Auth/Users |
 | **P2 – Persönliche Trainingsdaten** | Eigene, private Trainingsleistungen | Exercises, Workouts, Progress |
 | **P3 – Studio-Geschäftsdaten** | Organisatorische Metadaten ohne Leistungsdaten | Studios, Memberships, Invitations, Audit, Coaching, Trainingsprogramme, Versionen, Tage, Übungen (Vorgaben), Assignments |
-| **P4 – Studio-Leistungsdaten (höchste Schutzstufe)** | Tatsächliche Trainingsergebnisse einer identifizierbaren Person | Workout-Sessions, Session-Exercises, Session-Sets, Coach-Resultatzugriff |
+| **P4 – Studio-Leistungsdaten (höchste Schutzstufe)** | Tatsächliche Trainingsergebnisse einer identifizierbaren Person | Workout-Sessions, Session-Exercises, Session-Sets, Coach-Resultatzugriff, Trainings-Feedback |
 
 ---
 
@@ -99,6 +99,7 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main, PR #7 zuletzt integriert).
 | GET | `.../coaching-relationships` | JWT | owner/admin/trainer | Studio-Kontext (Trainer nur eigene, Owner/Admin ungefiltert) | Beziehungen listen | page, limit | coachingRelationships, pagination | Ja | 401, 403, 404 | P3 | CoachingRelationshipsView.vue | Component+Integration |
 | POST | `.../coaching-relationships` | JWT | owner/admin | Studio-Kontext | Beziehung erstellen | coachMembershipId, memberMembershipId | coachingRelationship{...} | Nein | 400, 401, 403, 404, 409 | P3 | CoachingRelationshipsView.vue | Component+Integration |
 | PATCH | `.../coaching-relationships/:id` | JWT | owner/admin | Studio-Kontext | Beziehung beenden | status="ended" | coachingRelationship{...} | Nein | 400, 401, 403, 404, 409 | P3 | CoachingRelationshipsView.vue | Component+Integration |
+| GET | `.../coaching-relationships/me` | JWT | owner/admin/trainer | Studio-Kontext, **immer `coach_membership_id = actor`, kein Rollen-Bypass** | Eigene Coaching-Beziehungen listen (Stage 1B.2B2B) | page, limit, status (active\|ended, Default active) | coachingRelationships, pagination | Ja | 400, 401, 403, 404 | P3 | CoachResultsView.vue | Unit+Integration+Component+E2E |
 
 ## Trainingsprogramme — `backend/routes/trainingProgramV1.js`
 
@@ -172,10 +173,21 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main, PR #7 zuletzt integriert).
 
 ## Coach-Resultatzugriff — `backend/routes/workoutSessionV1.js`
 
+Zugriff erfordert immer: Akteur-Mitgliedschaft aktiv, Rolle owner/admin/trainer, Akteur ist exakt der Coach der Beziehung, Beziehung aktiv, Mitglied-Mitgliedschaft aktiv, **und** (Stage 1B.2B2B) die Session gehört zu genau dieser Coaching-Beziehung (`coaching_relationship_id`-Pinning — eine spätere, andere aktive Beziehung mit demselben Mitglied gewährt keinen Zugriff auf Sessions einer früheren Beziehung). Owner/Admin haben **keinen** automatischen Zugriff; jede Verweigerung liefert identisch 404 `WORKOUT_SESSION_NOT_FOUND`.
+
 | Methode | Pfad | Auth | Rollen | Tenant | Zweck | Request-Felder | Response | Pagination | Fehlercodes | Datenschutz | Frontend | Tests |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| GET | `.../coached-members/:membershipId/workout-sessions` | JWT | owner/admin/trainer **mit eigener aktiver Coaching-Beziehung, kein Rollen-Bypass** | Studio-Kontext | Sessions eines gecoachten Mitglieds listen | page, limit | workoutSessions, pagination | Ja | 401, 403, 404 (auch bei fehlender Beziehung) | **P4** | **Kein Frontend-Nutzer** | Unit+Integration |
-| GET | `.../coached-members/:membershipId/workout-sessions/:id` | JWT | wie oben | Studio-Kontext | Session eines gecoachten Mitglieds im Detail | — | workoutSession{...,member,exercises} | Nein | 401, 403, 404 | **P4** | **Kein Frontend-Nutzer** | Unit+Integration |
+| GET | `.../coached-members/:membershipId/workout-sessions` | JWT | owner/admin/trainer **mit eigener aktiver, session-pinnender Coaching-Beziehung, kein Rollen-Bypass** | Studio-Kontext | Sessions eines gecoachten Mitglieds listen, Statusfilter (Stage 1B.2B2B) | page, limit, status (in_progress\|completed\|aborted) | workoutSessions, pagination | Ja | 400, 401, 403, 404 (auch bei fehlender Beziehung) | **P4** | CoachResultsView.vue | Unit+Integration+Component+E2E |
+| GET | `.../coached-members/:membershipId/workout-sessions/:id` | JWT | wie oben | Studio-Kontext | Session eines gecoachten Mitglieds im Detail | — | workoutSession{...,member,exercises} | Nein | 401, 403, 404 | **P4** | CoachSessionDetailView.vue | Unit+Integration+Component+E2E |
+
+## Trainings-Feedback — `backend/routes/workoutSessionV1.js` (Stage 1B.2B2B, Migration 008)
+
+Feedback ist **append-only**: keine PATCH-/DELETE-Route existiert. `clientFeedbackKey` (Client-UUID) macht wiederholtes Senden derselben Nutzeraktion idempotent (`UNIQUE(workout_session_id, coach_membership_id, client_feedback_key)`); derselbe Schlüssel mit abweichendem Text liefert `409 WORKOUT_FEEDBACK_KEY_CONFLICT`. Erstellung nur auf terminalen Sessions (`completed`/`aborted`), sonst `409 WORKOUT_FEEDBACK_SESSION_NOT_TERMINAL`.
+
+| Methode | Pfad | Auth | Rollen | Tenant | Zweck | Request-Felder | Response | Pagination | Fehlercodes | Datenschutz | Frontend | Tests |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| GET | `.../workout-sessions/:sessionId/feedback` | JWT | eigenes Mitglied der Session **oder** aktuell autorisierter, session-pinnender Coach | Studio-Kontext | Feedback einer Session chronologisch listen | page, limit | workoutSessionFeedback, pagination | Ja | 401, 403, 404 | **P4** | CoachSessionDetailView.vue, WorkoutSessionView.vue | Unit+Integration+Component+E2E |
+| POST | `.../workout-sessions/:sessionId/feedback` | JWT | ausschließlich aktuell autorisierter, session-pinnender Coach, **kein Owner/Admin-Bypass** | Studio-Kontext | Feedback zu einer terminalen Session erstellen, idempotent | clientFeedbackKey, body (max. 2000 Zeichen) | workoutSessionFeedback{...} | Nein | 400, 401, 403, 404, 409 `WORKOUT_FEEDBACK_SESSION_NOT_TERMINAL`/`WORKOUT_FEEDBACK_KEY_CONFLICT` | **P4** | CoachSessionDetailView.vue | Unit+Integration+Component+E2E |
 
 ## Health — inline in `backend/startup/app.js`
 

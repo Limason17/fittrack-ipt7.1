@@ -31,19 +31,6 @@ watch(() => route.fullPath, () => { sidebarOpen.value = false })
     <main id="main-content" tabindex="-1">
       <RouterView />
     </main>
-    <footer class="site-footer">
-      <div class="page-container site-footer-inner">
-        <nav class="site-footer-meta" aria-label="Footer">
-          <a
-            href="https://disclaimer.bbzwinf.ch/"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {{ t('footer.hostingDisclaimerLink') }}
-          </a>
-        </nav>
-      </div>
-    </footer>
     <ToastHost />
   </div>
 </template>
@@ -52,11 +39,10 @@ watch(() => route.fullPath, () => { sidebarOpen.value = false })
 .app-shell {
   display: grid;
   grid-template-columns: var(--shell-sidebar-width) 1fr;
-  grid-template-rows: var(--shell-header-height) 1fr auto;
+  grid-template-rows: var(--shell-header-height) 1fr;
   grid-template-areas:
     "sidebar header"
-    "sidebar main"
-    "sidebar footer";
+    "sidebar main";
   min-height: 100vh;
 }
 
@@ -64,8 +50,7 @@ watch(() => route.fullPath, () => { sidebarOpen.value = false })
   grid-template-columns: 1fr;
   grid-template-areas:
     "header"
-    "main"
-    "footer";
+    "main";
 }
 
 .app-shell main {
@@ -73,17 +58,12 @@ watch(() => route.fullPath, () => { sidebarOpen.value = false })
   min-width: 0;
 }
 
-.app-shell .site-footer {
-  grid-area: footer;
-}
-
 @media (max-width: 1023px) {
   .app-shell {
     grid-template-columns: 1fr;
     grid-template-areas:
       "header"
-      "main"
-      "footer";
+      "main";
   }
 }
 </style>

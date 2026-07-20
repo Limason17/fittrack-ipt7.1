@@ -180,43 +180,6 @@ main {
     min-width: 0;
 }
 
-.site-footer {
-    border-top: 1px solid var(--border);
-    background: var(--surface);
-}
-
-.site-footer-inner {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 52px;
-    padding-top: 0.75rem;
-    padding-bottom: 0.75rem;
-    color: var(--text-muted);
-    font-size: var(--text-sm);
-    line-height: 1.5;
-}
-
-.site-footer-meta {
-    display: flex;
-    flex: 0 0 auto;
-    align-items: center;
-}
-
-.site-footer a {
-    color: var(--text-soft);
-    font-size: var(--text-sm);
-    font-weight: 700;
-    text-align: center;
-    text-decoration: underline;
-    text-decoration-thickness: 1px;
-    text-underline-offset: 4px;
-}
-
-.site-footer a:hover {
-    color: var(--accent-hover);
-}
-
 .page-container {
     width: 100%;
     max-width: var(--container);
@@ -789,13 +752,5 @@ main {
 
     .card {
         box-shadow: none;
-    }
-
-    .site-footer-inner {
-        min-height: 48px;
-    }
-
-    .site-footer a {
-        font-size: var(--text-xs);
     }
 }

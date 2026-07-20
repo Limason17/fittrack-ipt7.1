@@ -8,6 +8,9 @@ vi.mock('../utils/workoutSessionState', async (importOriginal) => {
   return { ...actual, useWorkoutSession: vi.fn() }
 })
 
+const feedbackApi = vi.hoisted(() => ({ listWorkoutSessionFeedback: vi.fn() }))
+vi.mock('../utils/workoutSessionApi', () => feedbackApi)
+
 import WorkoutSessionView from './WorkoutSessionView.vue'
 import { authToken, authUser } from '../utils/auth'
 import { locale } from '../utils/i18n'
@@ -117,6 +120,8 @@ describe('WorkoutSessionView', () => {
     authToken.value = 'token'
     authUser.value = { id: 1, username: 'Member' }
     locale.value = 'de'
+    feedbackApi.listWorkoutSessionFeedback.mockReset()
+    feedbackApi.listWorkoutSessionFeedback.mockResolvedValue({ workoutSessionFeedback: [], pagination: { total: 0 } })
   })
 
   afterEach(() => {
@@ -289,5 +294,75 @@ describe('WorkoutSessionView', () => {
 
     wrapper.unmount()
     expect(controller.reset).toHaveBeenCalled()
+  })
+
+  it('does not show or load a coach-feedback section for an in-progress session', async () => {
+    await mountView(makeController())
+    await flushPromises()
+
+    expect(feedbackApi.listWorkoutSessionFeedback).not.toHaveBeenCalled()
+    expect(wrapper.text()).not.toContain('Feedback deines Trainers')
+  })
+
+  it('loads and shows coach feedback for a completed session', async () => {
+    feedbackApi.listWorkoutSessionFeedback.mockResolvedValue({
+      workoutSessionFeedback: [
+        { id: 'fb-1', coach: { membershipId: 'm-1', displayName: 'Coach Carla' }, body: 'Great squat depth.', createdAt: '2026-01-02T10:00:00.000Z' },
+      ],
+      pagination: { total: 1 },
+    })
+    const completedSession = makeSession({
+      status: 'completed', completedAt: '2026-01-01T12:00:00.000Z',
+      exercises: [makeExercise({ status: 'completed', sets: [makeSet({ status: 'completed', actualReps: 8 })] })],
+    })
+    await mountView(makeController({ session: completedSession }))
+    await flushPromises()
+
+    expect(feedbackApi.listWorkoutSessionFeedback).toHaveBeenCalledWith('studio-a', 'session-1', { page: 1, limit: 100 })
+    expect(wrapper.text()).toContain('Feedback deines Trainers')
+    expect(wrapper.text()).toContain('Coach Carla')
+    expect(wrapper.text()).toContain('Great squat depth.')
+  })
+
+  it('shows an empty state when a completed session has no feedback yet', async () => {
+    const completedSession = makeSession({
+      status: 'completed', completedAt: '2026-01-01T12:00:00.000Z',
+      exercises: [makeExercise({ status: 'completed', sets: [makeSet({ status: 'completed', actualReps: 8 })] })],
+    })
+    await mountView(makeController({ session: completedSession }))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Du hast zu dieser Trainingseinheit noch kein Feedback erhalten.')
+  })
+
+  it('shows coach feedback for an aborted session as well', async () => {
+    feedbackApi.listWorkoutSessionFeedback.mockResolvedValue({
+      workoutSessionFeedback: [
+        { id: 'fb-1', coach: { membershipId: 'm-1', displayName: 'Coach Carla' }, body: 'No worries, rest up.', createdAt: '2026-01-02T10:00:00.000Z' },
+      ],
+      pagination: { total: 1 },
+    })
+    const abortedSession = makeSession({ status: 'aborted', abortedAt: '2026-01-01T12:00:00.000Z' })
+    await mountView(makeController({ session: abortedSession }))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('No worries, rest up.')
+  })
+
+  it('member cannot reply to, edit, or delete feedback: no such controls are rendered', async () => {
+    feedbackApi.listWorkoutSessionFeedback.mockResolvedValue({
+      workoutSessionFeedback: [
+        { id: 'fb-1', coach: { membershipId: 'm-1', displayName: 'Coach Carla' }, body: 'Solid work.', createdAt: '2026-01-02T10:00:00.000Z' },
+      ],
+      pagination: { total: 1 },
+    })
+    const completedSession = makeSession({
+      status: 'completed', completedAt: '2026-01-01T12:00:00.000Z',
+      exercises: [makeExercise({ status: 'completed', sets: [makeSet({ status: 'completed', actualReps: 8 })] })],
+    })
+    await mountView(makeController({ session: completedSession }))
+    await flushPromises()
+
+    expect(wrapper.findAll('button').some((b) => /antworten|bearbeiten|löschen/i.test(b.text()))).toBe(false)
   })
 })

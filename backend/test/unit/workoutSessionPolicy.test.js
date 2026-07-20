@@ -8,6 +8,7 @@ const {
     canStartWorkoutSession,
     hasStudioPermission,
     sessionCompletionEligibility,
+    workoutFeedbackCreateEligibility,
     workoutResultReadEligibility
 } = require("../../domain/studioPolicy");
 
@@ -208,5 +209,60 @@ test("workoutResultReadEligibility requires an active coaching relationship for 
         workoutResultReadEligibility({ actorRole: "member", coachingRelationship: activeRelationship() }).allowed,
         false,
         "a member is never a coach reader, even with a relationship row present"
+    );
+});
+
+test("workoutFeedbackCreateEligibility requires exactly the same coach access as reading results, plus a terminal session", () => {
+    for (const role of ["owner", "admin", "trainer"]) {
+        assert.equal(
+            workoutFeedbackCreateEligibility({
+                actorRole: role, coachingRelationship: activeRelationship(), sessionStatus: "completed"
+            }).allowed,
+            true,
+            `${role} with an active relationship on a completed session should be eligible`
+        );
+        assert.equal(
+            workoutFeedbackCreateEligibility({
+                actorRole: role, coachingRelationship: activeRelationship(), sessionStatus: "aborted"
+            }).allowed,
+            true,
+            `${role} with an active relationship on an aborted session should be eligible`
+        );
+    }
+});
+
+test("workoutFeedbackCreateEligibility rejects an in_progress session even for an otherwise-eligible coach", () => {
+    const decision = workoutFeedbackCreateEligibility({
+        actorRole: "trainer", coachingRelationship: activeRelationship(), sessionStatus: "in_progress"
+    });
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.reason, "WORKOUT_FEEDBACK_SESSION_NOT_TERMINAL");
+});
+
+test("workoutFeedbackCreateEligibility gives owner/admin no bypass without their own active relationship", () => {
+    for (const role of ["owner", "admin"]) {
+        assert.equal(
+            workoutFeedbackCreateEligibility({
+                actorRole: role, coachingRelationship: null, sessionStatus: "completed"
+            }).allowed,
+            false,
+            `${role} without a relationship must not be able to create feedback`
+        );
+        assert.equal(
+            workoutFeedbackCreateEligibility({
+                actorRole: role, coachingRelationship: activeRelationship({ status: "ended" }), sessionStatus: "completed"
+            }).allowed,
+            false,
+            `${role} with an ended relationship must not be able to create feedback`
+        );
+    }
+});
+
+test("workoutFeedbackCreateEligibility never allows a member to author feedback", () => {
+    assert.equal(
+        workoutFeedbackCreateEligibility({
+            actorRole: "member", coachingRelationship: activeRelationship(), sessionStatus: "completed"
+        }).allowed,
+        false
     );
 });

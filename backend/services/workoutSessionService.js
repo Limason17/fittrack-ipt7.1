@@ -260,7 +260,7 @@ function createWorkoutSessionService({ database, generatePublicId = createPublic
              WHERE studio_id = ? AND coach_membership_id = ? AND member_membership_id = ? AND status = 'active'`,
             [studioInternalId, actor.internalId, memberMembershipInternalId]
         );
-        return rows[0] ? { status: rows[0].status } : null;
+        return rows[0] ? { internalId: Number(rows[0].id), status: rows[0].status } : null;
     }
 
     // ---- Start ----
@@ -727,7 +727,7 @@ function createWorkoutSessionService({ database, generatePublicId = createPublic
 
     // ---- Coach read access ----
 
-    async function listCoachedMemberSessions(context, memberMembershipPublicId, pagination) {
+    async function listCoachedMemberSessions(context, memberMembershipPublicId, queryOptions) {
         return helpers.withLockedStudioAccess(
             context,
             PERMISSIONS.WORKOUT_RESULT_READ_COACHED,
@@ -747,20 +747,35 @@ function createWorkoutSessionService({ database, generatePublicId = createPublic
                 });
                 if (!decision.allowed) throw new WorkoutSessionNotFoundError();
 
+                // Pinned to the actor's current active relationship, not merely "any session
+                // this member has": a session belongs to whichever coaching relationship was
+                // active when it was started, and a later coach - even for the same member -
+                // gains no automatic access to sessions recorded under a prior, now-ended
+                // relationship. Ending a relationship therefore revokes access to exactly the
+                // sessions it covered, immediately, with no cross-relationship carryover.
+                const conditions = [
+                    "ws.studio_id = ?", "ws.member_membership_id = ?", "ws.coaching_relationship_id = ?"
+                ];
+                const params = [studio.internalId, memberMembership.internalId, relationship.internalId];
+                if (queryOptions.status) {
+                    conditions.push("ws.status = ?");
+                    params.push(queryOptions.status);
+                }
+                const whereClause = conditions.join(" AND ");
+
                 const [[countRow]] = await connection.query(
-                    `SELECT COUNT(*) AS total FROM studio_workout_sessions
-                     WHERE studio_id = ? AND member_membership_id = ?`,
-                    [studio.internalId, memberMembership.internalId]
+                    `SELECT COUNT(*) AS total FROM studio_workout_sessions ws WHERE ${whereClause}`,
+                    params
                 );
                 const [rows] = await connection.query(
-                    `${SESSION_SELECT} WHERE ws.studio_id = ? AND ws.member_membership_id = ?
+                    `${SESSION_SELECT} WHERE ${whereClause}
                      ORDER BY ws.started_at DESC, ws.id DESC
                      LIMIT ? OFFSET ?`,
-                    [studio.internalId, memberMembership.internalId, pagination.limit, pagination.offset]
+                    [...params, queryOptions.limit, queryOptions.offset]
                 );
                 return {
                     workoutSessions: rows.map((row) => publicSession(sessionFromRow(row), { includeMember: true })),
-                    pagination: paginationResult(Number(countRow.total), pagination)
+                    pagination: paginationResult(Number(countRow.total), queryOptions)
                 };
             }
         );
@@ -786,9 +801,14 @@ function createWorkoutSessionService({ database, generatePublicId = createPublic
                 });
                 if (!decision.allowed) throw new WorkoutSessionNotFoundError();
 
+                // Same pin as listCoachedMemberSessions: only sessions recorded under the
+                // actor's own current active relationship with this member, never a session
+                // from a prior, now-ended relationship - including one with the same coach.
                 const [rows] = await connection.query(
-                    `${SESSION_SELECT} WHERE ws.studio_id = ? AND ws.public_id = ? AND ws.member_membership_id = ?`,
-                    [studio.internalId, sessionPublicId, memberMembership.internalId]
+                    `${SESSION_SELECT}
+                     WHERE ws.studio_id = ? AND ws.public_id = ? AND ws.member_membership_id = ?
+                       AND ws.coaching_relationship_id = ?`,
+                    [studio.internalId, sessionPublicId, memberMembership.internalId, relationship.internalId]
                 );
                 if (rows.length === 0) throw new WorkoutSessionNotFoundError();
                 const session = sessionFromRow(rows[0]);

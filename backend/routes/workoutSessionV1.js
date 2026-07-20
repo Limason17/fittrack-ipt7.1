@@ -9,23 +9,27 @@ const {
 const { PERMISSIONS } = require("../domain/studioPolicy");
 const { createStudioService } = require("../services/studioService");
 const { createWorkoutSessionService } = require("../services/workoutSessionService");
+const { createWorkoutFeedbackService } = require("../services/workoutFeedbackService");
 const { validatePagination, validatePublicId } = require("../validation/trainingProgramValidation");
 const {
     validateCreateSetPayload,
+    validateListCoachedSessionsQuery,
     validateListOwnSessionsQuery,
     validateSessionExercisePatchPayload,
     validateSessionPatchPayload,
     validateSessionSetPatchPayload,
     validateStartSessionPayload
 } = require("../validation/workoutSessionValidation");
+const { validateCreateFeedbackPayload } = require("../validation/workoutFeedbackValidation");
 
 function createWorkoutSessionV1Router({
     studioService = createStudioService({ database: db.promise() }),
     workoutSessionService = createWorkoutSessionService({ database: db.promise() }),
+    workoutFeedbackService = createWorkoutFeedbackService({ database: db.promise() }),
     authenticate = authenticateToken
 } = {}) {
-    if (!studioService || !workoutSessionService) {
-        throw new TypeError("Workout session v1 router requires studio and workout session services.");
+    if (!studioService || !workoutSessionService || !workoutFeedbackService) {
+        throw new TypeError("Workout session v1 router requires studio, workout session, and workout feedback services.");
     }
     if (typeof authenticate !== "function") {
         throw new TypeError("Workout session v1 router requires authentication middleware.");
@@ -153,7 +157,7 @@ function createWorkoutSessionV1Router({
         async (req, res) => {
             const memberMembershipId = validatePublicId(req.params.memberMembershipId, "memberMembershipId");
             const result = await workoutSessionService.listCoachedMemberSessions(
-                req.studioContext, memberMembershipId, validatePagination(req.query)
+                req.studioContext, memberMembershipId, validateListCoachedSessionsQuery(req.query)
             );
             res.json(result);
         }
@@ -169,6 +173,33 @@ function createWorkoutSessionV1Router({
                 req.studioContext, memberMembershipId, sessionId
             );
             res.json({ workoutSession: session });
+        }
+    );
+
+    // ---- Session feedback (member-own read, coach read/create) ----
+
+    router.get(
+        "/studios/:studioId/workout-sessions/:sessionId/feedback",
+        authenticate, context, permission(PERMISSIONS.WORKOUT_SESSION_MANAGE_SELF),
+        async (req, res) => {
+            const sessionId = validatePublicId(req.params.sessionId, "sessionId");
+            const result = await workoutFeedbackService.listFeedback(
+                req.user.id, req.studioContext, sessionId, validatePagination(req.query)
+            );
+            res.json(result);
+        }
+    );
+
+    router.post(
+        "/studios/:studioId/workout-sessions/:sessionId/feedback",
+        authenticate, context, permission(PERMISSIONS.WORKOUT_RESULT_READ_COACHED),
+        async (req, res) => {
+            const sessionId = validatePublicId(req.params.sessionId, "sessionId");
+            const input = validateCreateFeedbackPayload(req.body);
+            const feedback = await workoutFeedbackService.createFeedback(
+                req.user.id, req.studioContext, sessionId, input
+            );
+            res.status(201).json({ workoutSessionFeedback: feedback });
         }
     );
 

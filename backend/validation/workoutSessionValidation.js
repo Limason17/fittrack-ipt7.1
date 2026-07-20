@@ -232,9 +232,23 @@ function validateSessionSetPatchPayload(body) {
     return result;
 }
 
+// ---- List a coached member's workout sessions ----
+
+function validateListCoachedSessionsQuery(query = {}) {
+    exactKeys(query, ["page", "limit", "status"]);
+    const page = positiveQueryInteger(query.page, "page", 1, 1_000_000);
+    const limit = positiveQueryInteger(query.limit, "limit", 20, 100);
+    const result = { page, limit, offset: (page - 1) * limit };
+    if (Object.hasOwn(query, "status")) {
+        result.status = requiredChoice(query.status, "status", ["in_progress", "completed", "aborted"]);
+    }
+    return result;
+}
+
 module.exports = {
     LIMITS,
     validateCreateSetPayload,
+    validateListCoachedSessionsQuery,
     validateListOwnSessionsQuery,
     validateSessionExercisePatchPayload,
     validateSessionPatchPayload,
