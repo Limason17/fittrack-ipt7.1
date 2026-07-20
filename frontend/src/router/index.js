@@ -185,6 +185,28 @@ const routes = [
         },
     },
     {
+        path: '/studios/:studioId/coach-results',
+        name: 'studio-coach-results',
+        component: () => import('../views/CoachResultsView.vue'),
+        meta: {
+            requiresAuth: true,
+            requiresStudio: true,
+            studioRoles: ['owner', 'admin', 'trainer'],
+            titleKey: 'routing.titles.studioCoachResults',
+        },
+    },
+    {
+        path: '/studios/:studioId/coach-results/:memberMembershipId/sessions/:sessionId',
+        name: 'studio-coach-result-session-detail',
+        component: () => import('../views/CoachSessionDetailView.vue'),
+        meta: {
+            requiresAuth: true,
+            requiresStudio: true,
+            studioRoles: ['owner', 'admin', 'trainer'],
+            titleKey: 'routing.titles.studioCoachResultSessionDetail',
+        },
+    },
+    {
         path: '/studios/:studioId/access-denied',
         name: 'studio-access-denied',
         component: () => import('../views/StudioAccessDeniedView.vue'),

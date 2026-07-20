@@ -21,6 +21,14 @@ const CODE_KEYS = Object.freeze({
   VALIDATION_ERROR: 'validationError',
 })
 
+// Feedback-specific codes are mapped separately (backend/errors/WorkoutSessionErrors.js:
+// WorkoutFeedbackSessionNotTerminalError, WorkoutFeedbackKeyConflictError) since their
+// understandable messages live under studios.coachResults, not studios.workoutSessions.
+const FEEDBACK_CODE_KEYS = Object.freeze({
+  WORKOUT_FEEDBACK_SESSION_NOT_TERMINAL: 'sessionNotTerminal',
+  WORKOUT_FEEDBACK_KEY_CONFLICT: 'keyConflict',
+})
+
 export function workoutErrorCode(error) {
   return error?.data?.error?.code || null
 }
@@ -35,6 +43,8 @@ export function workoutErrorMessage(error) {
   const code = workoutErrorCode(error)
   const key = code && CODE_KEYS[code]
   if (key) return t(`studios.workoutSessions.errors.${key}`)
+  const feedbackKey = code && FEEDBACK_CODE_KEYS[code]
+  if (feedbackKey) return t(`studios.coachResults.errors.${feedbackKey}`)
   if (error?.status === 401) return t('studios.workoutSessions.errors.unauthorized')
   if (error?.status === 403) return t('studios.permissionDenied')
   if (error?.status === 404) return t('studios.workoutSessions.errors.sessionNotFound')

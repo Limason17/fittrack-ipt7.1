@@ -31,6 +31,17 @@ export function endCoachingRelationship(studioId, relationshipId, options) {
   )
 }
 
+export function listOwnCoachingRelationships(studioId, options) {
+  const { status, ...paginationOptions } = options || {}
+  const basePath = `/v1/studios/${sid(studioId)}/coaching-relationships/me`
+  const request = withPagination(basePath, paginationOptions)
+  const params = new URLSearchParams(request.path.includes('?') ? request.path.split('?')[1] : '')
+  if (status !== undefined) params.set('status', status)
+  const query = params.toString()
+  const path = query ? `${basePath}?${query}` : basePath
+  return apiRequest(path, authenticated(request.options))
+}
+
 // ---- Training programs ----
 
 export function listTrainingPrograms(studioId, options) {

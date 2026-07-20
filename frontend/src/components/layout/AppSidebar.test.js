@@ -46,6 +46,11 @@ async function mountSidebar() {
         component: { template: '<div />' },
       },
       {
+        path: '/studios/:studioId/coach-results',
+        name: 'studio-coach-results',
+        component: { template: '<div />' },
+      },
+      {
         path: '/studios/:studioId/my-training-plan',
         name: 'studio-my-training-plan',
         component: { template: '<div />' },
@@ -107,6 +112,7 @@ describe('AppSidebar role-dependent navigation', () => {
     expect(wrapper.text()).toContain('Coaching')
     expect(wrapper.text()).toContain('Trainingsprogramme')
     expect(wrapper.text()).toContain('Zuweisungen')
+    expect(wrapper.text()).toContain('Ergebnisse')
     expect(wrapper.text()).not.toContain('Mein Trainingsplan')
   })
 
@@ -122,6 +128,7 @@ describe('AppSidebar role-dependent navigation', () => {
     expect(wrapper.text()).toContain('Coaching')
     expect(wrapper.text()).toContain('Trainingsprogramme')
     expect(wrapper.text()).toContain('Zuweisungen')
+    expect(wrapper.text()).toContain('Ergebnisse')
     expect(wrapper.text()).not.toContain('Mein Trainingsplan')
   })
 
@@ -137,6 +144,7 @@ describe('AppSidebar role-dependent navigation', () => {
     expect(wrapper.text()).not.toContain('Coaching')
     expect(wrapper.text()).not.toContain('Trainingsprogramme')
     expect(wrapper.text()).not.toContain('Zuweisungen')
+    expect(wrapper.text()).not.toContain('Ergebnisse')
     expect(wrapper.text()).toContain('Mein Trainingsplan')
     expect(wrapper.text()).toContain('Meine Trainings')
   })
@@ -149,6 +157,14 @@ describe('AppSidebar role-dependent navigation', () => {
       expect(roleWrapper.text()).not.toContain('Meine Trainings')
       roleWrapper.unmount()
     }
+  })
+
+  it('does not show "Ergebnisse" to members', async () => {
+    addAndSelectStudio(studio('member'))
+    wrapper = await mountSidebar()
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('Ergebnisse')
   })
 
   it('shows the current studio role as sidebar section info', async () => {
