@@ -7,6 +7,13 @@ const {
     requestIdMiddleware,
     securityHeaders
 } = require("../middleware/httpFoundation");
+const db = require("../config/db");
+const { createStudioService } = require("../services/studioService");
+const { createInvitationOutbox } = require("../outbox/invitationOutbox");
+const { createInvitationDelivery, resolveDefaultProvider } = require("../delivery/invitationDelivery");
+const { createStudioV1Router } = require("../routes/studioV1");
+const { createTrainingProgramV1Router } = require("../routes/trainingProgramV1");
+const { createWorkoutSessionV1Router } = require("../routes/workoutSessionV1");
 
 function allowedOrigins() {
     return (process.env.CORS_ORIGIN || "")
@@ -99,15 +106,32 @@ function createReadyHandler(readiness, logger) {
     };
 }
 
-function defaultRouters() {
+// Explicit composition root for studio-tenant invitation delivery. Resolves
+// the SMTP configuration/provider from environment exactly once, builds
+// exactly one delivery/outbox/service chain from it, and every caller
+// threads that same instance explicitly into whichever router needs a
+// studio service - see the comment on resolveDefaultProvider() in
+// delivery/invitationDelivery.js for why this replaced three independent,
+// implicit per-router defaults. `env`/`database`/`transportFactory` are
+// test-only overrides; the real server never passes them and gets the
+// same behaviour as before (process.env, the real pool, real Nodemailer).
+function createDefaultStudioService({ env = process.env, database = db.promise(), transportFactory } = {}) {
+    const provider = resolveDefaultProvider(env, { transportFactory });
+    const delivery = createInvitationDelivery({ env, provider });
+    const outbox = createInvitationOutbox({ delivery });
+    return createStudioService({ database, outbox });
+}
+
+function defaultRouters({ env, database, transportFactory } = {}) {
+    const studioService = createDefaultStudioService({ env, database, transportFactory });
     return {
         users: require("../routes/users"),
         exercises: require("../routes/exercises"),
         workouts: require("../routes/workouts"),
         progress: require("../routes/progress"),
-        studioV1: require("../routes/studioV1"),
-        trainingProgramV1: require("../routes/trainingProgramV1"),
-        workoutSessionV1: require("../routes/workoutSessionV1")
+        studioV1: createStudioV1Router({ service: studioService }),
+        trainingProgramV1: createTrainingProgramV1Router({ studioService }),
+        workoutSessionV1: createWorkoutSessionV1Router({ studioService })
     };
 }
 
@@ -179,7 +203,9 @@ module.exports = {
     allowedOrigins,
     createApp,
     createCorsOptions,
+    createDefaultStudioService,
     createReadyHandler,
+    defaultRouters,
     readTrustProxyHops,
     sendLive
 };

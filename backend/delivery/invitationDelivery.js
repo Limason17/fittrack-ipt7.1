@@ -4,20 +4,26 @@ const { createSmtpInvitationProvider } = require("./smtpInvitationProvider");
 
 // Resolves the production provider purely from environment configuration.
 // Returns undefined (never throws) when INVITATION_EMAIL_PROVIDER is not
-// set to "smtp" - the default in every environment - so requiring this
-// module, or calling createInvitationDelivery() without an explicit
-// provider, has no side effect for the overwhelming majority of callers
-// (tests, dev, any deployment that has not opted in). Once explicitly
-// enabled, an invalid configuration throws synchronously here, which is
-// exactly the "detected early at startup" behaviour: this resolver only
-// ever runs as a default-parameter expression evaluated once, the first
-// time createInvitationDelivery() is called without an override - in the
-// real process that happens while the studio router module is first
-// required, i.e. at application boot, before any request is served.
-function resolveDefaultProvider(env) {
+// set to "smtp" - the default in every environment. Once explicitly
+// enabled, an invalid configuration throws synchronously, which is exactly
+// the "detected early at startup" behaviour required of it.
+//
+// This is a plain, exported function, deliberately NOT wired in as a
+// hidden createInvitationDelivery() default parameter: a prior production
+// incident traced back to exactly that pattern, repeated independently
+// across three separate router modules that each defaulted their own
+// studio service. Each one silently re-resolved (and reconstructed a
+// fresh Nodemailer transport for) the "current" SMTP provider as an
+// invisible side effect of its own default-parameter evaluation, with no
+// single place in the code that visibly showed which one instance the
+// running server actually used for a given request. The single, explicit
+// composition root in startup/app.js now calls this function itself,
+// exactly once, and threads the result down explicitly - see
+// createDefaultStudioService() there.
+function resolveDefaultProvider(env, { transportFactory } = {}) {
     const config = readSmtpConfig(env);
     if (!config) return undefined;
-    return createSmtpInvitationProvider({ config });
+    return createSmtpInvitationProvider({ config, transportFactory });
 }
 
 function deliveryUnavailable() {
@@ -54,7 +60,7 @@ function acceptanceUrl(baseUrl, token) {
     return parsed.toString();
 }
 
-function createInvitationDelivery({ env = process.env, provider = resolveDefaultProvider(env) } = {}) {
+function createInvitationDelivery({ env = process.env, provider } = {}) {
     const production = env.NODE_ENV === "production";
     const baseUrl = env.INVITATION_ACCEPT_BASE_URL || (production ? null : "http://localhost:5173");
 
@@ -109,5 +115,6 @@ module.exports = {
     acceptanceUrl,
     createInvitationDelivery,
     deliveryUnavailable,
-    parseAcceptanceBaseUrl
+    parseAcceptanceBaseUrl,
+    resolveDefaultProvider
 };

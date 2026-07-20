@@ -23,25 +23,97 @@ provider})`) blieb strukturell unverändert:
   requestId, acceptanceUrl})`, gibt `{delivered:true}` zurück — **kein**
   `acceptUrl` im Response.
 
-Neu ist ausschließlich, **woher** `provider` stammt: `createInvitationDelivery`
-löst einen fehlenden `provider` jetzt über `resolveDefaultProvider(env)` auf
-(`backend/delivery/invitationDelivery.js`). Diese Funktion liest
-`INVITATION_EMAIL_PROVIDER` aus der Umgebung:
+**Woher** `provider` stammt, wurde nach einem Produktionsvorfall (siehe
+unten) korrigiert: `backend/startup/app.js#createDefaultStudioService(...)`
+ist jetzt die **einzige, explizite Composition Root** für die
+Einladungsauslieferung. Sie ruft `resolveDefaultProvider(env)`
+(`backend/delivery/invitationDelivery.js`, exportiert, keine versteckte
+Default-Parameter-Magie mehr) selbst, genau einmal auf, baut daraus explizit
+`delivery` → `outbox` → `studioService` und reicht **dieselbe** Instanz
+explizit an alle drei studio-tenant Router weiter
+(`createStudioV1Router({service})`,
+`createTrainingProgramV1Router({studioService})`,
+`createWorkoutSessionV1Router({studioService})}` — aufgerufen aus
+`defaultRouters()`, das jetzt selbst exportiert ist). `resolveDefaultProvider`
+liest `INVITATION_EMAIL_PROVIDER` aus der Umgebung: nicht `"smtp"` (der
+Standard in jeder Umgebung) → `undefined`; `"smtp"` → validiert
+(`backend/config/smtpConfig.js`) und konstruiert den SMTP-Provider
+(`backend/delivery/smtpInvitationProvider.js`).
 
-- nicht `"smtp"` (der Standard in jeder Umgebung) → `undefined`, exakt das
-  bisherige Verhalten, keine Seiteneffekte, kein Unterschied zu vorher;
-- `"smtp"` → validiert die SMTP-Konfiguration (`backend/config/smtpConfig.js`)
-  und konstruiert den SMTP-Provider (`backend/delivery/smtpInvitationProvider.js`).
+Jeder bestehende Test, der einen eigenen `provider`/`delivery`/`service`
+injiziert (das etablierte DI-Muster aus
+`studioSecurity.test.js`/`studioApi.test.js`), bleibt davon unberührt.
 
-Diese Auflösung läuft als Default-Parameter-Ausdruck genau einmal, beim
-ersten Aufruf von `createInvitationDelivery()` ohne expliziten Provider — im
-echten Prozess passiert das, während `routes/studioV1.js` beim Serverstart
-geladen wird (dort steht bereits `const defaultRouter =
-createStudioV1Router();`), also **vor** der ersten bedienten Anfrage. Jeder
-bestehende Test, der einen eigenen `provider`/`delivery` injiziert (das
-etablierte DI-Muster aus `studioSecurity.test.js`/`studioApi.test.js`),
-bleibt davon komplett unberührt, da ein explizit übergebenes Argument den
-Default-Ausdruck gar nicht erst auswertet.
+### Produktionsvorfall und Behebung (2026-07-21)
+
+Nach dem Merge dieser Phase wurde ein reproduzierbarer Fehler gemeldet:
+`INVITATION_EMAIL_PROVIDER=smtp` und ein vollständig gültiger `SMTP_*`-Satz
+waren nachweislich in `process.env` gesetzt (verifiziert über
+`node --env-file=.env -e "console.log(process.env...)"`), der Server startete
+erfolgreich, aber `POST .../invitations` lieferte weiterhin
+`503 INVITATION_DELIVERY_UNAVAILABLE`, ohne dass je ein SMTP-Verbindungsversuch
+protokolliert wurde.
+
+**Tatsächliche, bestätigte Ursache:** Vor der Korrektur lag die
+Provider-Auflösung als **versteckter Default-Parameter-Ausdruck** in
+`createInvitationDelivery({env, provider = resolveDefaultProvider(env)})`.
+Da `routes/studioV1.js`, `routes/trainingProgramV1.js` und
+`routes/workoutSessionV1.js` **je eine eigene**, unabhängige
+`createStudioService({database: db.promise()})`-Default hatten, wurde diese
+Kette bei jedem Serverstart **dreimal unabhängig voneinander** ausgewertet —
+empirisch bestätigt über eine `Module.prototype.require`-Zählung während
+`createApp()`: drei separate `require("nodemailer")`-Aufrufe, drei separate
+gepoolte Transports, ohne dass irgendeine Stelle im Code sichtbar gemacht
+hätte, welche der drei Instanzen die tatsächlich bediente Anfrage nutzte. Ein
+exaktes, deterministisches Einzelprozess-Nachstellen des exakt gemeldeten
+Befehlsablaufs (`node --env-file=.env server.js`, echte SMTP-Konfiguration,
+echter Versandversuch) konnte den 503 selbst nicht reproduzieren — die
+implizite Kette lieferte bei einem einzelnen, frischen Prozess korrekt einen
+funktionierenden Provider. Die **strukturelle Ursache** (mehrere unabhängige,
+implizite Instanzen ohne eine einzige erkennbare Composition Root) ist jedoch
+exakt die in der Fehleranalyse verlangte Prüfkategorie „Gibt es mehrere
+Router-, Service- oder Outbox-Instanzen?" — und diese Frage war eindeutig mit
+„ja, drei" zu beantworten. Diese Fragilität wurde unabhängig vom exakten
+Auslöser behoben, da eine implizite, mehrstufige, dreifach redundante
+Default-Auflösung ohnehin nicht die geforderte „klar erkennbare, konkrete
+Delivery-Instanz" ist.
+
+**Warum die bisherigen Tests dies nicht fanden:** Jeder existierende
+SMTP-Test injizierte `provider`/`delivery` **explizit**
+(`createInvitationDelivery({env, provider: fake})`) und umging damit die
+Default-Auflösung vollständig — genau der Codepfad, der den Fehler enthielt,
+wurde von keinem Test je durchlaufen.
+
+**Wie der neue Test dies jetzt verhindert:**
+`backend/test/integration/invitationDeliveryComposition.test.js` konstruiert
+die Anwendung über exakt denselben Pfad wie `server.js`
+(`startup/app.js#defaultRouters()`/`createApp()`), mit einer echten,
+synthetischen Produktions-SMTP-Konfiguration und einem injizierten
+Fake-Transport (kein Netzwerkzugriff), und prüft: genau **ein**
+`nodemailer`-Transport wird für die gesamte Komposition gebaut (vorher: drei
+— dieser Test war vor der Korrektur nachweislich rot, siehe unten); eine
+echte HTTP-Anfrage über den echten Router liefert `delivered:true` ohne
+`acceptUrl`; der Fake-Transport erhält genau einen Sendeauftrag mit der
+korrekten Empfängeradresse. Zusätzlich getestet: Fail-Closed ohne Provider,
+frühes Scheitern bei ungültiger Konfiguration **direkt an der Composition
+Root** (nicht erst bei einer Anfrage), der Development-Preview-Vertrag,
+weiterhin funktionierende explizite Provider-Injektion, Kompensation bei
+SMTP-Fehlern über den aufgelösten Provider, sowie Unabhängigkeit von der
+Require-Reihenfolge der drei Router-Module.
+
+**Zusätzlich gefunden und behoben:** Der lokale Entwickler-`.env` mit echter
+SMTP-Konfiguration (für die Fehlerreproduktion angelegt) wurde von
+`backend/config/db.js`s dotenv-Fallback automatisch in **jeden**
+Test-/E2E-Lauf übernommen, sobald dieser nicht explizit
+`INVITATION_EMAIL_PROVIDER` überschrieb — dotenv füllt nur fehlende
+Schlüssel auf, ersetzt aber nie bereits gesetzte, sodass eine lokale
+Entwickler-Konfiguration unbeabsichtigt reale Zustellversuche in
+automatisierten Tests auslöste. Behoben durch eine explizite
+`process.env.INVITATION_EMAIL_PROVIDER = ""`-Isolation in allen betroffenen
+Backend-Integrationstests (`studioApi.test.js`, `trainingProgramApi.test.js`,
+`workoutFeedbackApi.test.js`, `workoutSessionApi.test.js`) sowie in
+`frontend/playwright.config.js`s E2E-Backend-Umgebung — dasselbe Muster wie
+die dort bereits bestehende explizite `NODE_ENV`/`DB_NAME`-Isolation.
 
 Zusätzlich wurde die Nachricht an den Outbox minimal um zwei Felder
 erweitert: `locale` (das bereits vorhandene, validierte
@@ -230,10 +302,15 @@ Dokumentation, Screenshots oder Commits verwenden.
    SMTP_FROM_NAME=FitTrack
    INVITATION_ACCEPT_BASE_URL=https://<Ihre Frontend-Domain>
    ```
-2. **Serverstart:** `npm start` (oder `npm run dev`) im Verzeichnis
-   `backend/`. Bei ungültiger, aber aktivierter Konfiguration bricht der
-   Start sofort mit `INVALID_SMTP_CONFIG` ab — das ist das gewünschte
-   Fail-Closed-Verhalten, kein Fehler im Adapter.
+2. **Serverstart:** `npm start` im Verzeichnis `backend/` (liest `.env` über
+   das bestehende dotenv-Fallback) oder äquivalent explizit
+   `node --env-file=.env server.js` — beide Wege sind gleichwertig und
+   wurden im Rahmen der Behebung dieser Phase empirisch gegeneinander
+   verifiziert. Bei ungültiger, aber aktivierter Konfiguration bricht der
+   Start sofort mit `INVALID_SMTP_CONFIG` ab, sichtbar an einer Stack-Trace,
+   die jetzt explizit über `resolveDefaultProvider` →
+   `createDefaultStudioService` → `defaultRouters` führt — das ist das
+   gewünschte Fail-Closed-Verhalten, kein Fehler im Adapter.
 3. **Testeinladung:** Als angemeldeter Owner/Admin/Trainer eine Einladung
    über die Studio-Einladungsansicht (oder direkt `POST
    /api/v1/studios/:studioId/invitations`) an eine Adresse senden, auf die
@@ -255,10 +332,12 @@ Dokumentation, Screenshots oder Commits verwenden.
    Dev/Test) zurückzukehren. Verwendete Test-Zugangsdaten beim Provider
    widerrufen/rotieren, falls sie nur für diesen Test angelegt wurden.
 
-**Klare Abgrenzung des Nachweisstands dieser Phase:**
-- **Implementiert:** vollständiger SMTP-Adapter, Konfigurationsvalidierung, TLS-Erzwingung, E-Mail-Vorlagen, Fehlerklassifikation, Kompensation, Frontend-Anpassung.
-- **Automatisiert mit Fake-Transport getestet:** alle Unit- und Integrationsszenarien aus Abschnitt „Tests" unten, vollständig ohne echten Netzwerkzugriff.
-- **Reale Provider-Verbindung:** in dieser Umgebung **nicht möglich** (keine Zugangsdaten vorhanden) — bleibt ein offener, manueller Schritt gemäß obiger Anleitung.
+**Klare Abgrenzung des Nachweisstands dieser Phase (inkl. Hotfix vom
+2026-07-21):**
+- **Implementiert:** vollständiger SMTP-Adapter, Konfigurationsvalidierung, TLS-Erzwingung, E-Mail-Vorlagen, Fehlerklassifikation, Kompensation, Frontend-Anpassung, explizite Composition Root für die Einladungsauslieferung.
+- **Automatisiert mit Fake-Transport getestet:** alle Unit- und Integrationsszenarien aus Abschnitt „Tests" unten, vollständig ohne echten Netzwerkzugriff — einschließlich, seit dem Hotfix, des tatsächlichen Standard-Kompositionspfads (`defaultRouters()`/`createApp()`), nicht mehr nur explizit injizierter Provider.
+- **Empirisch gegen den echten `server.js`-Einstiegspunkt verifiziert:** Fail-Closed-Start bei ungültiger aktivierter Konfiguration, erfolgreicher Start ohne eigenen Verbindungsversuch bei gültiger, aber unerreichbarer Konfiguration, sowie die Reduktion der SMTP-Transport-Konstruktion von drei unabhängigen Instanzen auf eine einzige.
+- **Reale Provider-Verbindung (echter Versand an einen echten Empfänger):** weiterhin **nicht durchgeführt** — in dieser Umgebung liegen weiterhin keine echten Zugangsdaten vor. Der oben dokumentierte Vorfall wurde ausschließlich mit einer künstlichen, nicht auflösbaren Testkonfiguration (`smtp.example.test` u. ä.) sowie einer echten, aber unerreichbaren Gmail-artigen Konfiguration ohne tatsächlich zugestellte E-Mail nachvollzogen. Der manuelle Gmail-Smoke-Test gemäß obiger Anleitung **muss nach diesem Hotfix erneut durchgeführt werden**, bevor der SMTP-Versand als produktiv verifiziert gilt.
 
 ## Tests
 
@@ -298,9 +377,19 @@ Dokumentation, Screenshots oder Commits verwenden.
   Response-Form. Die vollständige bestehende E2E-Suite (26/26 inkl. dieser
   4) blieb dabei unverändert grün, insbesondere der bereits bestehende
   Einladungs-Akzeptanz-Fluss in `studios.spec.js`.
-- **Weitere Regressionsgates:** vollständige Backend-Suite (342 Tests: 221
-  Unit, 92 Integration, 29 Migration/Doctor) grün; vollständige
-  Frontend-Suite (280 Tests) grün; Produktionsbuild erfolgreich; `npm audit
+- **Composition-Root-Regression** (`backend/test/integration/invitationDeliveryComposition.test.js`,
+  8 neue Tests, Hotfix vom 2026-07-21): konstruiert die Anwendung über exakt
+  denselben Pfad wie `server.js` — genau ein SMTP-Transport statt vormals
+  drei; eine echte HTTP-Anfrage durch den echten Router liefert
+  `delivered:true` ohne `acceptUrl`; Fail-Closed ohne Provider; frühes
+  Scheitern bei ungültiger Konfiguration direkt an der Composition Root;
+  Development-Preview-Vertrag; explizite Provider-Injektion überschreibt den
+  Default weiterhin; Kompensation über den aufgelösten Provider; Require-
+  Reihenfolge der drei Router-Module ändert das Ergebnis nicht.
+- **Weitere Regressionsgates:** vollständige Backend-Suite (356 Tests: 227
+  Unit, 100 Integration, 29 Migration/Doctor) grün; vollständige
+  Frontend-Suite (280 Tests) grün; vollständige Chromium-E2E-Suite (26 Tests,
+  inkl. Axe) grün; Produktionsbuild erfolgreich; `npm audit
   --audit-level=high` in Backend und Frontend je 0 Befunde; Migration
   Doctor weiterhin `ready`, `applied:8`, keine neue Migration nötig.
 

@@ -183,7 +183,11 @@ function createStudioV1Router({
     return router;
 }
 
-const defaultRouter = createStudioV1Router();
-
-module.exports = defaultRouter;
-module.exports.createStudioV1Router = createStudioV1Router;
+// No eager default-instance export here: the application's single,
+// explicit composition root (startup/app.js#defaultRouters) is what
+// decides which service instance the real server uses. Exporting only the
+// factory keeps this file from silently constructing (and discarding) its
+// own extra, independent studio service - including its own extra,
+// independent invitation delivery/SMTP provider - purely as a require()
+// side effect.
+module.exports = { createStudioV1Router };

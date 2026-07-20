@@ -14,6 +14,11 @@ process.env.JWT_SECRET = "fittrack-stage-1a-test-secret-with-at-least-32-charact
 process.env.AUTH_LOGIN_RATE_LIMIT_MAX = "100";
 process.env.AUTH_REGISTRATION_RATE_LIMIT_MAX = "100";
 process.env.INVITATION_ACCEPT_BASE_URL = "http://127.0.0.1:4173";
+// Isolate this run from any real SMTP configuration a developer may have in
+// their own local backend/.env for manual provider testing - the default,
+// non-explicit invitation flow this file exercises must always resolve to
+// the safe development/test preview contract, never a real send attempt.
+process.env.INVITATION_EMAIL_PROVIDER = "";
 
 const db = require("../../config/db");
 const { createInvitationDelivery } = require("../../delivery/invitationDelivery");
