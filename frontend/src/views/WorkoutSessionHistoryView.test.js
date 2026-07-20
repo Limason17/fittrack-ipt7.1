@@ -149,8 +149,8 @@ describe('WorkoutSessionHistoryView', () => {
     expect(wrapper.get('[role="alert"]').text().length).toBeGreaterThan(0)
   })
 
-  it('filters the currently loaded page client-side by status, without issuing a new request', async () => {
-    api.listOwnWorkoutSessions.mockResolvedValue({
+  it('sends the selected status filter to the backend instead of filtering an already-loaded page', async () => {
+    api.listOwnWorkoutSessions.mockResolvedValueOnce({
       workoutSessions: [
         session({ id: 'session-running', status: 'in_progress' }),
         session({ id: 'session-done', status: 'completed', completedAt: '2026-07-01T11:00:00.000Z' }),
@@ -160,13 +160,67 @@ describe('WorkoutSessionHistoryView', () => {
     await mountView()
     expect(api.listOwnWorkoutSessions).toHaveBeenCalledTimes(1)
 
+    api.listOwnWorkoutSessions.mockResolvedValueOnce({
+      workoutSessions: [session({ id: 'session-done', status: 'completed', completedAt: '2026-07-01T11:00:00.000Z' })],
+      pagination: { total: 1, page: 1, totalPages: 1 },
+    })
     const tabs = wrapper.findAll('[role="tab"]')
     const completedTab = tabs.find((tabButton) => tabButton.text() === 'Abgeschlossen')
     await completedTab.trigger('click')
+    await flushPromises()
 
-    expect(api.listOwnWorkoutSessions).toHaveBeenCalledTimes(1)
+    expect(api.listOwnWorkoutSessions).toHaveBeenCalledTimes(2)
+    expect(api.listOwnWorkoutSessions).toHaveBeenLastCalledWith('studio-a', { page: 1, limit: 20, status: 'completed' })
     expect(wrapper.findAll('tbody tr')).toHaveLength(1)
-    expect(wrapper.text()).toContain('Der Filter wirkt auf die aktuell geladene Seite.')
+  })
+
+  it('resets to page 1 when the status filter changes', async () => {
+    api.listOwnWorkoutSessions.mockResolvedValue({
+      workoutSessions: [session({ id: 'session-1' })],
+      pagination: { total: 40, page: 2, totalPages: 2 },
+    })
+    await mountView()
+    const nextButton = wrapper.findAll('button').find((b) => b.text() === 'Weiter')
+    await nextButton.trigger('click')
+    await flushPromises()
+    expect(api.listOwnWorkoutSessions).toHaveBeenLastCalledWith('studio-a', { page: 2, limit: 20, status: undefined })
+
+    const tabs = wrapper.findAll('[role="tab"]')
+    const abortedTab = tabs.find((tabButton) => tabButton.text() === 'Abgebrochen')
+    await abortedTab.trigger('click')
+    await flushPromises()
+
+    expect(api.listOwnWorkoutSessions).toHaveBeenLastCalledWith('studio-a', { page: 1, limit: 20, status: 'aborted' })
+  })
+
+  it('shows a filter-specific empty state when sessions exist overall but none match the selected status', async () => {
+    api.listOwnWorkoutSessions.mockResolvedValueOnce({
+      workoutSessions: [session({ id: 'session-running', status: 'in_progress' })],
+      pagination: { total: 1, page: 1, totalPages: 1 },
+    })
+    await mountView()
+
+    api.listOwnWorkoutSessions.mockResolvedValueOnce({ workoutSessions: [], pagination: { total: 0, page: 1, totalPages: 0 } })
+    const tabs = wrapper.findAll('[role="tab"]')
+    const completedTab = tabs.find((tabButton) => tabButton.text() === 'Abgeschlossen')
+    await completedTab.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Keine Trainingseinheiten mit diesem Status.')
+    expect(wrapper.text()).not.toContain('Noch keine Trainingseinheiten vorhanden.')
+  })
+
+  it('shows the generic empty state, not the filtered one, when there are no sessions at all', async () => {
+    api.listOwnWorkoutSessions.mockResolvedValue({ workoutSessions: [], pagination: { total: 0, page: 1, totalPages: 0 } })
+    await mountView()
+
+    const tabs = wrapper.findAll('[role="tab"]')
+    const completedTab = tabs.find((tabButton) => tabButton.text() === 'Abgeschlossen')
+    await completedTab.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Noch keine Trainingseinheiten vorhanden.')
+    expect(wrapper.text()).not.toContain('Keine Trainingseinheiten mit diesem Status.')
   })
 
   it('fetches the next page from the backend when paginating', async () => {

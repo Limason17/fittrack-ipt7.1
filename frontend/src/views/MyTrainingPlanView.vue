@@ -26,13 +26,12 @@ const expandedId = ref(null)
 const loadingDetailId = ref(null)
 const detailErrors = reactive({})
 
-// Maps `${assignmentId}:${programDayId}` -> in_progress session id, so an
-// already-started day is offered as "Resume" instead of "Start". Sourced
-// from a single bounded fetch of the member's own recent sessions (the
-// workout-sessions list endpoint has no status filter and no way to query
-// "is there a session for this exact assignment+day", so this is a
-// best-effort, most-recent-first scan rather than a guaranteed lookup).
-const resumableSessionByKey = ref(new Map())
+// Maps `${assignmentId}:${programDayId}` -> the member's own in_progress
+// sessions for exactly that assignment+day, loaded via the server-side
+// status/assignmentId/programDayId filter (never a scan of a bounded/paginated
+// history page), so a day's resume state is deterministic regardless of how
+// many other sessions exist or which history page they would fall on.
+const runningSessionsByKey = reactive(new Map())
 const startingKeys = reactive(new Set())
 const startErrors = reactive({})
 
@@ -52,19 +51,22 @@ function todayIso() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 }
 
-async function loadResumableSessions(currentStudioId) {
-  try {
-    const result = await listOwnWorkoutSessions(currentStudioId, { page: 1, limit: 100 })
-    const map = new Map()
-    for (const workoutSession of result.workoutSessions || []) {
-      if (workoutSession.status !== 'in_progress') continue
-      const key = dayKey(workoutSession.assignmentId, workoutSession.programDay.id)
-      if (!map.has(key)) map.set(key, workoutSession.id)
+// Loads the exact set of in_progress sessions for each of an assignment's days
+// in parallel, one targeted (status=in_progress, assignmentId, programDayId)
+// request per day. Awaited before the detail skeleton is hidden, so a day card
+// never briefly renders "Start" before a genuinely running session is known.
+async function loadRunningSessionsForAssignment(assignmentId, days) {
+  await Promise.all((days || []).map(async (day) => {
+    const key = dayKey(assignmentId, day.id)
+    try {
+      const result = await listOwnWorkoutSessions(studioId.value, {
+        status: 'in_progress', assignmentId, programDayId: day.id, limit: 5,
+      })
+      runningSessionsByKey.set(key, result.workoutSessions || [])
+    } catch {
+      runningSessionsByKey.set(key, [])
     }
-    return map
-  } catch {
-    return new Map()
-  }
+  }))
 }
 
 async function load() {
@@ -74,13 +76,9 @@ async function load() {
   isLoading.value = true
   errorMessage.value = ''
   try {
-    const [assignmentResult, resumableMap] = await Promise.all([
-      listOwnProgramAssignments(currentStudioId, { page: 1, limit: 50 }),
-      loadResumableSessions(currentStudioId),
-    ])
+    const assignmentResult = await listOwnProgramAssignments(currentStudioId, { page: 1, limit: 50 })
     if (current !== generation || currentStudioId !== studioId.value) return
     assignments.value = assignmentResult.programAssignments || []
-    resumableSessionByKey.value = resumableMap
   } catch (error) {
     if (current === generation) {
       errorMessage.value = error.status === 403 ? t('studios.permissionDenied') : t('studios.myTrainingPlan.loadError')
@@ -102,6 +100,7 @@ async function toggleDetails(assignment) {
   try {
     const result = await getOwnProgramAssignmentDetail(studioId.value, assignment.id)
     details[assignment.id] = result.programAssignment
+    await loadRunningSessionsForAssignment(assignment.id, result.programAssignment.days)
   } catch {
     detailErrors[assignment.id] = t('studios.myTrainingPlan.detailLoadError')
   } finally {
@@ -127,8 +126,12 @@ function exerciseSummary(exercise) {
 // only real authority — this only decides which action a day is offered.
 function dayAvailability(assignment, day) {
   const key = dayKey(assignment.id, day.id)
-  const resumableSessionId = resumableSessionByKey.value.get(key)
-  if (resumableSessionId) return { state: 'resume', sessionId: resumableSessionId }
+  const running = runningSessionsByKey.get(key) || []
+  if (running.length === 1) return { state: 'resume', sessionId: running[0].id }
+  // Never silently pick one when more than one is running: surface it and let
+  // the member resolve it deliberately via the history view instead of a
+  // guessed "Resume" that could open the wrong session.
+  if (running.length > 1) return { state: 'multiple', count: running.length }
 
   if (assignment.status !== 'active') {
     return { state: 'unavailable', reason: t('studios.myTrainingPlan.dayUnavailableAssignment') }
@@ -241,9 +244,20 @@ watch(studioId, load, { immediate: true })
                         {{ t('studios.myTrainingPlan.startAction') }}
                       </button>
                     </template>
+                    <template v-else-if="dayAvailability(assignment, day).state === 'multiple'">
+                      <RouterLink
+                        class="btn btn-secondary btn-sm"
+                        :to="{ name: 'studio-workout-sessions', params: { studioId } }"
+                      >
+                        {{ t('studios.myTrainingPlan.viewRunningSessions') }}
+                      </RouterLink>
+                    </template>
                   </div>
                   <p v-if="dayAvailability(assignment, day).state === 'unavailable'" class="studio-help">
                     {{ dayAvailability(assignment, day).reason }}
+                  </p>
+                  <p v-if="dayAvailability(assignment, day).state === 'multiple'" class="message message-warning">
+                    {{ t('studios.myTrainingPlan.multipleRunningSessions', { count: dayAvailability(assignment, day).count }) }}
                   </p>
                   <p v-if="startErrors[dayKey(assignment.id, day.id)]" class="message message-error" role="alert">
                     {{ startErrors[dayKey(assignment.id, day.id)] }}

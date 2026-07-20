@@ -419,25 +419,53 @@ function createWorkoutSessionService({ database, generatePublicId = createPublic
 
     // ---- Member self-access ----
 
-    async function listOwnSessions(actorUserId, context, pagination) {
+    async function listOwnSessions(actorUserId, context, queryOptions) {
         return helpers.withLockedStudioAccess(
             context,
             PERMISSIONS.WORKOUT_SESSION_MANAGE_SELF,
             async (connection, studio, actor) => {
+                // Tenant/self scope (studio_id, member_membership_id) is always applied
+                // first and can never be widened by the optional filters below. A
+                // foreign or non-existent assignmentId/programDayId simply yields zero
+                // rows here - it never surfaces as a distinct "not found" error, so it
+                // discloses nothing about assignments the caller cannot see.
+                const conditions = ["ws.studio_id = ?", "ws.member_membership_id = ?"];
+                const params = [studio.internalId, actor.internalId];
+                if (queryOptions.status) {
+                    conditions.push("ws.status = ?");
+                    params.push(queryOptions.status);
+                }
+                if (queryOptions.assignmentId) {
+                    conditions.push("pa.public_id = ?");
+                    params.push(queryOptions.assignmentId);
+                }
+                if (queryOptions.programDayId) {
+                    conditions.push("pd.public_id = ?");
+                    params.push(queryOptions.programDayId);
+                }
+                const whereClause = conditions.join(" AND ");
+
                 const [[countRow]] = await connection.query(
-                    `SELECT COUNT(*) AS total FROM studio_workout_sessions
-                     WHERE studio_id = ? AND member_membership_id = ?`,
-                    [studio.internalId, actor.internalId]
+                    `SELECT COUNT(*) AS total
+                     FROM studio_workout_sessions ws
+                     INNER JOIN studio_program_assignments pa ON pa.id = ws.assignment_id
+                     INNER JOIN studio_training_program_days pd ON pd.id = ws.program_day_id
+                     WHERE ${whereClause}`,
+                    params
                 );
+                // Filters are part of the WHERE clause of this single query, so they are
+                // always applied before LIMIT/OFFSET - never as a client-side reduction
+                // of an already-paginated page. Ordering is most-recently-started first,
+                // with the internal id as a stable tie-breaker for equal timestamps.
                 const [rows] = await connection.query(
-                    `${SESSION_SELECT} WHERE ws.studio_id = ? AND ws.member_membership_id = ?
+                    `${SESSION_SELECT} WHERE ${whereClause}
                      ORDER BY ws.started_at DESC, ws.id DESC
                      LIMIT ? OFFSET ?`,
-                    [studio.internalId, actor.internalId, pagination.limit, pagination.offset]
+                    [...params, queryOptions.limit, queryOptions.offset]
                 );
                 return {
                     workoutSessions: rows.map((row) => publicSession(sessionFromRow(row), { includeMember: false })),
-                    pagination: paginationResult(Number(countRow.total), pagination)
+                    pagination: paginationResult(Number(countRow.total), queryOptions)
                 };
             }
         );

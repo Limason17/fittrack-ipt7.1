@@ -287,3 +287,207 @@ test('Member-Workout-Ausführung: Session starten, Sätze protokollieren, abschl
   await page.goto(`/studios/${studio.id}/workout-sessions`)
   await expectNoSeriousAxeViolations(page)
 })
+
+// ---- Reliability fixes: deterministic resume detection, server-side history
+// status filter, and calendar-date (not timestamp) startsOn/endsOn. ----
+
+async function registerAndLogin(request, user) {
+  await registerApi(request, user)
+  return loginApi(request, user)
+}
+
+async function setupStudioWithAssignment(request, { idPrefix, dayName = 'Tag 1', startsOn, endsOn } = {}) {
+  const owner = userFixture(`${idPrefix}-owner`)
+  const member = userFixture(`${idPrefix}-member`)
+  const ownerAuth = await registerAndLogin(request, owner)
+  await registerApi(request, member)
+
+  const studioResponse = await request.post('/api/v1/studios', {
+    headers: { Authorization: `Bearer ${ownerAuth.token}` },
+    data: {
+      name: `${idPrefix} Studio`, slug: `${idPrefix}-${owner.username}`,
+      defaultLocale: 'de', defaultTimezone: 'Europe/Zurich', defaultWeightUnit: 'kg',
+    },
+  })
+  expect(studioResponse.status()).toBe(201)
+  const studio = (await studioResponse.json()).studio
+
+  const invitationResponse = await request.post(`/api/v1/studios/${studio.id}/invitations`, {
+    headers: { Authorization: `Bearer ${ownerAuth.token}` },
+    data: { email: member.email, role: 'member' },
+  })
+  expect(invitationResponse.status()).toBe(201)
+  const acceptUrl = (await invitationResponse.json()).delivery.acceptUrl
+  const token = decodeURIComponent(new URL(acceptUrl).pathname.split('/').pop())
+  const memberAuth = await loginApi(request, member)
+  const acceptResponse = await request.post(`/api/v1/invitations/${token}/accept`, {
+    headers: { Authorization: `Bearer ${memberAuth.token}` },
+  })
+  expect(acceptResponse.status()).toBe(200)
+
+  const membershipsResponse = await request.get(`/api/v1/studios/${studio.id}/memberships?limit=50`, {
+    headers: { Authorization: `Bearer ${ownerAuth.token}` },
+  })
+  const memberships = (await membershipsResponse.json()).memberships
+  const ownerMembership = memberships.find((m) => m.user.username === owner.username)
+  const memberMembership = memberships.find((m) => m.user.username === member.username)
+
+  const relationshipResponse = await request.post(`/api/v1/studios/${studio.id}/coaching-relationships`, {
+    headers: { Authorization: `Bearer ${ownerAuth.token}` },
+    data: { coachMembershipId: ownerMembership.id, memberMembershipId: memberMembership.id },
+  })
+  expect(relationshipResponse.status()).toBe(201)
+  const relationship = (await relationshipResponse.json()).coachingRelationship
+
+  const programResponse = await request.post(`/api/v1/studios/${studio.id}/training-programs`, {
+    headers: { Authorization: `Bearer ${ownerAuth.token}` }, data: { name: `${idPrefix} Programm` },
+  })
+  expect(programResponse.status()).toBe(201)
+  const program = (await programResponse.json()).trainingProgram
+
+  const versionResponse = await request.post(`/api/v1/studios/${studio.id}/training-programs/${program.id}/versions`, {
+    headers: { Authorization: `Bearer ${ownerAuth.token}` }, data: {},
+  })
+  expect(versionResponse.status()).toBe(201)
+  const version = (await versionResponse.json()).programVersion
+
+  const dayResponse = await request.post(
+    `/api/v1/studios/${studio.id}/training-programs/${program.id}/versions/${version.id}/days`,
+    { headers: { Authorization: `Bearer ${ownerAuth.token}` }, data: { name: dayName } }
+  )
+  expect(dayResponse.status()).toBe(201)
+  const day = (await dayResponse.json()).programDay
+
+  await request.post(
+    `/api/v1/studios/${studio.id}/training-programs/${program.id}/versions/${version.id}/days/${day.id}/exercises`,
+    { headers: { Authorization: `Bearer ${ownerAuth.token}` }, data: { exerciseNameSnapshot: 'Kniebeuge', targetSets: 2, targetRepsMin: 6, targetRepsMax: 8 } }
+  )
+
+  const publishResponse = await request.post(
+    `/api/v1/studios/${studio.id}/training-programs/${program.id}/versions/${version.id}/publish`,
+    { headers: { Authorization: `Bearer ${ownerAuth.token}` } }
+  )
+  expect(publishResponse.status()).toBe(200)
+
+  const assignmentData = { programVersionId: version.id, memberMembershipId: memberMembership.id, coachingRelationshipId: relationship.id }
+  if (startsOn !== undefined) assignmentData.startsOn = startsOn
+  if (endsOn !== undefined) assignmentData.endsOn = endsOn
+  const assignmentResponse = await request.post(`/api/v1/studios/${studio.id}/program-assignments`, {
+    headers: { Authorization: `Bearer ${ownerAuth.token}` }, data: assignmentData,
+  })
+  expect(assignmentResponse.status()).toBe(201)
+  const assignment = (await assignmentResponse.json()).programAssignment
+
+  return { owner, member, ownerAuth, memberAuth, studio, day, assignment }
+}
+
+async function startSessionApi(request, studioId, token, assignmentId, { programDayId, clientStartKey }) {
+  const result = await request.post(`/api/v1/studios/${studioId}/program-assignments/${assignmentId}/workout-sessions`, {
+    headers: { Authorization: `Bearer ${token}` },
+    data: { programDayId, clientStartKey },
+  })
+  expect(result.status()).toBe(201)
+  return (await result.json()).workoutSession
+}
+
+async function abortSessionApi(request, studioId, token, sessionId) {
+  const result = await request.post(`/api/v1/studios/${studioId}/workout-sessions/${sessionId}/abort`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  expect(result.status()).toBe(200)
+}
+
+test('Fortsetzen wird über den exakten Filter erkannt, auch wenn die Session nicht auf der ersten ungefilterten History-Seite liegt; ein fremdes Mitglied sieht sie nicht', async ({ page, request, browser }) => {
+  test.setTimeout(120_000)
+  const { ownerAuth, memberAuth, studio, day, assignment } = await setupStudioWithAssignment(request, { idPrefix: 'resume' })
+
+  // 1: Start the session we want to find, then push it off the first (page-size
+  // 20) unfiltered history page with 20 more recent terminal sessions on the
+  // same assignment+day - proving the resume check cannot be a history scan.
+  const target = await startSessionApi(request, studio.id, memberAuth.token, assignment.id, {
+    programDayId: day.id, clientStartKey: 'target',
+  })
+  for (let i = 0; i < 20; i += 1) {
+    const pushSession = await startSessionApi(request, studio.id, memberAuth.token, assignment.id, {
+      programDayId: day.id, clientStartKey: `push-${i}`,
+    })
+    await abortSessionApi(request, studio.id, memberAuth.token, pushSession.id)
+  }
+
+  await attachAuth(page, memberAuth)
+  await page.goto(`/studios/${studio.id}/my-training-plan`)
+  await page.getByRole('button', { name: 'Details anzeigen' }).click()
+  await expect(page.getByRole('button', { name: 'Fortsetzen' })).toBeVisible()
+  await page.getByRole('button', { name: 'Fortsetzen' }).click()
+  await expect(page).toHaveURL(new RegExp(`/studios/${studio.id}/workout-sessions/${target.id}$`))
+
+  // 2: A foreign member of the same studio sees neither the assignment nor the session.
+  const foreignMember = userFixture('resume-foreign')
+  await registerApi(request, foreignMember)
+  const foreignInvitation = await request.post(`/api/v1/studios/${studio.id}/invitations`, {
+    headers: { Authorization: `Bearer ${ownerAuth.token}` },
+    data: { email: foreignMember.email, role: 'member' },
+  })
+  expect(foreignInvitation.status()).toBe(201)
+  const foreignAcceptUrl = (await foreignInvitation.json()).delivery.acceptUrl
+  const foreignToken = decodeURIComponent(new URL(foreignAcceptUrl).pathname.split('/').pop())
+  const foreignAuth = await loginApi(request, foreignMember)
+  await request.post(`/api/v1/invitations/${foreignToken}/accept`, {
+    headers: { Authorization: `Bearer ${foreignAuth.token}` },
+  })
+  const foreignContext = await browser.newContext({ baseURL: 'http://127.0.0.1:4173', locale: 'de-CH' })
+  try {
+    const foreignPage = await foreignContext.newPage()
+    await attachAuth(foreignPage, foreignAuth)
+    await foreignPage.goto(`/studios/${studio.id}/my-training-plan`)
+    await expect(foreignPage.getByText('Dir ist aktuell kein Trainingsprogramm zugewiesen.')).toBeVisible()
+    await foreignPage.goto(`/studios/${studio.id}/workout-sessions/${target.id}`)
+    await expect(foreignPage.getByText('Diese Trainingseinheit wurde nicht gefunden.')).toBeVisible()
+  } finally {
+    await foreignContext.close()
+  }
+
+  // 3: Personal workouts remain fully unaffected.
+  await page.goto('/workouts')
+  await expect(page.getByRole('button', { name: 'Workout erstellen' })).toBeVisible()
+})
+
+test('Der History-Statusfilter fragt serverseitig gefiltert ab, und Grenzdaten (startsOn/endsOn) werden ohne Zeitzonenverschiebung dargestellt', async ({ page, request }) => {
+  test.setTimeout(120_000)
+  const { memberAuth, studio, day, assignment } = await setupStudioWithAssignment(request, { idPrefix: 'histfilter' })
+
+  await startSessionApi(request, studio.id, memberAuth.token, assignment.id, {
+    programDayId: day.id, clientStartKey: 'running',
+  })
+  const toAbort = await startSessionApi(request, studio.id, memberAuth.token, assignment.id, {
+    programDayId: day.id, clientStartKey: 'to-abort',
+  })
+  await abortSessionApi(request, studio.id, memberAuth.token, toAbort.id)
+
+  await attachAuth(page, memberAuth)
+  await page.goto(`/studios/${studio.id}/workout-sessions`)
+  await expect(page.locator('tbody tr')).toHaveCount(2)
+
+  await page.getByRole('tab', { name: 'Abgebrochen' }).click()
+  await expect(page.locator('tbody tr')).toHaveCount(1)
+  await expect(page.locator('tbody tr').first()).toContainText('Abgebrochen')
+  await expect(page.locator('tbody tr').first()).not.toContainText('Läuft')
+
+  await page.getByRole('tab', { name: 'Läuft' }).click()
+  await expect(page.locator('tbody tr')).toHaveCount(1)
+  await expect(page.locator('tbody tr').first()).toContainText('Läuft')
+
+  // Boundary date: an assignment starting exactly today must be immediately
+  // available (inclusive boundary) and must display "today", never a shifted
+  // neighboring calendar day, regardless of the server's local timezone.
+  const now = new Date()
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  const boundarySetup = await setupStudioWithAssignment(request, { idPrefix: 'boundary', startsOn: today })
+
+  await attachAuth(page, boundarySetup.memberAuth)
+  await page.goto(`/studios/${boundarySetup.studio.id}/my-training-plan`)
+  const expectedLabel = new Intl.DateTimeFormat('de-CH', { day: '2-digit', month: 'short', year: 'numeric' }).format(now)
+  await expect(page.getByText(expectedLabel)).toBeVisible()
+  await page.getByRole('button', { name: 'Details anzeigen' }).click()
+  await expect(page.getByRole('button', { name: 'Training starten' })).toBeVisible()
+})

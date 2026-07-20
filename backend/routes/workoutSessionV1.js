@@ -12,6 +12,7 @@ const { createWorkoutSessionService } = require("../services/workoutSessionServi
 const { validatePagination, validatePublicId } = require("../validation/trainingProgramValidation");
 const {
     validateCreateSetPayload,
+    validateListOwnSessionsQuery,
     validateSessionExercisePatchPayload,
     validateSessionPatchPayload,
     validateSessionSetPatchPayload,
@@ -54,7 +55,7 @@ function createWorkoutSessionV1Router({
         authenticate, context, permission(PERMISSIONS.WORKOUT_SESSION_MANAGE_SELF),
         async (req, res) => {
             const result = await workoutSessionService.listOwnSessions(
-                req.user.id, req.studioContext, validatePagination(req.query)
+                req.user.id, req.studioContext, validateListOwnSessionsQuery(req.query)
             );
             res.json(result);
         }

@@ -100,6 +100,18 @@ function optionalNumber(value, field, { integer = false, min = 0, max } = {}) {
     return value;
 }
 
+function positiveQueryInteger(value, field, fallback, maximum) {
+    if (value === undefined) return fallback;
+    if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) {
+        fail(field, "A positive integer is required.");
+    }
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed > maximum) {
+        fail(field, `This field must be at most ${maximum}.`);
+    }
+    return parsed;
+}
+
 // ---- Start a workout session ----
 
 function validateStartSessionPayload(body) {
@@ -108,6 +120,25 @@ function validateStartSessionPayload(body) {
         programDayId: requiredPublicId(body.programDayId, "programDayId"),
         clientStartKey: requiredString(body.clientStartKey, "clientStartKey", LIMITS.clientStartKey)
     };
+}
+
+// ---- List own workout sessions ----
+
+function validateListOwnSessionsQuery(query = {}) {
+    exactKeys(query, ["page", "limit", "status", "assignmentId", "programDayId"]);
+    const page = positiveQueryInteger(query.page, "page", 1, 1_000_000);
+    const limit = positiveQueryInteger(query.limit, "limit", 20, 100);
+    const result = { page, limit, offset: (page - 1) * limit };
+    if (Object.hasOwn(query, "status")) {
+        result.status = requiredChoice(query.status, "status", ["in_progress", "completed", "aborted"]);
+    }
+    if (Object.hasOwn(query, "assignmentId")) {
+        result.assignmentId = requiredPublicId(query.assignmentId, "assignmentId");
+    }
+    if (Object.hasOwn(query, "programDayId")) {
+        result.programDayId = requiredPublicId(query.programDayId, "programDayId");
+    }
+    return result;
 }
 
 // ---- Session note (autosave) ----
@@ -204,6 +235,7 @@ function validateSessionSetPatchPayload(body) {
 module.exports = {
     LIMITS,
     validateCreateSetPayload,
+    validateListOwnSessionsQuery,
     validateSessionExercisePatchPayload,
     validateSessionPatchPayload,
     validateSessionSetPatchPayload,

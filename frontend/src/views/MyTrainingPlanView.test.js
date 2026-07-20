@@ -72,6 +72,7 @@ async function mountView(actorRole = 'member') {
     history: createMemoryHistory(),
     routes: [
       { path: '/studios/:studioId/my-training-plan', name: 'studio-my-training-plan', component: MyTrainingPlanView },
+      { path: '/studios/:studioId/workout-sessions', name: 'studio-workout-sessions', component: { template: '<div />' } },
       { path: '/studios/:studioId/workout-sessions/:sessionId', name: 'studio-workout-session-detail', component: { template: '<div />' } },
     ],
   })
@@ -158,7 +159,7 @@ describe('MyTrainingPlanView', () => {
     expect(wrapper.vm.$route.name).toBe('studio-my-training-plan')
   })
 
-  it('offers "Fortsetzen" instead of "Training starten" when an in-progress session already exists for this assignment and day', async () => {
+  it('offers "Fortsetzen" instead of "Training starten" when an in-progress session already exists, found via an exact server-side filter rather than a history-page scan', async () => {
     sessionApi.listOwnWorkoutSessions.mockResolvedValue({
       workoutSessions: [{
         id: 'session-existing', assignmentId: 'assignment-1', status: 'in_progress',
@@ -170,6 +171,9 @@ describe('MyTrainingPlanView', () => {
     await wrapper.get('button').trigger('click')
     await flushPromises()
 
+    expect(sessionApi.listOwnWorkoutSessions).toHaveBeenCalledWith('studio-a', {
+      status: 'in_progress', assignmentId: 'assignment-1', programDayId: 'day-1', limit: 5,
+    })
     expect(wrapper.findAll('button').some((b) => /fortsetzen/i.test(b.text()))).toBe(true)
     expect(wrapper.findAll('button').some((b) => /training starten/i.test(b.text()))).toBe(false)
 
@@ -179,6 +183,35 @@ describe('MyTrainingPlanView', () => {
 
     expect(sessionState.startWorkoutSession).not.toHaveBeenCalled()
     expect(wrapper.vm.$route.params.sessionId).toBe('session-existing')
+  })
+
+  it('offers "Training starten" when the exact filter finds no running session for this assignment and day', async () => {
+    sessionApi.listOwnWorkoutSessions.mockResolvedValue({ workoutSessions: [], pagination: { total: 0 } })
+    await mountView()
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('button').some((b) => /training starten/i.test(b.text()))).toBe(true)
+    expect(wrapper.findAll('button').some((b) => /fortsetzen/i.test(b.text()))).toBe(false)
+  })
+
+  it('never silently picks one when multiple in-progress sessions exist for the same day, and offers no normal start action', async () => {
+    sessionApi.listOwnWorkoutSessions.mockResolvedValue({
+      workoutSessions: [
+        { id: 'session-a', assignmentId: 'assignment-1', status: 'in_progress', programDay: { id: 'day-1', name: 'Day 1: Push' } },
+        { id: 'session-b', assignmentId: 'assignment-1', status: 'in_progress', programDay: { id: 'day-1', name: 'Day 1: Push' } },
+      ],
+      pagination: { total: 2 },
+    })
+    await mountView()
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('button').some((b) => /fortsetzen/i.test(b.text()))).toBe(false)
+    expect(wrapper.findAll('button').some((b) => /training starten/i.test(b.text()))).toBe(false)
+    expect(wrapper.text()).toContain('laufen aktuell 2 Trainings gleichzeitig')
+    const historyLink = wrapper.findAll('a').find((a) => /meine trainings öffnen/i.test(a.text()))
+    expect(historyLink).toBeTruthy()
   })
 
   it('shows an explanatory reason instead of a start action when the assignment is not active', async () => {
@@ -203,6 +236,34 @@ describe('MyTrainingPlanView', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('Dieses Programm beginnt am')
+    expect(wrapper.findAll('button').some((b) => /training starten/i.test(b.text()))).toBe(false)
+  })
+
+  it('treats a plain YYYY-MM-DD startsOn/endsOn exactly at today as already available, with no timezone-induced shift', async () => {
+    const now = new Date()
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    trainingApi.listOwnProgramAssignments.mockResolvedValue({
+      programAssignments: [{ ...ownAssignment, startsOn: today, endsOn: today }], pagination: { total: 1 },
+    })
+    await mountView()
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('Dieses Programm beginnt am')
+    expect(wrapper.text()).not.toContain('war bis zum')
+    expect(wrapper.findAll('button').some((b) => /training starten/i.test(b.text()))).toBe(true)
+  })
+
+  it('blocks starting the day after a plain YYYY-MM-DD endsOn that already passed', async () => {
+    const yesterday = new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString().slice(0, 10)
+    trainingApi.listOwnProgramAssignments.mockResolvedValue({
+      programAssignments: [{ ...ownAssignment, endsOn: yesterday }], pagination: { total: 1 },
+    })
+    await mountView()
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('war bis zum')
     expect(wrapper.findAll('button').some((b) => /training starten/i.test(b.text()))).toBe(false)
   })
 

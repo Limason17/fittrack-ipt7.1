@@ -24,6 +24,10 @@ const page = ref(1)
 const statusFilter = ref('all')
 const isLoading = ref(true)
 const errorMessage = ref('')
+// Total across every status, captured the first time the (default) unfiltered
+// "all" load succeeds. Used only to tell apart the two empty states below -
+// never displayed as a count itself, so it is not a fabricated statistic.
+const overallTotal = ref(null)
 
 const filterTabs = computed(() => [
   { value: 'all', label: t('studios.workoutSessions.filterAll') },
@@ -31,9 +35,10 @@ const filterTabs = computed(() => [
   { value: 'completed', label: t('studios.workoutSessions.sessionStatuses.completed') },
   { value: 'aborted', label: t('studios.workoutSessions.sessionStatuses.aborted') },
 ])
-const filteredSessions = computed(() => statusFilter.value === 'all'
-  ? sessions.value
-  : sessions.value.filter((item) => item.status === statusFilter.value))
+const hasAnySessionsEver = computed(() => (overallTotal.value ?? 0) > 0)
+const isFilteredEmpty = computed(() => (
+  !sessions.value.length && statusFilter.value !== 'all' && hasAnySessionsEver.value
+))
 
 let generation = 0
 
@@ -41,20 +46,36 @@ async function load() {
   const current = ++generation
   const currentStudioId = studioId.value
   const currentPage = page.value
+  const currentFilter = statusFilter.value
   sessions.value = []
   pagination.value = null
   isLoading.value = true
   errorMessage.value = ''
   try {
-    const result = await listOwnWorkoutSessions(currentStudioId, { page: currentPage, limit: 20 })
-    if (current !== generation || currentStudioId !== studioId.value || currentPage !== page.value) return
+    const result = await listOwnWorkoutSessions(currentStudioId, {
+      page: currentPage,
+      limit: 20,
+      status: currentFilter === 'all' ? undefined : currentFilter,
+    })
+    if (
+      current !== generation || currentStudioId !== studioId.value ||
+      currentPage !== page.value || currentFilter !== statusFilter.value
+    ) return
     sessions.value = result.workoutSessions || []
     pagination.value = result.pagination || null
+    if (currentFilter === 'all') overallTotal.value = result.pagination?.total ?? 0
   } catch (error) {
     if (current === generation) errorMessage.value = workoutErrorMessage(error)
   } finally {
     if (current === generation) isLoading.value = false
   }
+}
+
+function selectFilter(value) {
+  if (value === statusFilter.value) return
+  statusFilter.value = value
+  page.value = 1
+  load()
 }
 
 function changePage(nextPage) {
@@ -67,6 +88,7 @@ function changePage(nextPage) {
 watch(studioId, () => {
   page.value = 1
   statusFilter.value = 'all'
+  overallTotal.value = null
   load()
 }, { immediate: true })
 </script>
@@ -88,13 +110,12 @@ watch(studioId, () => {
       </div>
 
       <article v-else class="card">
-        <Tabs :tabs="filterTabs" :model-value="statusFilter" :label="t('studios.workoutSessions.historyTitle')" @update:model-value="statusFilter = $event" />
-        <p class="studio-help">{{ t('studios.workoutSessions.filterHint') }}</p>
+        <Tabs :tabs="filterTabs" :model-value="statusFilter" :label="t('studios.workoutSessions.historyTitle')" @update:model-value="selectFilter" />
 
         <EmptyState
-          v-if="!filteredSessions.length"
-          :title="t('studios.workoutSessions.historyEmpty')"
-          :description="t('studios.workoutSessions.historyEmptyHint')"
+          v-if="!sessions.length"
+          :title="isFilteredEmpty ? t('studios.workoutSessions.historyEmptyFiltered') : t('studios.workoutSessions.historyEmpty')"
+          :description="isFilteredEmpty ? t('studios.workoutSessions.historyEmptyFilteredHint') : t('studios.workoutSessions.historyEmptyHint')"
         />
         <div v-else class="table-wrap table-stack">
           <table class="table">
@@ -109,7 +130,7 @@ watch(studioId, () => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="workoutSession in filteredSessions" :key="workoutSession.id">
+              <tr v-for="workoutSession in sessions" :key="workoutSession.id">
                 <td :data-label="t('studios.workoutSessions.columnDate')">{{ formatDate(workoutSession.startedAt, DATE_TIME_OPTIONS) }}</td>
                 <td :data-label="t('studios.workoutSessions.columnProgram')">{{ workoutSession.program.name }}</td>
                 <td :data-label="t('studios.workoutSessions.columnDay')">{{ workoutSession.programDay.name }}</td>
