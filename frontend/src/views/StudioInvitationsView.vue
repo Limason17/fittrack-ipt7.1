@@ -126,8 +126,11 @@ async function submit() {
     if (current !== generation || currentStudioId !== studioId.value) return
     deliveryLink.value = safeDeliveryLink(result.delivery)
     email.value = ''
-    successMessage.value = t('studios.invitations.created')
-    toastSuccess(t('studios.invitations.created'))
+    const confirmation = result.delivery?.delivered
+      ? t('studios.invitations.sent')
+      : t('studios.invitations.created')
+    successMessage.value = confirmation
+    toastSuccess(confirmation)
     page.value = 1
     await load({ preserveTransient: true })
     finalGeneration = generation

@@ -410,6 +410,13 @@ persistiert wird. Ein realer Provider mit sichtbarem Fehler-/Retry-Vertrag ist
 damit zwingende Pilotvoraussetzung; das Setzen einer URL allein aktiviert keinen
 Versand.
 
+**Seit Stufe 2A** existiert dieser Provider konkret: ein validierter
+SMTP-Adapter, aktivierbar über `INVITATION_EMAIL_PROVIDER=smtp` plus die
+`SMTP_*`-Variablen (siehe `backend/.env.example` und „Ergänzung für Stufe 2A"
+unten sowie `STAGE_2A_PRODUCTION_INVITATION_EMAIL.md`). Der oben beschriebene
+Fail-Closed-Standard bleibt exakt so bestehen, solange dieser nicht explizit
+aktiviert wird.
+
 Statisches Frontend und Reverse Proxy müssen für alle SPA-Seiten einschließlich
 `/invitations/:token` `Referrer-Policy: no-referrer`, TLS, keine URL-Query-Logs und
 keine Analysewerkzeuge mit vollständigen Pfaden erzwingen. Nach erfolgreicher
@@ -622,3 +629,64 @@ Zusätzliche Stage-1B.2B2B-Smokes nach Freigabe:
       Ansicht, Zugriffsverweigerung, Footer-Entfernung, Axe-Smokes)
 - [ ] Produktionsbuild und `npm audit --audit-level=high` in Backend und
       Frontend ohne Befunde
+
+## Ergänzung für Stufe 2A
+
+Stufe 2A liefert den ersten konkreten Produktions-E-Mail-Provider für die
+Einladungsauslieferung (SMTP, siehe `STAGE_2A_PRODUCTION_INVITATION_EMAIL.md`).
+Keine neue Migration, kein neues Datenbankschema, keine neue Einladungs-UI.
+
+**Aktivierung ist strikt opt-in.** Ohne `INVITATION_EMAIL_PROVIDER=smtp`
+bleibt das Verhalten exakt wie zuvor in diesem Dokument beschrieben
+(Fail-Closed in Produktion, Preview-Link in Development/Test). Vor der
+Aktivierung in einer echten Produktionsumgebung:
+
+1. Alle `SMTP_*`-Variablen gemäß `backend/.env.example` setzen (Host, Port,
+   `SMTP_SECURE`, ggf. Zugangsdaten, Absenderadresse/-name, optional
+   Reply-To, drei Timeout-Grenzen).
+2. Server starten. Eine explizit aktivierte, aber ungültige Konfiguration
+   lässt den Prozess beim Start mit `INVALID_SMTP_CONFIG` fehlschlagen —
+   das ist beabsichtigt (Fail-Closed, früh erkannt) und kein Bug.
+3. Den in `STAGE_2A_PRODUCTION_INVITATION_EMAIL.md` dokumentierten manuellen
+   SMTP-Smoke-Test mit einem echten, providerneutralen Testkonto
+   durchführen, bevor Einladungen an echte Studios verschickt werden.
+4. Bestätigen, dass `INVITATION_ACCEPT_BASE_URL` weiterhin die kanonische
+   HTTPS-Frontend-URL ist — daran ändert sich durch den SMTP-Provider
+   nichts.
+
+TLS ist in jeder Umgebung ausnahmslos erzwungen (SMTPS oder STARTTLS,
+Zertifikatsprüfung nie deaktiviert); es gibt keinen unverschlüsselten Modus,
+den ein Operator versehentlich aktivieren könnte.
+
+Zusätzliche Stage-2A-Smokes nach Freigabe:
+
+- eine explizit aktivierte, aber unvollständige/ungültige SMTP-Konfiguration
+  verhindert den Serverstart, bevor irgendein Request bedient wird;
+- ein simulierter Zustellfehler kompensiert die betroffene Einladung
+  atomar zu `revoked`; die Einladung ist danach nicht mehr akzeptierbar;
+- Logs zu Versanderfolg/-fehlschlag enthalten `requestId`, `provider:
+  "smtp"`, eine normalisierte Fehlerklasse und die Dauer — nie Passwort,
+  Benutzername, Empfängeradresse, vollständige Akzeptanz-URL, Token oder
+  SMTP-Rohantwort;
+- das Audit enthält für `invitation.created`/`invitation.delivery_failed`
+  unverändert nur `{role}`/`{role, expiresAt}` — kein neuer Ereignistyp,
+  keine neuen Detailfelder;
+- eine erfolgreiche Zustellung liefert dem Client `{delivered:true}` ohne
+  `acceptUrl` und ohne Rohtoken.
+
+### Zusätzliche Release-Checks
+
+- [ ] `readSmtpConfig` lehnt jede unvollständige/ungültige/Platzhalter-
+      Konfiguration ab, sobald `INVITATION_EMAIL_PROVIDER=smtp` gesetzt ist
+- [ ] TLS ist in jedem Test-Szenario erzwungen (SMTPS oder STARTTLS mit
+      `requireTLS:true`), `rejectUnauthorized` nie überschrieben
+- [ ] Fake-SMTP-Provider-Integrationstests grün (Erfolg, Fehlschlag +
+      Kompensation, Parallelität, keine internen IDs im Provider-Aufruf)
+- [ ] Secrets/Token/Akzeptanz-URL/Empfängeradresse erscheinen in keinem
+      geloggten Feld
+- [ ] `backend/.env.example` enthält ausschließlich Platzhalter, keine
+      echten Zugangsdaten
+- [ ] vollständige bestehende E2E-Suite bleibt grün, insbesondere der
+      bereits bestehende Dev-Preview-Einladungsfluss in `studios.spec.js`
+- [ ] manueller SMTP-Smoke-Test durchgeführt und dokumentiert, bevor echte
+      Einladungen an Studios verschickt werden

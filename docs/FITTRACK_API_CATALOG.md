@@ -86,6 +86,8 @@ Stand: 2026-07-20, Branch `feature/stage-1b2b2b-coach-results-feedback` (Stage 1
 | GET | `.../invitations` | JWT | owner/admin | Studio-Kontext | Einladungen listen | page, limit | invitations, pagination | Ja | 401, 403, 404 | P3 | StudioInvitationsView.vue | Component+Integration |
 | DELETE | `.../invitations/:invitationId` | JWT | owner/admin | Studio-Kontext | Einladung widerrufen | — | invitation{...} | Nein | 401, 403, 404, 409, 410 | P3 | StudioInvitationsView.vue | Component+Integration |
 
+**Seit Stage 2A** ist `delivery{...}` in der POST-Response eine von zwei Formen, abhängig vom serverseitig konfigurierten Provider — nie von einem Client-Parameter steuerbar: ohne konfigurierten Provider (Development/Test-Standard) `{delivered:false, acceptUrl}`; mit konfiguriertem SMTP-Provider (`INVITATION_EMAIL_PROVIDER=smtp`) `{delivered:true}` ohne `acceptUrl`. In Produktion ohne konfigurierten Provider liefert die Route stattdessen `503 INVITATION_DELIVERY_UNAVAILABLE`, bevor irgendetwas persistiert wird. Details: `STAGE_2A_PRODUCTION_INVITATION_EMAIL.md`.
+
 ## Audit — `backend/routes/studioV1.js`
 
 | Methode | Pfad | Auth | Rollen | Tenant | Zweck | Request-Felder | Response | Pagination | Fehlercodes | Datenschutz | Frontend | Tests |

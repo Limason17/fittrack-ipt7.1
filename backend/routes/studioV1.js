@@ -129,7 +129,8 @@ function createStudioV1Router({
             const result = await service.createInvitation(
                 req.user.id,
                 req.studioContext,
-                input
+                input,
+                { requestId: req.requestId }
             );
             res.status(201).json(result);
         }
