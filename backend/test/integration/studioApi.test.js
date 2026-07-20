@@ -17,6 +17,7 @@ process.env.INVITATION_ACCEPT_BASE_URL = "http://127.0.0.1:4173";
 
 const db = require("../../config/db");
 const { createInvitationDelivery } = require("../../delivery/invitationDelivery");
+const { createSmtpInvitationProvider } = require("../../delivery/smtpInvitationProvider");
 const { createMigrationRunner } = require("../../migrations/runner");
 const { createInvitationOutbox } = require("../../outbox/invitationOutbox");
 const { createStudioService } = require("../../services/studioService");
@@ -892,6 +893,176 @@ test("delivery failure is visible, compensates pending state, and audit is sanit
     });
     assert.equal(trainerAudit.response.status, 403);
     assert.equal(trainerAudit.data.error.code, "INSUFFICIENT_STUDIO_ROLE");
+});
+
+function smtpEnv(overrides = {}) {
+    return {
+        NODE_ENV: "production",
+        INVITATION_ACCEPT_BASE_URL: "https://app.example.test",
+        INVITATION_EMAIL_PROVIDER: "smtp",
+        SMTP_HOST: "smtp.fittrack-mail.test",
+        SMTP_PORT: "587",
+        SMTP_SECURE: "false",
+        SMTP_USER: "fittrack-relay",
+        SMTP_PASSWORD: "s3cure-relay-password",
+        SMTP_FROM_EMAIL: "invitations@fittrack.test",
+        SMTP_FROM_NAME: "FitTrack",
+        ...overrides
+    };
+}
+
+function fakeSmtpTransportFactory(sendMail) {
+    return () => ({
+        async sendMail(message) { return sendMail(message); },
+        close() {}
+    });
+}
+
+test("a configured fake SMTP provider delivers the invitation without leaking internals or an acceptUrl", async () => {
+    const contextService = createStudioService({ database: pool });
+    const context = await contextService.loadStudioContext(accounts.owner.id, studioA.id);
+
+    const captured = [];
+    const service = createStudioService({
+        database: pool,
+        outbox: createInvitationOutbox({
+            delivery: createInvitationDelivery({
+                env: smtpEnv(),
+                provider: createSmtpInvitationProvider({
+                    config: require("../../config/smtpConfig").readSmtpConfig(smtpEnv()),
+                    transportFactory: fakeSmtpTransportFactory(async (message) => { captured.push(message); }),
+                    logger: { info() {}, warn() {}, error() {} }
+                })
+            })
+        })
+    });
+
+    const recipientEmail = `smtp-fake-success-${runId}@example.test`;
+    const result = await service.createInvitation(accounts.owner.id, context, {
+        email: recipientEmail,
+        role: "trainer"
+    }, { requestId: "test-request-id" });
+
+    assert.deepEqual(result.delivery, { delivered: true });
+    assert.equal("acceptUrl" in result.delivery, false);
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].to, recipientEmail);
+    assert.ok(captured[0].text.includes("https://app.example.test/invitations/"));
+
+    // The provider only ever sees mail-shape fields, never a studio/user/
+    // invitation internal auto-increment id or any other internal identifier.
+    assert.deepEqual(Object.keys(captured[0]).sort(), ["from", "html", "replyTo", "subject", "text", "to"]);
+    assert.doesNotMatch(JSON.stringify(captured[0]), /"id":\s*\d+/);
+});
+
+test("without any configured provider, production invitation creation fails closed before persisting anything", async () => {
+    const contextService = createStudioService({ database: pool });
+    const context = await contextService.loadStudioContext(accounts.owner.id, studioA.id);
+    const closedService = createStudioService({
+        database: pool,
+        outbox: createInvitationOutbox({
+            delivery: createInvitationDelivery({ env: { NODE_ENV: "production", INVITATION_ACCEPT_BASE_URL: "https://app.example.test" } })
+        })
+    });
+    const recipientEmail = `smtp-fail-closed-${runId}@example.test`;
+    await assert.rejects(
+        closedService.createInvitation(accounts.owner.id, context, { email: recipientEmail, role: "member" }),
+        (error) => error.code === "INVITATION_DELIVERY_UNAVAILABLE"
+    );
+    const [[count]] = await pool.query(
+        "SELECT COUNT(*) AS total FROM studio_invitations WHERE studio_id = ? AND email_normalized = ?",
+        [context.studio.internalId, recipientEmail]
+    );
+    assert.equal(Number(count.total), 0);
+});
+
+test("a fake SMTP delivery failure compensates the invitation to revoked and the client sees no SMTP detail", async () => {
+    const contextService = createStudioService({ database: pool });
+    const context = await contextService.loadStudioContext(accounts.owner.id, studioA.id);
+    const service = createStudioService({
+        database: pool,
+        outbox: createInvitationOutbox({
+            delivery: createInvitationDelivery({
+                env: smtpEnv(),
+                provider: createSmtpInvitationProvider({
+                    config: require("../../config/smtpConfig").readSmtpConfig(smtpEnv()),
+                    transportFactory: fakeSmtpTransportFactory(async () => {
+                        throw Object.assign(new Error("550 mailbox does not exist at relay-internal-host.test"), {
+                            code: "EENVELOPE",
+                            command: "RCPT TO"
+                        });
+                    }),
+                    logger: { info() {}, warn() {}, error() {} }
+                })
+            })
+        })
+    });
+
+    const recipientEmail = `smtp-fake-failure-${runId}@example.test`;
+    let surfaced;
+    await assert.rejects(
+        service.createInvitation(accounts.owner.id, context, { email: recipientEmail, role: "member" }),
+        (error) => { surfaced = error; return error.code === "INVITATION_DELIVERY_FAILED"; }
+    );
+    assert.doesNotMatch(
+        `${surfaced.message} ${surfaced.stack}`,
+        /mailbox does not exist|relay-internal-host/
+    );
+
+    const [rows] = await pool.query(
+        `SELECT public_id, status FROM studio_invitations
+         WHERE studio_id = ? AND email_normalized = ? ORDER BY id DESC LIMIT 1`,
+        [context.studio.internalId, recipientEmail]
+    );
+    assert.equal(rows[0].status, "revoked");
+
+    const acceptAttempt = await api(`/api/v1/invitations/${crypto.randomBytes(32).toString("base64url")}/accept`, {
+        method: "POST",
+        token: accounts.owner.token
+    });
+    assert.equal(acceptAttempt.response.status, 404);
+    assert.equal(acceptAttempt.data.error.code, "INVITATION_INVALID");
+
+    const [[auditRow]] = await pool.query(
+        `SELECT details_json FROM studio_audit_events
+         WHERE studio_id = ? AND event_type = 'invitation.delivery_failed' AND target_public_id = ?`,
+        [context.studio.internalId, rows[0].public_id]
+    );
+    assert.deepEqual(auditRow.details_json, { role: "member" });
+    assert.doesNotMatch(
+        JSON.stringify(auditRow.details_json),
+        /mailbox does not exist|relay-internal-host|@example\.test/
+    );
+});
+
+test("concurrent invitation creation for two different e-mail addresses is safe and each provider call gets its own recipient", async () => {
+    const contextService = createStudioService({ database: pool });
+    const context = await contextService.loadStudioContext(accounts.owner.id, studioA.id);
+    const captured = [];
+    const service = createStudioService({
+        database: pool,
+        outbox: createInvitationOutbox({
+            delivery: createInvitationDelivery({
+                env: smtpEnv(),
+                provider: createSmtpInvitationProvider({
+                    config: require("../../config/smtpConfig").readSmtpConfig(smtpEnv()),
+                    transportFactory: fakeSmtpTransportFactory(async (message) => { captured.push(message); }),
+                    logger: { info() {}, warn() {}, error() {} }
+                })
+            })
+        })
+    });
+
+    const emailA = `smtp-concurrent-a-${runId}@example.test`;
+    const emailB = `smtp-concurrent-b-${runId}@example.test`;
+    const [resultA, resultB] = await Promise.all([
+        service.createInvitation(accounts.owner.id, context, { email: emailA, role: "member" }),
+        service.createInvitation(accounts.owner.id, context, { email: emailB, role: "member" })
+    ]);
+    assert.deepEqual(resultA.delivery, { delivered: true });
+    assert.deepEqual(resultB.delivery, { delivered: true });
+    assert.equal(captured.length, 2);
+    assert.deepEqual(new Set(captured.map((message) => message.to)), new Set([emailA, emailB]));
 });
 
 test("concurrent owner demotions preserve at least one active owner", async () => {

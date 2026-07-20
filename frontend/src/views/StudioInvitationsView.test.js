@@ -166,4 +166,60 @@ describe('StudioInvitationsView', () => {
     expect(authToken.value).toBe('token')
     wrapper.unmount()
   })
+
+  it('confirms a production e-mail send without showing any preview link or token', async () => {
+    api.createInvitation.mockResolvedValue({
+      invitation: { id: 'invitation-sent', email: 'trainer@example.test', role: 'trainer', status: 'pending' },
+      delivery: { delivered: true },
+    })
+    const wrapper = await mountView('owner')
+    await wrapper.get('#invitation-email').setValue('trainer@example.test')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('[role="status"]').text()).toContain('versendet')
+    expect(wrapper.find('.studio-delivery').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('token')
+    expect(wrapper.text()).not.toMatch(/invitations\/[A-Za-z0-9_-]{20,}/)
+    wrapper.unmount()
+  })
+
+  it('shows a safe, understandable error and keeps the e-mail address when delivery fails, without logging out', async () => {
+    api.createInvitation.mockRejectedValue(Object.assign(new Error('Bad Gateway'), { status: 502, code: 'INVITATION_DELIVERY_FAILED' }))
+    const wrapper = await mountView('owner')
+    await wrapper.get('#invitation-email').setValue('retry-me@example.test')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    const alert = wrapper.get('[role="alert"]')
+    expect(alert.text().length).toBeGreaterThan(0)
+    expect(alert.text()).not.toMatch(/smtp|ECONNREFUSED|EAUTH|stack/i)
+    expect(wrapper.get('#invitation-email').element.value).toBe('retry-me@example.test')
+    expect(wrapper.find('.studio-delivery').exists()).toBe(false)
+    expect(authToken.value).toBe('token')
+    wrapper.unmount()
+  })
+
+  it('shows the same safe error and preserves the form when the provider is unavailable (503)', async () => {
+    api.createInvitation.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { status: 503, code: 'INVITATION_DELIVERY_UNAVAILABLE' }))
+    const wrapper = await mountView('owner')
+    await wrapper.get('#invitation-email').setValue('unavailable@example.test')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text().length).toBeGreaterThan(0)
+    expect(wrapper.get('#invitation-email').element.value).toBe('unavailable@example.test')
+    expect(authToken.value).toBe('token')
+    wrapper.unmount()
+  })
+
+  it('still lists existing invitations correctly alongside the new delivery contract', async () => {
+    api.listInvitations.mockResolvedValue({
+      invitations: [{ id: 'invitation-x', email: 'existing@example.test', role: 'member', status: 'pending', expiresAt: '2026-08-01T00:00:00.000Z' }],
+      pagination: { total: 1 },
+    })
+    const wrapper = await mountView('owner')
+    expect(wrapper.text()).toContain('existing@example.test')
+    wrapper.unmount()
+  })
 })
