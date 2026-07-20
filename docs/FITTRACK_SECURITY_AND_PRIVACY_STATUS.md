@@ -1,6 +1,6 @@
 # FitTrack Sicherheits- und Datenschutzstatus
 
-Stand: 2026-07-19, geprüfter Commit `8a8da30` (main). Klassifikationslegende: **[GETESTET]** implementiert und automatisiert getestet (Testdatei zitiert) · **[MANUELL]** implementiert, nur durch Code-Lesen nachvollziehbar · **[DOKU]** nur dokumentiert, kein Code · **[OFFEN]** fehlt komplett.
+Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um den neuen Abschnitt „Coach-Feedback (Stage 1B.2B2B)" sowie eine neue Zeile in der Datenschutzklassifikation — der übrige Bestand wurde nicht rückwirkend umgeschrieben. Klassifikationslegende: **[GETESTET]** implementiert und automatisiert getestet (Testdatei zitiert) · **[MANUELL]** implementiert, nur durch Code-Lesen nachvollziehbar · **[DOKU]** nur dokumentiert, kein Code · **[OFFEN]** fehlt komplett.
 
 ## Auth
 
@@ -52,6 +52,17 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main). Klassifikationslegende: *
 - Keine Trainingsmetrik erscheint je im Audit-Log (`workout_session.*`-Events haben eine strikte Allowlist ohne Gewicht/Wiederholungen/RPE/Distanz/Dauer/Notiz). **[GETESTET]** `backend/test/unit/workoutSessionAudit.test.js`, `backend/test/integration/workoutSessionApi.test.js`.
 - Keine persönlichen Workout-Daten werden von Studio-Workout-Sessions berührt (separate Tabellenbäume, siehe Datenmodell). **[GETESTET]**.
 
+## Coach-Feedback (Stage 1B.2B2B)
+
+- Zugriffs-Pinning gehärtet: Coach-Resultat-/Feedback-Zugriff verlangt zusätzlich, dass die Session zur **exakt** aktuell aktiven Beziehung gehört (`session.coaching_relationship_id === relationship.internalId`) — eine neue, spätere Beziehung mit demselben Mitglied gewährt keinen automatischen Zugriff auf Sessions einer früheren Beziehung. Dies ist eine bewusste Härtung des bereits produktiven Stage-1B.2B1-Modells, gefunden vor jeder Fehlermeldung während des Designs dieser Phase. **[GETESTET]** `backend/test/integration/workoutFeedbackApi.test.js` ("a new coach for the same member gains no automatic access to a session from the earlier, now-ended relationship"), analog auch für `listCoachedMemberSessions`/`getCoachedMemberSession` in `workoutSessionApi.test.js`.
+- Feedback-Erstellung: identisch **kein** Owner-/Admin-Bypass (`WORKOUT_RESULT_READ_COACHED`-Permission ist owner/admin/trainer zugeordnet, doch die konkrete Beziehungsprüfung bleibt auf die eigene Mitgliedschaft des Akteurs gepinnt) — Owner/Admin ohne eigene Beziehung erhalten identisch `404`. **[GETESTET]** `backend/test/integration/workoutFeedbackApi.test.js`.
+- Nur auf terminalen Sessions (`completed`/`aborted`) erstellbar; `in_progress` liefert `409 WORKOUT_FEEDBACK_SESSION_NOT_TERMINAL`. **[GETESTET]**.
+- Append-only durch Weglassen von PATCH/DELETE erzwungen (keine DB-Trigger, konsistent mit der bestehenden Audit-Append-only-Konvention oben). **[GETESTET]** kein Update-/Delete-Pfad im Router, Migrationstest bestätigt CHECK/Unique-Constraints.
+- Idempotenz über `client_feedback_key` (Unique zusammen mit `workout_session_id`/`coach_membership_id`); gleicher Schlüssel mit abweichendem Text → `409 WORKOUT_FEEDBACK_KEY_CONFLICT`, inkl. Race-Zweig (`ER_DUP_ENTRY`). **[GETESTET]** Unit-, Integrations- und E2E-Ebene (Mehrfachklick-Test).
+- Feedbacktext ist von jedem Audit-Detail, Request-/Fehlerlog und Frontend-Debug-Log ausgeschlossen — Audit-Allowlist für `workout_feedback.created` enthält ausschließlich `{feedbackId, sessionId}`. **[GETESTET]** `backend/test/unit/workoutSessionAudit.test.js`.
+- Nach Beziehungsende: ehemaliger Coach verliert sofort Lese- und Schreibzugriff; das Mitglied behält bereits erhaltenes Feedback dauerhaft (kein Hard-Delete-Pfad). **[GETESTET]** E2E-Test „Beziehungsende entzieht dem Coach sofort den Zugriff; das Mitglied behält sein Feedback dauerhaft".
+- Bewusst **nicht** eingeführt: ein feedback-spezifischer Not-Found-Code oder `WORKOUT_FEEDBACK_NOT_ALLOWED` — jede Zugriffsverweigerung kollabiert weiterhin auf den bestehenden einheitlichen `WorkoutSessionNotFoundError` (Fortführung von ADR 003), siehe `STAGE_1B2B2B_COACH_RESULTS_FEEDBACK.md`.
+
 ## Audit
 
 - Zweistufige Redaktion: generische Regex-Redaktion (`password|secret|token|...`, 43-Zeichen-Token-Muster) plus strengere, ereignistyp-spezifische **Allowlist** (unbekannte Detail-Schlüssel werfen einen Fehler statt nur redigiert zu werden). **[GETESTET]** `backend/test/unit/studioSecurity.test.js`, `backend/test/unit/trainingProgramAudit.test.js`, `backend/test/unit/workoutSessionAudit.test.js`.
@@ -94,6 +105,7 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main). Klassifikationslegende: *
 | Session-Metadaten (Status, Zeitstempel) | Mitglied selbst, Coach mit aktiver Beziehung | `studio_workout_sessions` | Nein | Ja (nur Assignment-/Tag-ID beim Start, sonst leer) | Ja, unverschlüsselt | Statustransition, kein Hard-Delete | — |
 | **Satzresultate (Gewicht, Wiederholungen, RPE, Distanz, Dauer)** | Mitglied selbst, Coach **nur** mit eigener aktiver Beziehung, **kein** Owner-/Admin-Bypass | `studio_workout_session_sets` | **Nein — explizit ausgeschlossen und getestet** | **Nein — nie, auch nicht als redigierter Wert** | Ja, unverschlüsselt | Kein Hard-Delete-Pfad; laut ADR 003 das sensibelste personenbezogene Datum der Anwendung | Höchste Schutzstufe im System; Backup-Verschlüsselungslücke betrifft dieses Datum am stärksten |
 | Member-Notizen (Session/Übung/Satz) | Wie Satzresultate | `studio_workout_session*.member_note` | Nein | Nein | Ja, unverschlüsselt | Kein Hard-Delete | — |
+| **Trainer-Feedback zu Sessions** | Mitglied selbst (dauerhaft, auch nach Beziehungsende), Coach **nur** mit eigener aktiver, session-pinnender Beziehung, **kein** Owner-/Admin-Bypass | `studio_workout_session_feedback` (Migration 008) | Nein | Nur `{feedbackId, sessionId}`, nie der Text | Ja, unverschlüsselt | Kein Hard-Delete, kein Update — append-only per Schema-Design (kein PATCH/DELETE-Endpunkt) | Neu in Stage 1B.2B2B; erbt die P4-Schutzstufe der Satzresultate |
 
 **Technischer Ist-Zustand, keine Rechtsauskunft:** Es existiert kein Recht-auf-Löschung-/Anonymisierungs-Mechanismus für Benutzer- oder Trainingsdaten im gesamten Code (weder `DELETE`-Endpunkt für den eigenen Account noch eine Anonymisierungsroutine). Für einen produktiven Betrieb mit echten Nutzerdaten ist das ein offener Punkt, unabhängig von Sicherheits- oder Funktionsreife.
 

@@ -4,6 +4,8 @@
 
 Dieser Bericht vertraut keinem früheren Abschlussbericht als alleinigem Nachweis. Jede Aussage stammt aus tatsächlich in dieser Sitzung gelesenem Code, tatsächlich in dieser Sitzung ausgeführten Befehlen/Tests oder einer tatsächlich in dieser Sitzung durchgeführten manuellen Prüfung. Wo eine Aussage nur auf Code-Lektüre beruht (kein automatisierter Test gefunden), ist das explizit vermerkt.
 
+> **Nachtrag (2026-07-20):** Dieser Bericht ist ein eingefrorener Audit-Snapshot zum Stand von PR #7 (Stage 1B.2B1) und wurde bewusst **nicht** rückwirkend umgeschrieben. Seither wurden zwei weitere Phasen integriert: Stage 1B.2B2A (Mitglieds-Workout-Ausführungs-UI, PR #9 — schließt die in Abschnitt 1 beschriebene Lücke „keine Oberfläche für Workout-Sessions") und Stage 1B.2B2B (Coach-Ergebnisansicht, kontrollierter Feedback-Flow, vollständige Footer-Entfernung — siehe `STAGE_1B2B2B_COACH_RESULTS_FEEDBACK.md`). Für aktuelle Endpunkt-/View-/Test-Zahlen die jeweiligen Stage-Dokumente sowie `FITTRACK_API_CATALOG.md`/`FITTRACK_VIEW_CATALOG.md` konsultieren, nicht die untenstehenden historischen Zahlen.
+
 ---
 
 ## 1. Executive Summary
