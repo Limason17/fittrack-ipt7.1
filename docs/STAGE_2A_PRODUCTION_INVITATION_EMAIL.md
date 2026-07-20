@@ -93,7 +93,7 @@ Erforderlich, sobald `INVITATION_EMAIL_PROVIDER=smtp`:
 | `SMTP_SECURE` | ja | exakt `"true"` oder `"false"` |
 | `SMTP_USER` / `SMTP_PASSWORD` | zusammen optional | beide gesetzt oder beide leer, nie nur eines |
 | `SMTP_FROM_EMAIL` | ja | syntaktisch gültige Adresse |
-| `SMTP_FROM_NAME` | ja | nicht leer, kein Platzhalter |
+| `SMTP_FROM_NAME` | ja | nicht leer, höchstens 100 Zeichen, kein Platzhalter |
 | `SMTP_REPLY_TO` | optional | syntaktisch gültig, falls gesetzt |
 | `SMTP_CONNECTION_TIMEOUT_MS` | optional (Default 10000) | 1000–60000 |
 | `SMTP_GREETING_TIMEOUT_MS` | optional (Default 10000) | 1000–60000 |
@@ -311,12 +311,61 @@ Dokumentation, Screenshots oder Commits verwenden.
 - Kein Bounce-/Complaint-Handling (Webhooks des Providers) — ein
   abgelehnter Empfänger wird nur beim synchronen Sendeversuch selbst
   erkannt, nicht bei asynchronem Bounce nach erfolgreichem `sendMail()`.
+  Der SMTP-Server kann die Annahme bestätigen, obwohl die spätere
+  tatsächliche Zustellung an den Empfänger danach trotzdem scheitert
+  (z. B. Bounce, Spam-Ablage, volle Mailbox) — das erkennt dieses
+  synchrone Modell grundsätzlich nicht.
+- Prozessabsturz zwischen erfolgreicher SMTP-Annahme
+  (`transport.sendMail()` ist zurückgekehrt) und der finalen
+  Applikationsantwort an den Client ist ein inhärentes Risiko des
+  synchronen Modells: Die E-Mail wurde vom SMTP-Server bereits
+  angenommen, aber der Client könnte theoretisch keine Erfolgsbestätigung
+  mehr erhalten. Das ist keine Dateninkonsistenz auf Serverseite (die
+  Einladung bleibt korrekt `pending`, exakt wie bei einer normal
+  bestätigten Zustellung), sondern ausschließlich ein potenziell
+  irreführender Zustand für den anfragenden Client selbst. Keine
+  Queue-/Outbox-Worker-Architektur wurde dafür eingeführt (bewusst
+  außerhalb des Auftragsumfangs).
 - Keine Zustell-Warteschlange/Retry-Queue — bewusst außerhalb des
   Auftragsumfangs (Abschnitt 17: keine E-Mail-Queues, kein Message
   Broker).
 - `requestId`-Korrelation ist auf den Einladungs-Versandpfad beschränkt
   (nicht generisch durch jede Service-Schicht gezogen) — ausreichend für
   dieses Feature, keine breitere Refaktorierung vorgenommen.
+- Diese Einschränkungen sind bewusste, benannte Grenzen des synchronen
+  SMTP-Modells, keine Bugs.
+
+## Nachtrag: unabhängige Release-Gate-Prüfung (2026-07-20)
+
+Eine zweite, unabhängige, kritische Prüfung der bereits implementierten
+Stage 2A wurde durchgeführt, ohne die Architektur neu zu entwerfen. Dabei
+gefunden und minimal behoben: `SMTP_FROM_NAME` besaß keine Längenbegrenzung
+(jetzt 100 Zeichen, wie oben in der Variablentabelle vermerkt). Zusätzlich
+empirisch (nicht nur durch Code-Lesen) verifiziert und mit neuen, realistisch
+geformten Regressionstests abgesichert:
+
+- Der reale Produktionsprozess (`server.js`) schlägt bei explizit
+  aktivierter, aber ungültiger SMTP-Konfiguration nachweislich schon beim
+  Start fehl, nicht erst bei der ersten Anfrage — geprüft durch tatsächliches
+  Starten des Prozesses, nicht nur durch einen isolierten Unit-Test.
+- Der reale Produktionsprozess startet nachweislich erfolgreich mit einem
+  syntaktisch gültigen, aber unerreichbaren SMTP-Host, ohne beim Start eine
+  echte Verbindung aufzubauen — bestätigt „kein echter E-Mail-Versand beim
+  normalen Start" empirisch, nicht nur durch Code-Lesen.
+- Ein CRLF-/Header-Injection-Versuch über `SMTP_FROM_NAME`, `SMTP_REPLY_TO`
+  und den Studio-Namen (der in die Betreffzeile einfließt) wurde gegen die
+  **echte** Nodemailer-Nachrichtenkomposition getestet (nicht nur gegen die
+  von diesem Modul aufgerufenen `mailOptions`): Die installierte Version
+  (9.0.3) faltet/neutralisiert eingebettete `\r\n`-Sequenzen zuverlässig,
+  es entsteht nie eine zusätzliche rohe Header-Zeile. `SMTP_REPLY_TO` wird
+  zusätzlich bereits durch die Konfigurationsvalidierung selbst
+  zurückgewiesen, bevor ein Provider überhaupt konstruiert wird. Kein
+  Produktcode musste hierfür geändert werden.
+- Realistisch geformte Nodemailer-Fehlerobjekte (mit `response`,
+  `responseCode`, `command`, `rejected`, `rejectedErrors`, `cause`) wurden
+  gezielt gegen die Logging-Pipeline getestet: Keines dieser Felder erreicht
+  jemals den Logger oder den an den Client zurückgegebenen Fehler — nur die
+  intern abgeleitete, sichere Klassifikationszeichenkette.
 
 ## Abgrenzung zu Backup-/DB-Härtung
 

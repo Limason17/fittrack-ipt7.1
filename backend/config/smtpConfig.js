@@ -111,6 +111,9 @@ function readSmtpConfig(env = process.env) {
 
     const fromEmail = validEmail(env.SMTP_FROM_EMAIL, "SMTP_FROM_EMAIL");
     const fromName = nonEmptyString(env.SMTP_FROM_NAME, "SMTP_FROM_NAME");
+    if (fromName.length > 100) {
+        throw configError("SMTP_FROM_NAME must be at most 100 characters.");
+    }
     if (isPlaceholder(fromName)) {
         throw configError("SMTP_FROM_NAME must not be a placeholder value.");
     }

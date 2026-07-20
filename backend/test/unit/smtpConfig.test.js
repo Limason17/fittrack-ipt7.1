@@ -105,6 +105,14 @@ test("an invalid reply-to address is rejected when set", () => {
     );
 });
 
+test("SMTP_FROM_NAME has a reasonable maximum length", () => {
+    assert.doesNotThrow(() => readSmtpConfig(baseEnv({ SMTP_FROM_NAME: "A".repeat(100) })));
+    assert.throws(
+        () => readSmtpConfig(baseEnv({ SMTP_FROM_NAME: "A".repeat(101) })),
+        (error) => error.code === "INVALID_SMTP_CONFIG" && /SMTP_FROM_NAME/.test(error.message)
+    );
+});
+
 test("placeholder credentials and hosts are rejected", () => {
     for (const overrides of [
         { SMTP_HOST: "smtp.example.com" },

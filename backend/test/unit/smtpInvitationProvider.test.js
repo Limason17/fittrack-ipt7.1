@@ -248,3 +248,148 @@ test("close() shuts the transport down when requested", async () => {
     await provider.close();
     assert.equal(closed.value, true);
 });
+
+// The tests above capture the raw mailOptions object exactly as this module
+// builds it - they prove the module passes the right fields through, but not
+// that a real header-injection attempt is neutralized, since that sanitizing
+// happens later, inside Nodemailer's own MIME/header composer. These tests
+// route the same call through Nodemailer's real (network-free) stream
+// transport, which does run that composer, to prove CRLF sequences in
+// operator-controlled (SMTP_FROM_NAME, SMTP_REPLY_TO) and studio-owner-
+// controlled (studio name, which reaches the Subject line) values can never
+// break out into a second raw header line. No network access occurs.
+function realComposedMessageTransportFactory() {
+    // eslint-disable-next-line global-require -- only used by this dedicated composition test
+    const nodemailer = require("nodemailer");
+    const real = nodemailer.createTransport({ streamTransport: true, buffer: true });
+    let composed;
+    return {
+        composed: () => composed,
+        factory: () => ({
+            async sendMail(message) {
+                const info = await real.sendMail(message);
+                composed = info.message.toString("utf8");
+                return info;
+            },
+            close() {}
+        })
+    };
+}
+
+// Isolates just the header block (everything before the first blank line
+// that separates headers from the body, per RFC 5322) and splits it into
+// logical header entries, keeping folded continuation lines (which start
+// with whitespace) attached to their parent header. Checking only this
+// block - never the body - is required for a correct test: the body
+// legitimately repeats the (attacker-controlled) studio name as visible
+// text and would otherwise produce false positives that look like
+// "injected headers" but are just ordinary paragraph content.
+function extractHeaderLines(composedMessage) {
+    const headerBlock = composedMessage.split(/\r\n\r\n/)[0];
+    return headerBlock.split(/\r\n(?!\s)/).filter((line) => /^[A-Za-z-]+:/.test(line));
+}
+
+test("a CRLF injection attempt in SMTP_FROM_NAME cannot add a second raw header line to the real composed message", async () => {
+    const { factory, composed } = realComposedMessageTransportFactory();
+    const provider = createSmtpInvitationProvider({
+        config: config({ SMTP_FROM_NAME: "FitTrack\r\nBcc: attacker@evil.test" }),
+        transportFactory: factory,
+        logger: fakeLogger()
+    });
+    await provider.sendInvitation({
+        email: "member@example.test", studioName: "Studio", role: "member",
+        acceptanceUrl: "https://app.fittrack.test/invitations/x"
+    });
+    const headerLines = extractHeaderLines(composed());
+    assert.equal(headerLines.some((line) => /^Bcc:/i.test(line)), false, "no injected Bcc header line");
+    assert.equal(headerLines.filter((line) => /^From:/i.test(line)).length, 1, "exactly one From header remains");
+    // The mangled text is expected to remain harmlessly inside the quoted
+    // display name (nodemailer folds the CRLF into a plain space there) -
+    // that is the safe outcome, not something to additionally assert away.
+});
+
+test("SMTP_REPLY_TO with an embedded CRLF is already rejected by configuration validation, before any provider is even constructed", () => {
+    assert.throws(
+        () => config({ SMTP_REPLY_TO: "support@fittrack.test\r\nBcc: attacker@evil.test" }),
+        (error) => error.code === "INVALID_SMTP_CONFIG"
+    );
+});
+
+test("a CRLF injection attempt in the studio name (reaches the Subject line) cannot add a second raw header line, only folds within Subject", async () => {
+    const { factory, composed } = realComposedMessageTransportFactory();
+    const provider = createSmtpInvitationProvider({ config: config(), transportFactory: factory, logger: fakeLogger() });
+    await provider.sendInvitation({
+        email: "member@example.test",
+        studioName: "Evil Studio\r\nBcc: attacker@evil.test\r\nX-Injected: true",
+        role: "member",
+        acceptanceUrl: "https://app.fittrack.test/invitations/x"
+    });
+    const headerLines = extractHeaderLines(composed());
+    assert.equal(headerLines.some((line) => /^Bcc:/i.test(line)), false, "no injected Bcc header line");
+    assert.equal(headerLines.some((line) => /^X-Injected:/i.test(line)), false, "no injected custom header line");
+    assert.equal(headerLines.filter((line) => /^Subject:/i.test(line)).length, 1, "exactly one Subject header remains");
+    for (const expected of ["From", "To", "Subject", "MIME-Version", "Content-Type"]) {
+        assert.equal(headerLines.filter((line) => new RegExp(`^${expected}:`, "i").test(line)).length, 1, `exactly one ${expected} header`);
+    }
+});
+
+test("logs never contain any field from a realistically-shaped Nodemailer failure (response, responseCode, command, rejected, rejectedErrors, cause, stack)", async () => {
+    const logger = fakeLogger();
+    const realisticNodemailerError = Object.assign(
+        new Error("Command failed: 550 5.1.1 <member@example.test>: Recipient address rejected: relay-secret-token-abc123"),
+        {
+            code: "EENVELOPE",
+            command: "RCPT TO",
+            response: "550 5.1.1 <member@example.test>: Recipient address rejected: relay-secret-token-abc123",
+            responseCode: 550,
+            rejected: ["member@example.test"],
+            rejectedErrors: [
+                Object.assign(new Error("550 5.1.1 rejected"), { address: "member@example.test", response: "550 5.1.1 rejected with internal-relay-id-xyz" })
+            ],
+            cause: new Error("underlying socket error with host smtp.internal-secret-host.test")
+        }
+    );
+    const { factory } = fakeTransportFactory({ sendMail: async () => { throw realisticNodemailerError; } });
+    const provider = createSmtpInvitationProvider({ config: config(), transportFactory: factory, logger });
+    await assert.rejects(provider.sendInvitation({
+        email: "member@example.test", studioName: "Studio", role: "member",
+        acceptanceUrl: "https://app.fittrack.test/invitations/secret-token-value"
+    }));
+    const serializedLogs = JSON.stringify(logger.entries);
+    for (const forbidden of [
+        "relay-secret-token-abc123",
+        "internal-relay-id-xyz",
+        "internal-secret-host",
+        "member@example.test",
+        "secret-token-value",
+        "Recipient address rejected",
+        "550 5.1.1"
+    ]) {
+        assert.equal(serializedLogs.includes(forbidden), false, `log output must not contain: ${forbidden}`);
+    }
+    // only the derived, safe classification string is expected to appear
+    const failure = logger.entries.find((entry) => entry.event === "invitation_email_send_failed");
+    assert.equal(failure.fields.errorClass, "recipient_rejected");
+    assert.deepEqual(Object.keys(failure.fields).sort(), ["durationMs", "errorClass", "provider", "requestId"]);
+});
+
+test("the thrown client-facing error never carries the original Nodemailer error as its cause", async () => {
+    const realisticNodemailerError = Object.assign(new Error("535 5.7.8 Authentication failed for user relay-user"), {
+        code: "EAUTH",
+        response: "535 5.7.8 Authentication failed for user relay-user"
+    });
+    const { factory } = fakeTransportFactory({ sendMail: async () => { throw realisticNodemailerError; } });
+    const provider = createSmtpInvitationProvider({ config: config(), transportFactory: factory, logger: fakeLogger() });
+    await assert.rejects(
+        provider.sendInvitation({
+            email: "member@example.test", studioName: "Studio", role: "member",
+            acceptanceUrl: "https://app.fittrack.test/invitations/x"
+        }),
+        (error) => {
+            assert.equal(error.code, "INVITATION_PROVIDER_UNAVAILABLE");
+            assert.equal(error.cause, undefined);
+            assert.equal(JSON.stringify(error).includes("relay-user"), false);
+            return true;
+        }
+    );
+});
