@@ -125,7 +125,8 @@ test(
                     "004_training_history_consistency",
                     "005_studio_tenancy_and_rbac",
                     "006_coach_member_training",
-                    "007_studio_workout_execution"
+                    "007_studio_workout_execution",
+                    "008_studio_workout_session_feedback"
                 ]
             );
 
@@ -145,7 +146,8 @@ test(
                 "004_training_history_consistency",
                 "005_studio_tenancy_and_rbac",
                 "006_coach_member_training",
-                "007_studio_workout_execution"
+                "007_studio_workout_execution",
+                "008_studio_workout_session_feedback"
             ]);
 
             const [tables] = await pool.promise().query(
@@ -171,6 +173,7 @@ test(
                     "studio_training_program_versions",
                     "studio_training_programs",
                     "studio_workout_session_exercises",
+                    "studio_workout_session_feedback",
                     "studio_workout_session_sets",
                     "studio_workout_sessions",
                     "studios",
@@ -209,7 +212,7 @@ test(
                  FROM schema_migrations
                  ORDER BY migration_id`
             );
-            assert.equal(ledgerSnapshot.length, 7);
+            assert.equal(ledgerSnapshot.length, 8);
             assert.ok(ledgerSnapshot.every((row) => row.status === "applied"));
 
             const secondRun = await runner.migrate();
@@ -385,7 +388,8 @@ test(
             assert.deepEqual(stage1Result.applied, [
                 "005_studio_tenancy_and_rbac",
                 "006_coach_member_training",
-                "007_studio_workout_execution"
+                "007_studio_workout_execution",
+                "008_studio_workout_session_feedback"
             ]);
             const afterStudioMigration = await personalDataSnapshot(sql);
             assert.deepEqual(
@@ -1414,6 +1418,75 @@ test(
             assert.equal(Number(orphanSets[0].total), 0);
             assert.ok(sessionSetId > 0, "sanity check that the set insert above actually ran");
 
+            // --- session feedback: idempotency uniqueness, FKs, body-not-empty check ---
+            async function insertFeedback(publicId, overrides = {}) {
+                const [result] = await sql.query(
+                    `INSERT INTO studio_workout_session_feedback (
+                        public_id, studio_id, workout_session_id, coaching_relationship_id,
+                        coach_membership_id, author_user_id, client_feedback_key, body
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        publicId,
+                        overrides.studioId ?? studioId,
+                        overrides.workoutSessionId ?? sessionId,
+                        overrides.coachingRelationshipId ?? relationshipId,
+                        overrides.coachMembershipId ?? coachMembershipId,
+                        overrides.authorUserId ?? coachId,
+                        overrides.clientFeedbackKey ?? "29900000-0000-4000-8000-000000000001",
+                        overrides.body ?? "Great effort today, keep it up."
+                    ]
+                );
+                return result.insertId;
+            }
+
+            const feedbackId = await insertFeedback("29800000-0000-4000-8000-000000000001");
+            assert.ok(feedbackId > 0);
+
+            await expectMysqlError(
+                insertFeedback("29800000-0000-4000-8000-000000000001"),
+                "ER_DUP_ENTRY"
+            );
+            await expectMysqlError(
+                insertFeedback("29800000-0000-4000-8000-000000000002"),
+                "ER_DUP_ENTRY",
+                "the compound (session, coach, client_feedback_key) key must reject a retry with the same key"
+            );
+
+            const secondFeedbackId = await insertFeedback("29800000-0000-4000-8000-000000000003", {
+                clientFeedbackKey: "29900000-0000-4000-8000-000000000002",
+                body: "Follow-up note after reviewing the session."
+            });
+            assert.ok(secondFeedbackId > feedbackId, "multiple feedback entries per session must be allowed");
+
+            await expectMysqlError(
+                insertFeedback("29800000-0000-4000-8000-000000000004", {
+                    clientFeedbackKey: "29900000-0000-4000-8000-000000000003", body: ""
+                }),
+                "ER_CHECK_CONSTRAINT_VIOLATED",
+                "an empty body must be rejected"
+            );
+            await expectMysqlError(
+                insertFeedback("29800000-0000-4000-8000-000000000005", {
+                    clientFeedbackKey: "29900000-0000-4000-8000-000000000004",
+                    workoutSessionId: 2147483647
+                }),
+                "ER_NO_REFERENCED_ROW_2"
+            );
+            await expectMysqlError(
+                insertFeedback("29800000-0000-4000-8000-000000000006", {
+                    clientFeedbackKey: "29900000-0000-4000-8000-000000000005",
+                    authorUserId: 2147483647
+                }),
+                "ER_NO_REFERENCED_ROW_2"
+            );
+
+            // author_user_id uses ON DELETE RESTRICT (matching every other *_user_id FK in this
+            // schema): a user who authored feedback can never be hard-deleted out from under it.
+            await expectMysqlError(
+                sql.query("DELETE FROM users WHERE id = ?", [coachId]),
+                "ER_ROW_IS_REFERENCED_2"
+            );
+
             // deleting a whole studio must cascade through the full workout-execution chain,
             // together with the pre-existing Stage 1A/1B.1 tables, with zero orphans anywhere
             await sql.query("DELETE FROM studios WHERE id = ?", [studioId]);
@@ -1422,6 +1495,7 @@ test(
                     (SELECT COUNT(*) FROM studio_workout_sessions) AS sessions,
                     (SELECT COUNT(*) FROM studio_workout_session_exercises) AS session_exercises,
                     (SELECT COUNT(*) FROM studio_workout_session_sets) AS session_sets,
+                    (SELECT COUNT(*) FROM studio_workout_session_feedback) AS session_feedback,
                     (SELECT COUNT(*) FROM studio_coaching_relationships) AS relationships,
                     (SELECT COUNT(*) FROM studio_program_assignments) AS assignments
             `);
@@ -1433,6 +1507,7 @@ test(
                     sessions: 0,
                     session_exercises: 0,
                     session_sets: 0,
+                    session_feedback: 0,
                     relationships: 0,
                     assignments: 0
                 }

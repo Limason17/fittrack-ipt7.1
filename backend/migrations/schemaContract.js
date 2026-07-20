@@ -1061,6 +1061,122 @@ const workoutChecks = [
     )
 );
 
+const feedbackMigrationId = "008_studio_workout_session_feedback";
+const feedbackExistingTableElement = { pendingMissingAllowed: false };
+
+const feedbackTables = ["studio_workout_session_feedback"].map((name) =>
+    table(feedbackMigrationId, name)
+);
+
+const feedbackColumns = [
+    ["studio_workout_session_feedback", "id", "int", false],
+    ["studio_workout_session_feedback", "public_id", "char(36)", false],
+    ["studio_workout_session_feedback", "studio_id", "int", false],
+    ["studio_workout_session_feedback", "workout_session_id", "int", false],
+    ["studio_workout_session_feedback", "coaching_relationship_id", "int", false],
+    ["studio_workout_session_feedback", "coach_membership_id", "int", false],
+    ["studio_workout_session_feedback", "author_user_id", "int", false],
+    ["studio_workout_session_feedback", "client_feedback_key", "char(36)", false],
+    ["studio_workout_session_feedback", "body", "varchar(2000)", false],
+    ["studio_workout_session_feedback", "created_at", "timestamp(3)", false]
+].map(([tableName, columnName, columnType, nullable]) =>
+    column(
+        feedbackMigrationId,
+        tableName,
+        columnName,
+        columnType,
+        nullable,
+        feedbackExistingTableElement
+    )
+);
+
+const feedbackIndexes = [
+    ["studio_workout_session_feedback", "PRIMARY", ["id"], true],
+    ["studio_workout_session_feedback", "uq_workout_session_feedback_public_id", ["public_id"], true],
+    [
+        "studio_workout_session_feedback",
+        "uq_workout_session_feedback_idempotency",
+        ["workout_session_id", "coach_membership_id", "client_feedback_key"],
+        true
+    ],
+    [
+        "studio_workout_session_feedback",
+        "idx_workout_session_feedback_session_created",
+        ["workout_session_id", "created_at", "id"],
+        false
+    ],
+    [
+        "studio_workout_session_feedback",
+        "idx_workout_session_feedback_studio",
+        ["studio_id"],
+        false
+    ],
+    [
+        "studio_workout_session_feedback",
+        "idx_workout_session_feedback_relationship",
+        ["coaching_relationship_id"],
+        false
+    ],
+    [
+        "studio_workout_session_feedback",
+        "idx_workout_session_feedback_coach_membership",
+        ["coach_membership_id"],
+        false
+    ],
+    [
+        "studio_workout_session_feedback",
+        "idx_workout_session_feedback_author",
+        ["author_user_id"],
+        false
+    ]
+].map(([tableName, indexName, columns, unique]) =>
+    index(
+        feedbackMigrationId,
+        tableName,
+        indexName,
+        columns,
+        unique,
+        feedbackExistingTableElement
+    )
+);
+
+const feedbackForeignKeys = [
+    ["studio_workout_session_feedback", "fk_workout_session_feedback_studio", ["studio_id"], "studios", ["id"], "CASCADE"],
+    ["studio_workout_session_feedback", "fk_workout_session_feedback_session", ["workout_session_id"], "studio_workout_sessions", ["id"], "CASCADE"],
+    ["studio_workout_session_feedback", "fk_workout_session_feedback_relationship", ["coaching_relationship_id"], "studio_coaching_relationships", ["id"], "CASCADE"],
+    ["studio_workout_session_feedback", "fk_workout_session_feedback_coach_membership", ["coach_membership_id"], "studio_memberships", ["id"], "CASCADE"],
+    ["studio_workout_session_feedback", "fk_workout_session_feedback_author", ["author_user_id"], "users", ["id"], "RESTRICT"]
+].map(([
+    tableName,
+    constraintName,
+    columns,
+    referencedTable,
+    referencedColumns,
+    deleteRule
+]) =>
+    foreignKey(
+        feedbackMigrationId,
+        tableName,
+        constraintName,
+        columns,
+        referencedTable,
+        referencedColumns,
+        deleteRule,
+        feedbackExistingTableElement
+    )
+);
+
+const feedbackChecks = [
+    ["studio_workout_session_feedback", "chk_workout_session_feedback_body"]
+].map(([tableName, constraintName]) =>
+    checkConstraint(
+        feedbackMigrationId,
+        tableName,
+        constraintName,
+        feedbackExistingTableElement
+    )
+);
+
 const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
     {
         migrationId: "001_initial_schema",
@@ -1111,6 +1227,16 @@ const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
             ...workoutIndexes,
             ...workoutForeignKeys,
             ...workoutChecks
+        ]
+    },
+    {
+        migrationId: feedbackMigrationId,
+        checks: [
+            ...feedbackTables,
+            ...feedbackColumns,
+            ...feedbackIndexes,
+            ...feedbackForeignKeys,
+            ...feedbackChecks
         ]
     }
 ]);

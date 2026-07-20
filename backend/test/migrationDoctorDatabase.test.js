@@ -155,7 +155,7 @@ test(
 
             assert.equal(pending.exitCode, DOCTOR_EXIT_CODES.PENDING);
             assert.equal(pending.recoveryRequired, false);
-            assert.equal(pending.summary.pending, 7);
+            assert.equal(pending.summary.pending, 8);
             assert.equal(emptyBefore.hasLedger, false);
             assert.deepEqual(emptyAfter, emptyBefore, "doctor must not create the ledger");
 
@@ -425,6 +425,75 @@ test(
                         item.migrationId === "007_studio_workout_execution"
                 ),
                 "the one workout table that did get created, but with missing columns, must be reported as a partial application"
+            );
+            assert.deepEqual(afterDoctor, beforeDoctor);
+        } finally {
+            await db.closePool(pool);
+        }
+    }
+);
+
+test(
+    "migration doctor detects a partially applied Stage 1B.2B2B workout feedback schema without mutating it",
+    { skip: !RUN_INTEGRATION },
+    async () => {
+        const database = await createDisposableDatabase();
+        const pool = createTestPool(database);
+        const migrations = loadMigrations();
+        const runner = createMigrationRunner({
+            pool,
+            migrations: migrations.slice(0, 7),
+            logger: silentLogger()
+        });
+
+        try {
+            await runner.migrate();
+
+            await pool.promise().query(`
+                CREATE TABLE studio_workout_session_feedback (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    public_id CHAR(36) NOT NULL,
+                    body VARCHAR(2000) NOT NULL,
+                    created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+                    UNIQUE INDEX uq_workout_session_feedback_public_id (public_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            `);
+            const feedbackMigration = migrations[7];
+            await pool.promise().query(
+                `INSERT INTO schema_migrations (
+                    migration_id, description, checksum, status,
+                    started_at, applied_at, execution_ms, failure_code
+                 ) VALUES (?, ?, ?, 'failed', ?, NULL, 40, 'INTENTIONAL_FAILURE')`,
+                [
+                    feedbackMigration.id,
+                    feedbackMigration.description,
+                    feedbackMigration.checksum,
+                    new Date("2026-07-19T12:00:00.000Z")
+                ]
+            );
+
+            const beforeDoctor = await databaseSnapshot(pool, database);
+            const report = await createMigrationDoctor({ pool }).diagnose();
+            const afterDoctor = await databaseSnapshot(pool, database);
+
+            assert.equal(report.exitCode, DOCTOR_EXIT_CODES.RECOVERY_REQUIRED);
+            assert.equal(report.recoveryRequired, true);
+            assert.deepEqual(report.migrationStatus.dirty, [
+                {
+                    migrationId: "008_studio_workout_session_feedback",
+                    status: "failed",
+                    startedAt: "2026-07-19T12:00:00.000Z",
+                    appliedAt: null,
+                    failureCode: "INTENTIONAL_FAILURE"
+                }
+            ]);
+            assert.ok(
+                report.issues.some(
+                    (item) =>
+                        item.code === "MIGRATION_SCHEMA_PARTIAL" &&
+                        item.migrationId === "008_studio_workout_session_feedback"
+                ),
+                "the one feedback table that did get created, but with missing columns/FKs, must be reported as a partial application"
             );
             assert.deepEqual(afterDoctor, beforeDoctor);
         } finally {
