@@ -1,6 +1,6 @@
 # FitTrack Sicherheits- und Datenschutzstatus
 
-Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um den neuen Abschnitt „Coach-Feedback (Stage 1B.2B2B)" sowie eine neue Zeile in der Datenschutzklassifikation — der übrige Bestand wurde nicht rückwirkend umgeschrieben. Klassifikationslegende: **[GETESTET]** implementiert und automatisiert getestet (Testdatei zitiert) · **[MANUELL]** implementiert, nur durch Code-Lesen nachvollziehbar · **[DOKU]** nur dokumentiert, kein Code · **[OFFEN]** fehlt komplett.
+Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um den neuen Abschnitt „Coach-Feedback (Stage 1B.2B2B)" sowie eine neue Zeile in der Datenschutzklassifikation, und erneut ergänzt (selbes Datum) um den SMTP-Adapter-Status in „Einladungen" und Punkt 6 der Lückenliste (Stage 2A) — der übrige Bestand wurde nicht rückwirkend umgeschrieben. Klassifikationslegende: **[GETESTET]** implementiert und automatisiert getestet (Testdatei zitiert) · **[MANUELL]** implementiert, nur durch Code-Lesen nachvollziehbar · **[DOKU]** nur dokumentiert, kein Code · **[OFFEN]** fehlt komplett.
 
 ## Auth
 
@@ -32,7 +32,8 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um
 - Lebensdauer fix 7 Tage, lazy Ablaufprüfung. **[GETESTET]** `backend/test/integration/studioApi.test.js:685`.
 - Replay-Schutz: genau einmal annehmbar, race-sicher. **[GETESTET]** `backend/test/integration/studioApi.test.js:622-627,700-724`.
 - E-Mail-Bindung gegen Konto-E-Mail, identische Fehlermeldung wie unbekanntes Token. **[MANUELL]** kein dedizierter Test für "falscher Benutzer nimmt fremde Einladung an".
-- **Produktion fail-closed ohne Provider**: Ohne verdrahteten Zustellprovider verweigert das System jede Einladungserstellung in Produktion (503), bevor irgendetwas persistiert wird. **[GETESTET]** `backend/test/unit/studioSecurity.test.js:136-193`. Kein SMTP-/E-Mail-Adapter im Repository vorhanden — Einladungen sind in einer echten Produktionsumgebung ohne zusätzliche, hier nicht enthaltene Integration **nicht nutzbar** (bewusste Pilot-Voraussetzung, kein Bug).
+- **Produktion fail-closed ohne Provider**: Ohne verdrahteten Zustellprovider verweigert das System jede Einladungserstellung in Produktion (503), bevor irgendetwas persistiert wird. **[GETESTET]** `backend/test/unit/studioSecurity.test.js:136-193`.
+- **Seit Stage 2A: validierter SMTP-Adapter vorhanden** (`backend/delivery/smtpInvitationProvider.js`, `backend/config/smtpConfig.js`), opt-in über `INVITATION_EMAIL_PROVIDER=smtp`. TLS ausnahmslos erzwungen (SMTPS oder STARTTLS, Zertifikatsprüfung nie deaktiviert), Platzhalter-Credentials in jeder Umgebung abgelehnt, keine Secrets/Token/URLs in Logs oder Audit. **[GETESTET]** 44 neue Unit- + 4 neue Integrationstests, siehe `STAGE_2A_PRODUCTION_INVITATION_EMAIL.md`. Ein echter Versand wurde in dieser Umgebung mangels Zugangsdaten nicht nachgewiesen — reale Provider-Verbindung bleibt ein dokumentierter, offener manueller Schritt.
 - Token-Redaktion in Logs/Audit via Regex-Muster. **[GETESTET]** `backend/test/unit/startupLogger.test.js`, `backend/test/unit/studioSecurity.test.js:44-74`.
 
 ## Coaching und Programme
@@ -116,7 +117,7 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um
 3. Eine einzige DB-Rolle für Runtime/Migration/Restore statt getrennter Privilegien.
 4. Timing-Seitenkanal bei Login-Enumeration.
 5. Audit-Append-only ist reine Anwendungskonvention, nicht DB-erzwungen.
-6. Kein Produktions-E-Mail-Provider verdrahtet (bewusst fail-closed, aber Einladungen sind ohne diesen aktuell nicht produktiv nutzbar).
+6. ~~Kein Produktions-E-Mail-Provider verdrahtet~~ — seit Stage 2A behoben: validierter, opt-in SMTP-Adapter vorhanden (siehe oben). Weiterhin offen: kein Bounce-/Complaint-Handling, keine Zustell-Warteschlange, und ein echter Versand wurde in dieser Umgebung mangels Zugangsdaten nicht real nachgewiesen.
 7. CORS-Konfiguration ungetestet.
 8. Rate Limiter ist pro Prozess, nicht zentral (Skalierungsgrenze).
 9. Kein abgeschlossener/nachgewiesener Restore-Drill.
