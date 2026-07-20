@@ -6,11 +6,14 @@ import Badge from '../components/ui/Badge.vue'
 import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 import ExercisePanel from '../components/workout/ExercisePanel.vue'
+import FeedbackList from '../components/workout/FeedbackList.vue'
 import SaveStatusIndicator from '../components/workout/SaveStatusIndicator.vue'
 import { formatDate, t } from '../utils/i18n'
 import { workoutSessionStatusTone } from '../utils/studioBadges'
 import { activeStudio } from '../utils/studioContext'
 import { toastError, toastSuccess } from '../utils/toast'
+import { listWorkoutSessionFeedback } from '../utils/workoutSessionApi'
+import { workoutErrorMessage } from '../utils/workoutSessionErrors'
 import { useWorkoutSession } from '../utils/workoutSessionState'
 
 const DATE_TIME_OPTIONS = { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }
@@ -95,9 +98,35 @@ function goToHistory() {
   router.push({ name: 'studio-workout-sessions', params: { studioId: studioId.value } })
 }
 
+const memberFeedback = ref([])
+const isMemberFeedbackLoading = ref(false)
+const memberFeedbackError = ref('')
+
+async function loadMemberFeedback() {
+  if (!session.value || session.value.status === 'in_progress') {
+    memberFeedback.value = []
+    return
+  }
+  isMemberFeedbackLoading.value = true
+  memberFeedbackError.value = ''
+  try {
+    const result = await listWorkoutSessionFeedback(studioId.value, sessionId.value, { page: 1, limit: 100 })
+    memberFeedback.value = result.workoutSessionFeedback || []
+  } catch (error) {
+    memberFeedbackError.value = workoutErrorMessage(error)
+  } finally {
+    isMemberFeedbackLoading.value = false
+  }
+}
+
 watch([studioId, sessionId], () => {
   clearHighlight()
+  memberFeedback.value = []
   loadSession(studioId.value, sessionId.value)
+}, { immediate: true })
+
+watch(() => session.value?.status, (status) => {
+  if (status && status !== 'in_progress') loadMemberFeedback()
 }, { immediate: true })
 
 onUnmounted(reset)
@@ -215,6 +244,17 @@ onUnmounted(reset)
         />
       </div>
 
+      <article v-if="session && session.status !== 'in_progress'" class="card feedback-section">
+        <h2 class="studio-section-title">{{ t('studios.coachResults.feedbackFromCoach') }}</h2>
+        <div v-if="isMemberFeedbackLoading" class="skeleton skeleton-text" style="height: 2.5rem;" aria-busy="true"></div>
+        <p v-else-if="memberFeedbackError" class="message message-error" role="alert">{{ memberFeedbackError }}</p>
+        <FeedbackList
+          v-else
+          :entries="memberFeedback"
+          :empty-title="t('studios.coachResults.feedbackFromCoachEmpty')"
+        />
+      </article>
+
       <ConfirmDialog
         :open="pendingCompleteConfirm"
         :title="t('studios.workoutSessions.confirmComplete.title')"
@@ -252,6 +292,17 @@ onUnmounted(reset)
 .workout-session-exercises {
   display: grid;
   gap: 1rem;
+}
+
+.feedback-section {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.studio-section-title {
+  font-size: var(--text-lg);
+  margin: 0;
 }
 
 @media (max-width: 480px) {
