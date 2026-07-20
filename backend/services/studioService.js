@@ -717,7 +717,7 @@ function createStudioService({
         return publicMembership(updated);
     }
 
-    async function createInvitation(actorUserId, context, input) {
+    async function createInvitation(actorUserId, context, input, { requestId } = {}) {
         outbox.assertAvailable();
         const { token, tokenHash } = generateInvitationToken();
         const invitationPublicId = generatePublicId();
@@ -830,7 +830,9 @@ function createStudioService({
                 email: input.email,
                 studioName: studio.name,
                 role: input.role,
-                expiresAt
+                expiresAt,
+                locale: studio.default_locale,
+                requestId
             });
         } catch {
             try {
