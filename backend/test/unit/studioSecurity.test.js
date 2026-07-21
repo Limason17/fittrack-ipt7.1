@@ -171,25 +171,63 @@ test("production invitation delivery requires an explicitly configured provider"
         expiresAt: new Date("2026-08-01T00:00:00Z")
     }), { delivered: true });
     assert.equal(delivered[0].acceptanceUrl, `https://app.example.test/invitations/${token}`);
+});
 
+// A prior production incident showed that an invalid production acceptance
+// URL and a genuinely unconfigured provider produced the exact same
+// INVITATION_DELIVERY_UNAVAILABLE 503 at request time, making the two
+// unrelated root causes indistinguishable. The acceptance URL is now
+// validated eagerly, once, during composition - the server must fail to
+// start rather than start successfully and only fail on the first request.
+test("an invalid production acceptance URL fails composition immediately with a distinct, stable code - not lazily at request time", () => {
     for (const invalidBaseUrl of [
         undefined,
         "http://app.example.test",
         "https://user:password@app.example.test",
-        "https://app.example.test?tenant=unsafe"
+        "https://app.example.test?tenant=unsafe",
+        "not a url at all"
     ]) {
-        const invalid = createInvitationDelivery({
-            env: {
-                NODE_ENV: "production",
-                ...(invalidBaseUrl ? { INVITATION_ACCEPT_BASE_URL: invalidBaseUrl } : {})
-            },
-            provider: { async sendInvitation() {} }
-        });
+        const env = {
+            NODE_ENV: "production",
+            ...(invalidBaseUrl ? { INVITATION_ACCEPT_BASE_URL: invalidBaseUrl } : {})
+        };
         assert.throws(
-            () => invalid.assertAvailable(),
-            (error) => error.code === "INVITATION_DELIVERY_UNAVAILABLE"
+            () => createInvitationDelivery({ env, provider: { async sendInvitation() {} } }),
+            (error) => error.code === "INVALID_INVITATION_ACCEPT_BASE_URL",
+            `expected construction to throw for base URL: ${JSON.stringify(invalidBaseUrl)}`
+        );
+        // The same eager check applies even when no provider is configured
+        // at all: it is one startup contract, not one per delivery mode.
+        assert.throws(
+            () => createInvitationDelivery({ env }),
+            (error) => error.code === "INVALID_INVITATION_ACCEPT_BASE_URL",
+            `expected construction to throw with no provider for base URL: ${JSON.stringify(invalidBaseUrl)}`
         );
     }
+
+    let credentialLeakError;
+    try {
+        createInvitationDelivery({
+            env: {
+                NODE_ENV: "production",
+                INVITATION_ACCEPT_BASE_URL: "https://leaked-user:leaked-password@app.example.test"
+            }
+        });
+    } catch (error) {
+        credentialLeakError = error;
+    }
+    assert.ok(credentialLeakError, "expected a credentials-bearing base URL to throw");
+    assert.doesNotMatch(`${credentialLeakError.message} ${credentialLeakError.stack}`, /leaked-user|leaked-password/);
+});
+
+test("a valid https production acceptance URL never leaks into the error and construction succeeds without a provider", () => {
+    const delivery = createInvitationDelivery({
+        env: { NODE_ENV: "production", INVITATION_ACCEPT_BASE_URL: "https://app.example.test" }
+    });
+    assert.throws(
+        () => delivery.assertAvailable(),
+        (error) => error.code === "INVITATION_DELIVERY_UNAVAILABLE"
+    );
 });
 
 test("service update SQL uses an explicit column allowlist", () => {

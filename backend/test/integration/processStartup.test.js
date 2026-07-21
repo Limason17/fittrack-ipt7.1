@@ -17,7 +17,12 @@ test("FT-03: the real process exits non-zero without listening when the DB is un
             DB_USER: "test-user",
             DB_PASSWORD: secretMarker,
             DB_CONNECT_TIMEOUT_MS: "100",
-            JWT_SECRET: "fittrack-stage-0a-process-test-secret-32-characters"
+            JWT_SECRET: "fittrack-stage-0a-process-test-secret-32-characters",
+            // This spawns a genuinely separate server.js process, which loads
+            // its own backend/.env via config/db.js's dotenv fallback - isolate
+            // it from any real SMTP configuration a developer may have there,
+            // matching the pattern used by every in-process integration test.
+            INVITATION_EMAIL_PROVIDER: ""
         },
         encoding: "utf8",
         timeout: 10_000,
