@@ -218,6 +218,7 @@ async function runDockerDatabaseTool({
     input,
     inputTransforms = [],
     output,
+    outputTransforms = [],
     captureOutput = false
 }) {
     if (output && captureOutput) {
@@ -260,7 +261,7 @@ async function runDockerDatabaseTool({
         streamTasks.push(pipeline(input, ...inputTransforms, child.stdin));
     }
     if (output) {
-        streamTasks.push(pipeline(child.stdout, output));
+        streamTasks.push(pipeline(child.stdout, ...outputTransforms, output));
     }
 
     const [exitCode] = await Promise.all([waitForChild(child), ...streamTasks]);

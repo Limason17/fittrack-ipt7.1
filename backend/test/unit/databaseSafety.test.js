@@ -6,7 +6,10 @@ const {
     assertDestructiveTestTarget,
     assertExternalBackupDirectory,
     assertRestoreAcknowledgement,
-    isLoopbackHost
+    assertRestoreTargetAvailability,
+    assertRestoreTargetDatabase,
+    isLoopbackHost,
+    isSystemDatabaseName
 } = require("../../scripts/databaseSafety");
 
 test("database safety accepts loopback host spellings only", () => {
@@ -67,6 +70,71 @@ test("restore additionally requires a deliberate acknowledgement", () => {
     assert.throws(
         () => assertRestoreAcknowledgement({ FITTRACK_RESTORE_ACK: "yes" }),
         (error) => error.code === "TEST_DB_OPERATION_FORBIDDEN"
+    );
+});
+
+test("system database names are recognized regardless of case", () => {
+    for (const name of ["mysql", "MYSQL", "information_schema", "Information_Schema", "performance_schema", "sys", "SYS"]) {
+        assert.equal(isSystemDatabaseName(name), true, `expected ${name} to be a system database`);
+    }
+    assert.equal(isSystemDatabaseName("fittrack_restore_stage2b1_ab12cd"), false);
+    assert.equal(isSystemDatabaseName(""), false);
+    assert.equal(isSystemDatabaseName(undefined), false);
+});
+
+test("an encrypted-backup restore target must match the disposable naming pattern", () => {
+    assert.equal(
+        assertRestoreTargetDatabase("fittrack_restore_stage2b1_ab12cd", { sourceDatabase: "fittrack" }),
+        "fittrack_restore_stage2b1_ab12cd"
+    );
+    for (const invalid of ["fittrack", "fittrack_production", "customer_test", "not_fittrack_test", ""]) {
+        assert.throws(
+            () => assertRestoreTargetDatabase(invalid, { sourceDatabase: "fittrack" }),
+            (error) => error.code === "RESTORE_TARGET_INVALID",
+            `expected rejection for target: ${invalid}`
+        );
+    }
+});
+
+test("a restore target must never be a MySQL system database (none of them match the disposable naming pattern either, so both guards independently reject them)", () => {
+    for (const name of ["mysql", "information_schema", "performance_schema", "sys"]) {
+        assert.throws(
+            () => assertRestoreTargetDatabase(name, { sourceDatabase: "fittrack" }),
+            (error) => error.code === "RESTORE_TARGET_INVALID" || error.code === "RESTORE_TARGET_FORBIDDEN",
+            `expected system database ${name} to be rejected`
+        );
+    }
+});
+
+test("a restore target must never equal the backup's own source database, case-insensitively", () => {
+    assert.throws(
+        () => assertRestoreTargetDatabase("fittrack_restore_x", { sourceDatabase: "fittrack_restore_x" }),
+        (error) => error.code === "RESTORE_TARGET_IS_SOURCE"
+    );
+    assert.throws(
+        () => assertRestoreTargetDatabase("fittrack_restore_X", { sourceDatabase: "FITTRACK_RESTORE_X" }),
+        (error) => error.code === "RESTORE_TARGET_IS_SOURCE"
+    );
+    assert.doesNotThrow(() =>
+        assertRestoreTargetDatabase("fittrack_restore_x", { sourceDatabase: "fittrack" })
+    );
+});
+
+test("a restore never silently overwrites an existing target database", () => {
+    assert.doesNotThrow(() => assertRestoreTargetAvailability({ exists: false, allowRecreateAck: undefined }));
+    assert.throws(
+        () => assertRestoreTargetAvailability({ exists: true, allowRecreateAck: undefined }),
+        (error) => error.code === "RESTORE_TARGET_ALREADY_EXISTS"
+    );
+    assert.throws(
+        () => assertRestoreTargetAvailability({ exists: true, allowRecreateAck: "yes-please" }),
+        (error) => error.code === "RESTORE_TARGET_ALREADY_EXISTS"
+    );
+    assert.doesNotThrow(() =>
+        assertRestoreTargetAvailability({
+            exists: true,
+            allowRecreateAck: "recreate-disposable-restore-target"
+        })
     );
 });
 

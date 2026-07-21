@@ -68,11 +68,64 @@ function assertExternalBackupDirectory(directory, repositoryRoot) {
     return resolvedDirectory;
 }
 
+// Never a valid restore target, regardless of any other guard - these are
+// MySQL's own system schemas, never a FitTrack database.
+const SYSTEM_DATABASE_NAMES = new Set(["mysql", "information_schema", "performance_schema", "sys"]);
+
+function isSystemDatabaseName(name) {
+    return SYSTEM_DATABASE_NAMES.has(String(name || "").toLowerCase());
+}
+
+// Strict validation for an explicit encrypted-backup restore target: unlike
+// the legacy dbRestore.js path (which always restores into whatever
+// config.database/DB_NAME already resolves to), the encrypted restore
+// command requires the target to be passed as its own, separate value so
+// it can never silently default to - or be confused with - the source
+// database. `sourceDatabase` is the database the backup was taken from
+// (from the backup's own authenticated header, not from local config).
+function assertRestoreTargetDatabase(targetDatabase, { sourceDatabase } = {}) {
+    if (!isDisposableDatabaseName(targetDatabase)) {
+        throw safetyError(
+            "RESTORE_TARGET_INVALID",
+            "Restore target database must match the disposable FitTrack test/e2e/restore naming pattern."
+        );
+    }
+    if (isSystemDatabaseName(targetDatabase)) {
+        throw safetyError(
+            "RESTORE_TARGET_FORBIDDEN",
+            "Restore target database must not be a MySQL system database."
+        );
+    }
+    if (sourceDatabase && targetDatabase.toLowerCase() === String(sourceDatabase).toLowerCase()) {
+        throw safetyError(
+            "RESTORE_TARGET_IS_SOURCE",
+            "Restore target database must not be the backup's own source database."
+        );
+    }
+    return targetDatabase;
+}
+
+// A restore must not silently overwrite an existing database. Recreating an
+// already-existing target is only permitted when the caller passes the
+// explicit, unambiguous drill acknowledgement - never implicitly.
+function assertRestoreTargetAvailability({ exists, allowRecreateAck }) {
+    if (exists && allowRecreateAck !== "recreate-disposable-restore-target") {
+        throw safetyError(
+            "RESTORE_TARGET_ALREADY_EXISTS",
+            "Restore target database already exists; pass the explicit drill acknowledgement to recreate it."
+        );
+    }
+}
+
 module.exports = {
+    SYSTEM_DATABASE_NAMES,
     assertDestructiveTestTarget,
     assertExternalBackupDirectory,
     assertRestoreAcknowledgement,
+    assertRestoreTargetAvailability,
+    assertRestoreTargetDatabase,
     isDisposableDatabaseName,
     isLoopbackHost,
+    isSystemDatabaseName,
     safetyError
 };
