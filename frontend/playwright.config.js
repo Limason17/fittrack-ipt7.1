@@ -21,6 +21,12 @@ const sharedBackendEnvironment = {
   AUTH_LOGIN_RATE_LIMIT_MAX: '100',
   AUTH_REGISTRATION_RATE_LIMIT_MAX: '100',
   ALLOW_TEST_DB_RESET: 'true',
+  // Isolate the E2E backend from any real SMTP configuration a developer
+  // may have in their own local backend/.env for manual provider testing:
+  // without this, backend/config/db.js's dotenv fallback would fill the
+  // gap from that file and silently switch every E2E-created invitation
+  // from the expected dev-preview contract to a real SMTP send attempt.
+  INVITATION_EMAIL_PROVIDER: '',
 }
 
 export default defineConfig({

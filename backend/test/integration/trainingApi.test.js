@@ -10,6 +10,10 @@ if (!/^fittrack_api_test_[A-Za-z0-9_]+$/.test(TEST_DATABASE)) {
 process.env.NODE_ENV = "test";
 process.env.DB_NAME = TEST_DATABASE;
 process.env.JWT_SECRET = "fittrack-stage-0a-test-secret-with-at-least-32-characters";
+// Isolate this run from any real SMTP configuration a developer may have in
+// their own local backend/.env for manual provider testing - see the
+// matching comment in studioApi.test.js.
+process.env.INVITATION_EMAIL_PROVIDER = "";
 
 const db = require("../../config/db");
 const { readDatabaseConfig } = require("../../config/db");

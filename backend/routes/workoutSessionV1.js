@@ -206,7 +206,7 @@ function createWorkoutSessionV1Router({
     return router;
 }
 
-const defaultRouter = createWorkoutSessionV1Router();
-
-module.exports = defaultRouter;
-module.exports.createWorkoutSessionV1Router = createWorkoutSessionV1Router;
+// No eager default-instance export here - see the matching comment in
+// routes/studioV1.js. The application's single, explicit composition root
+// (startup/app.js#defaultRouters) supplies the shared studio service.
+module.exports = { createWorkoutSessionV1Router };
