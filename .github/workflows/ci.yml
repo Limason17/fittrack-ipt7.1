@@ -88,9 +88,18 @@ jobs:
         working-directory: backend
         run: npm run db:migrate:doctor
 
-      - name: Wegwerf-Backup, Hash und Status prüfen
+      - name: Legacy-Wegwerf-Backup (unverschlüsselt), Hash und Status prüfen
         working-directory: backend
         env:
+          # Nur für diesen einzelnen Legacy-Regressionsschritt: der alte,
+          # unverschlüsselte db:backup:daily-Pfad ist seit der Stage-2B1-
+          # Release-Gate-Härtung standardmäßig gesperrt. Dieser Schalter gilt
+          # ausschließlich innerhalb dieses Steps (kein Job-/Workflow-Env) und
+          # wirkt in NODE_ENV=production ohnehin nie - siehe
+          # assertLegacyUnencryptedBackupAllowed in backend/scripts/databaseSafety.js.
+          # Für den produktiven, verschlüsselten Pfad siehe
+          # docs/STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md.
+          ALLOW_LEGACY_UNENCRYPTED_BACKUP: "true"
           FITTRACK_DB_CONTAINER: ${{ job.services.mysql.id }}
           FITTRACK_BACKUP_DIR: ${{ runner.temp }}/fittrack-ci-backups
           FITTRACK_BACKUP_EXPECTED_DATABASE: fittrack_test_ci
