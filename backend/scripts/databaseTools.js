@@ -31,6 +31,8 @@ function buildDockerExecArgs({ container, executable, toolArgs = [], interactive
         ...(interactive ? ["--interactive"] : []),
         "--env",
         "MYSQL_PWD",
+        "--env",
+        "FTBACKUP_OP_ID",
         container,
         executable,
         ...toolArgs
@@ -210,6 +212,68 @@ async function waitForChild(child) {
     });
 }
 
+const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes - only used if a caller omits timeoutMs entirely
+const DEFAULT_GRACE_PERIOD_MS = 5_000;
+
+// Returns both the promise and a way to cancel its underlying timer.
+// Promise.race never cancels the "losing" side on its own, so a plain
+// setTimeout-backed delay left unmanaged keeps running - and keeps the
+// process alive - for the rest of its full duration even after the race
+// has already been decided the other way. Every call site below must
+// cancel its delay once the race settles, whichever side won.
+function delay(ms) {
+    let timer;
+    const promise = new Promise((resolve) => {
+        timer = setTimeout(resolve, ms);
+    });
+    return { promise, cancel: () => clearTimeout(timer) };
+}
+
+// Empirically, killing the *local* `docker exec` client process (via
+// child.kill()) does not reliably terminate the *remote* process docker
+// started on its behalf inside the container - confirmed by deliberately
+// hanging a process and observing it still listed in `docker top` well
+// after the local client had exited. This is a fixed, hardcoded shell
+// script; the only variable data (the operation id) is passed as a
+// positional argument ($1) via argv, never string-concatenated into the
+// script source, so this stays free of shell-injection risk despite using
+// `sh -c`. It scans /proc/*/environ for the marker this operation's
+// exec session was given (see buildDockerExecArgs's "--env FTBACKUP_OP_ID",
+// forwarded from this process's own env below) and kills any match
+// directly, inside the container's own PID namespace.
+const REMOTE_KILL_BY_MARKER_SCRIPT = [
+    "for entry in /proc/[0-9]*/environ; do",
+    "  pid=$(basename \"$(dirname \"$entry\")\")",
+    "  if tr '\\0' '\\n' < \"$entry\" 2>/dev/null | grep -qxF \"FTBACKUP_OP_ID=$1\"; then",
+    "    kill -9 \"$pid\" 2>/dev/null",
+    "  fi",
+    "done"
+].join("\n");
+
+async function killRemoteProcessByMarker(container, operationId, timeoutMs) {
+    try {
+        await runDockerDatabaseTool({
+            container,
+            executable: "sh",
+            password: "",
+            toolArgs: ["-c", REMOTE_KILL_BY_MARKER_SCRIPT, "sh", operationId],
+            timeoutMs,
+            // Prevents unbounded recursion: if this cleanup call itself
+            // times out (e.g. the container becomes unresponsive), it must
+            // not attempt yet another remote-kill-by-marker cleanup of
+            // itself. A plain local kill is enough for this bounded,
+            // best-effort helper - it never needs its own escalation chain.
+            isCleanupOperation: true
+        });
+    } catch {
+        // Best-effort cleanup only - the caller already treats the
+        // original operation as timed out regardless of whether this
+        // secondary cleanup step itself fully succeeds.
+    }
+}
+
+const DEFAULT_DOCKER_OPERATION_TIMEOUT_MS = 15_000;
+
 async function runDockerDatabaseTool({
     container,
     executable,
@@ -219,7 +283,11 @@ async function runDockerDatabaseTool({
     inputTransforms = [],
     output,
     outputTransforms = [],
-    captureOutput = false
+    captureOutput = false,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    gracePeriodMs = DEFAULT_GRACE_PERIOD_MS,
+    dockerOperationTimeoutMs = DEFAULT_DOCKER_OPERATION_TIMEOUT_MS,
+    isCleanupOperation = false
 }) {
     if (output && captureOutput) {
         throw toolError(
@@ -229,8 +297,9 @@ async function runDockerDatabaseTool({
     }
     const interactive = Boolean(input);
     const args = buildDockerExecArgs({ container, executable, toolArgs, interactive });
+    const operationId = crypto.randomBytes(16).toString("hex");
     const child = spawn("docker", args, {
-        env: { ...process.env, MYSQL_PWD: password },
+        env: { ...process.env, MYSQL_PWD: password, FTBACKUP_OP_ID: operationId },
         shell: false,
         windowsHide: true,
         stdio: [
@@ -264,11 +333,56 @@ async function runDockerDatabaseTool({
         streamTasks.push(pipeline(child.stdout, ...outputTransforms, output));
     }
 
-    const [exitCode] = await Promise.all([waitForChild(child), ...streamTasks]);
-    if (exitCode !== 0) {
+    // Never lets Promise.all's rejection propagate unhandled if a timeout
+    // wins the race below - both outcomes settle into a plain object here.
+    const mainOperation = Promise.all([waitForChild(child), ...streamTasks]).then(
+        ([exitCode]) => ({ type: "done", exitCode }),
+        (error) => ({ type: "error", error })
+    );
+
+    const timeoutDelay = timeoutMs ? delay(timeoutMs) : null;
+    const outcome = timeoutDelay
+        ? await Promise.race([mainOperation, timeoutDelay.promise.then(() => ({ type: "timeout" }))])
+        : await mainOperation;
+    timeoutDelay?.cancel();
+
+    if (outcome.type === "timeout") {
+        // Controlled termination first (Windows note: child.kill("SIGTERM")
+        // is not a real signal there - Node maps it to unconditional
+        // termination, so there is no true "graceful" phase on that
+        // platform; the grace-period/hard-kill escalation below is a
+        // deliberate no-op on Windows but remains harmless and keeps this
+        // code path identical on both platforms), then a hard kill if the
+        // local client is still running after the grace period, then a
+        // direct, targeted kill of the *remote* process regardless of
+        // whether the local client responded - see killRemoteProcessByMarker.
+        child.kill("SIGTERM");
+        const graceDelay = delay(gracePeriodMs);
+        const closed = await Promise.race([
+            new Promise((resolve) => child.once("close", () => resolve(true))),
+            graceDelay.promise.then(() => false)
+        ]);
+        graceDelay.cancel();
+        if (!closed) {
+            child.kill("SIGKILL");
+        }
+        if (!isCleanupOperation) {
+            await killRemoteProcessByMarker(container, operationId, dockerOperationTimeoutMs);
+        }
+        throw toolError(
+            "DATABASE_TOOL_TIMEOUT",
+            `${executable} did not complete within its configured timeout and was terminated.`
+        );
+    }
+
+    if (outcome.type === "error") {
+        throw outcome.error;
+    }
+
+    if (outcome.exitCode !== 0) {
         throw toolError(
             "DATABASE_TOOL_FAILED",
-            `${executable} exited with code ${exitCode}.`,
+            `${executable} exited with code ${outcome.exitCode}.`,
             { toolMessage: stderr.trim().slice(0, 2048) }
         );
     }

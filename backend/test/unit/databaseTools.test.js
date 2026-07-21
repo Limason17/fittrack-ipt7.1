@@ -7,7 +7,7 @@ const {
     looksLikeLogicalBackup
 } = require("../../scripts/databaseTools");
 
-test("docker database tools pass MYSQL_PWD by environment name, never by argument value", () => {
+test("docker database tools pass MYSQL_PWD and the Stage 2B1 operation marker by environment name, never by argument value", () => {
     const args = buildDockerExecArgs({
         container: "fittrack_mysql",
         executable: "mysqldump",
@@ -18,6 +18,8 @@ test("docker database tools pass MYSQL_PWD by environment name, never by argumen
         "exec",
         "--env",
         "MYSQL_PWD",
+        "--env",
+        "FTBACKUP_OP_ID",
         "fittrack_mysql",
         "mysqldump",
         "--user=root",
@@ -35,7 +37,7 @@ test("restore tool arguments opt in to stdin without weakening environment handl
     });
 
     assert.equal(args[1], "--interactive");
-    assert.deepEqual(args.slice(2, 4), ["--env", "MYSQL_PWD"]);
+    assert.deepEqual(args.slice(2, 6), ["--env", "MYSQL_PWD", "--env", "FTBACKUP_OP_ID"]);
 });
 
 test("backup filenames are timestamped, portable, and database-scoped", () => {

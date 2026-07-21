@@ -11,6 +11,7 @@ const { verifyEncryptedBackup } = require("./encryptedBackupVerify");
 const { restoreEncryptedBackup } = require("./encryptedBackupRestore");
 const { createMigrationRuntime } = require("./migrationRuntime");
 const migrateDoctor = require("./migrateDoctor");
+const { backupCliExitCode } = require("./backupExitCodes");
 
 const NOOP_LOGGER = { info() {}, warn() {}, error() {} };
 
@@ -76,14 +77,18 @@ async function runRestoreDrill({ env = process.env } = {}) {
             env: { ...env, FITTRACK_BACKUP_VERIFY_FILE: backupPath }
         });
 
+        // The drill uses its own narrowly-scoped, explicit restore
+        // authorization: BACKUP_RESTORE_ENABLED plus an acknowledgement
+        // bound to the exact disposable target name it just generated -
+        // never NODE_ENV, which is not a restore authorization mechanism.
         targetDatabase = drillDatabaseName();
         const restoreReport = await restoreEncryptedBackup({
             env: {
                 ...env,
-                NODE_ENV: "test",
+                BACKUP_RESTORE_ENABLED: "true",
                 FITTRACK_RESTORE_FILE: backupPath,
                 FITTRACK_RESTORE_TARGET_DATABASE: targetDatabase,
-                FITTRACK_RESTORE_ACK: "restore-local-test-database"
+                FITTRACK_RESTORE_ACK: `restore:${targetDatabase}`
             }
         });
 
@@ -201,7 +206,7 @@ async function main() {
 if (require.main === module) {
     main().catch((error) => {
         createStructuredLogger().error("backup_restore_drill_failed", { error });
-        process.exitCode = 1;
+        process.exitCode = backupCliExitCode(error);
     });
 }
 

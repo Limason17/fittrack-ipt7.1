@@ -7,15 +7,18 @@ const { Writable } = require("node:stream");
 
 const db = require("../config/db");
 const { readBackupCryptoConfig } = require("../config/backupCryptoConfig");
+const { readBackupTimeoutConfig } = require("../config/backupTimeoutConfig");
 const { createStructuredLogger } = require("../startup/logger");
 const {
-    assertRestoreAcknowledgement,
+    assertRestoreEnabled,
+    assertRestoreTargetAcknowledgement,
     assertRestoreTargetAvailability,
     assertRestoreTargetDatabase,
     isLoopbackHost,
     safetyError
 } = require("./databaseSafety");
 const { runDockerDatabaseTool } = require("./databaseTools");
+const { backupCliExitCode } = require("./backupExitCodes");
 const { createDecryptor, readBackupFileLayout } = require("./encryptedBackupFormat");
 const { readAndProcessEncryptedBackup } = require("./encryptedBackupStream");
 
@@ -81,12 +84,11 @@ async function recreateTargetDatabase(adminConfig, targetDatabase) {
 }
 
 async function restoreEncryptedBackup({ env = process.env } = {}) {
-    if (env.NODE_ENV !== "test") {
-        throw safetyError(
-            "RESTORE_ENVIRONMENT_FORBIDDEN",
-            "Encrypted backup restore requires NODE_ENV=test."
-        );
-    }
+    // BACKUP_RESTORE_ENABLED is the single explicit authorization switch -
+    // NODE_ENV is never consulted for authorization here, so a genuine
+    // recovery run against a real incident environment never has to lie
+    // about its own NODE_ENV just to use this tool.
+    assertRestoreEnabled(env);
     const adminConfig = db.readDatabaseConfig(env, { includeDatabase: false });
     if (!isLoopbackHost(adminConfig.host)) {
         throw safetyError(
@@ -94,10 +96,14 @@ async function restoreEncryptedBackup({ env = process.env } = {}) {
             "Encrypted backup restore is restricted to a loopback database target."
         );
     }
-    assertRestoreAcknowledgement(env);
 
     const targetDatabase = requiredTargetDatabase(env);
+    // Bound to the exact target database name, not just a constant phrase -
+    // an operator must confirm which specific database is about to be
+    // dropped and recreated, not paste the same phrase for any target.
+    assertRestoreTargetAcknowledgement(env, targetDatabase);
     const cryptoConfig = readBackupCryptoConfig(env);
+    const timeoutConfig = readBackupTimeoutConfig(env);
     const filePath = await resolveRestoreFile(env);
 
     // Pass 1 - authenticate the whole file before anything about the
@@ -155,7 +161,9 @@ async function restoreEncryptedBackup({ env = process.env } = {}) {
             targetDatabase
         ],
         input: cipherStream,
-        inputTransforms: [decipher, zlib.createGunzip()]
+        inputTransforms: [decipher, zlib.createGunzip()],
+        timeoutMs: timeoutConfig.restoreTimeoutMs,
+        dockerOperationTimeoutMs: timeoutConfig.dockerOperationTimeoutMs
     });
 
     const targetPool = db.createPool({ ...adminConfig, database: targetDatabase });
@@ -189,7 +197,7 @@ async function main() {
 if (require.main === module) {
     main().catch((error) => {
         createStructuredLogger().error("backup_restore_failed", { error });
-        process.exitCode = 1;
+        process.exitCode = backupCliExitCode(error);
     });
 }
 

@@ -31,6 +31,12 @@ async function writeEncryptedBackup({ destinationPath, header, key, iv, sourceSt
     const output = fs.createWriteStream(destinationPath, { flags: "wx", mode: 0o600 });
 
     await new Promise((resolve, reject) => {
+        // The stream's own "error" event (e.g. EEXIST if destinationPath
+        // already exists, since "wx" is exclusive-create) fires
+        // independently of the write() callback and, left unhandled, would
+        // surface as an uncaught exception instead of rejecting this
+        // promise.
+        output.once("error", reject);
         output.write(prefix, (error) => (error ? reject(error) : resolve()));
     });
     await pipeline(sourceStream, zlib.createGzip(), cipher, output);

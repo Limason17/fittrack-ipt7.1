@@ -9,6 +9,54 @@ end-to-end beweist. **Kein** Off-host-Speicherort, keine Cloud-Credentials,
 kein Object-Lock, kein Scheduler, keine DB-Rollentrennung und keine neue
 Migration sind Teil dieser Phase.
 
+## Release-Gate-Härtung (Folge-Commit)
+
+Eine zweite, kritische Release-Gate-Prüfung des bereits implementierten
+Stage 2B1 wurde durchgeführt, ohne die Architektur neu zu entwerfen. Dabei
+gefunden und behoben:
+
+1. **Der alte unverschlüsselte Backup-Pfad lief bisher uneingeschränkt in
+   Produktion.** `dbBackup.js`/`dbBackupDaily.js` hatten **keine**
+   `NODE_ENV`-Prüfung — ein Operator hätte versehentlich (oder ein
+   Scheduler automatisiert) ein unverschlüsseltes `.sql`/`.sql.gz`-Backup
+   in einer produktionskonfigurierten Umgebung erzeugen können, und
+   `docs/BACKUP_RESTORE.md` empfahl diesen Pfad selbst weiterhin aktiv als
+   Pilotbetrieb-tauglich. **Behoben:** `assertLegacyUnencryptedBackupAllowed()`
+   — in Produktion ausnahmslos verboten (kein Override), außerhalb davon nur
+   mit explizitem `ALLOW_LEGACY_UNENCRYPTED_BACKUP=true`, geprüft **vor**
+   jeder Verzeichnis-/Lock-/Docker-Operation. Siehe „Alter Klartext-Pfad"
+   unten.
+2. **Kein Timeout für mysqldump/mysql/docker exec.** Jeder externe Prozess
+   konnte zuvor unbegrenzt laufen. **Behoben:** `BACKUP_DUMP_TIMEOUT_MS`/
+   `BACKUP_RESTORE_TIMEOUT_MS`/`BACKUP_DOCKER_OPERATION_TIMEOUT_MS`, jeweils
+   streng validiert mit Min-/Max-Grenzen; SIGTERM, danach SIGKILL nach fester
+   Gnadenfrist. **Dabei empirisch gefunden:** Das Beenden des *lokalen*
+   `docker exec`-Client-Prozesses beendet den *entfernten* Prozess im
+   Container nicht zuverlässig — bestätigt durch einen absichtlich
+   hängenden Testprozess, der in `docker top` weit nach Ende des lokalen
+   Clients noch sichtbar war. Behoben durch eine zusätzliche, gezielte
+   Direkttötung des entfernten Prozesses über eine Umgebungsvariablen-Marke
+   (`FTBACKUP_OP_ID`) und einen `/proc`-Scan — siehe „Prozess-Timeouts"
+   unten für Details und Belege.
+3. **Restore-Autorisierung war an `NODE_ENV=test` gekoppelt.** Ein echter
+   Recovery-Lauf hätte fälschlich `NODE_ENV=test` vortäuschen müssen.
+   **Behoben:** `BACKUP_RESTORE_ENABLED=true` als einziger expliziter
+   Autorisierungsschalter, zusätzlich eine an den exakten Zieldatenbanknamen
+   gebundene Bestätigung (`FITTRACK_RESTORE_ACK=restore:<Ziel>`) statt einer
+   festen Phrase. Siehe „Restore-Freigabemodell" unten.
+4. **Zwei reale Bugs beim Schreiben der neuen Tests gefunden:** Ein nicht
+   gecleartes `setTimeout` im Timeout-Race hielt den Node-Prozess bis zu
+   10 Minuten nach Testende am Leben (siehe „Prozess-Timeouts"); ein nicht
+   abgefangenes `"error"`-Event auf dem Ausgabe-Stream (z. B. bei `EEXIST`)
+   führte zu einer unabgefangenen Exception statt einer sauberen
+   Promise-Ablehnung, in sowohl `encryptedBackupCreate.js` als auch
+   `encryptedBackupStream.js`. Beide behoben, beide jetzt automatisiert
+   regressionsgeprüft.
+
+Composition/Format/Kryptografie aus dem ursprünglichen Commit blieben
+unverändert korrekt — siehe „Kryptografie- und Containerformat-Review"
+unten für die erneute, explizite Bestätigung.
+
 ## Threat Model
 
 Das Backup enthält den vollständigen logischen Inhalt der FitTrack-Datenbank
@@ -218,6 +266,63 @@ ein zukünftiger Nicht-Docker-Weg nötig werden, gilt dieselbe Regel wie überal
 sonst im Projekt: nur im System-Temp-Verzeichnis, zufälliger Name, Löschung
 in `finally`, nie ins Repository.
 
+### Prozess-Timeouts
+
+Jeder externe `docker exec`-Aufruf (`scripts/databaseTools.js#runDockerDatabaseTool`)
+erhält ein explizites Zeitlimit — kein Prozess kann unbegrenzt laufen:
+
+| Variable | Standard | Grenzen |
+| --- | --- | --- |
+| `BACKUP_DUMP_TIMEOUT_MS` | 300 000 (5 min) | 5 000–3 600 000 |
+| `BACKUP_RESTORE_TIMEOUT_MS` | 600 000 (10 min) | 5 000–3 600 000 |
+| `BACKUP_DOCKER_OPERATION_TIMEOUT_MS` | 15 000 | 1 000–120 000 |
+
+Ablauf bei Überschreitung: `SIGTERM` an den lokalen `docker exec`-Client,
+danach eine feste Gnadenfrist (`gracePeriodMs`, intern, nicht konfigurierbar),
+dann `SIGKILL` falls der lokale Client noch läuft. Danach wird
+**zusätzlich** der Fehler `DATABASE_TOOL_TIMEOUT` geworfen — nach, nicht
+statt, dem Aufräumversuch.
+
+**Empirisch gefundenes und behobenes Problem:** Das Beenden des *lokalen*
+`docker exec`-Client-Prozesses beendet den *entfernten*, im Container
+laufenden Prozess (z. B. `mysqldump`) **nicht zuverlässig**. Nachgewiesen
+durch einen absichtlich hängenden Testprozess (`sleep 9999` bzw. ein
+Prozess mit `trap '' TERM`), der über `docker top` — von außerhalb des
+Containers, unabhängig von im Container fehlenden Werkzeugen wie `ps` —
+noch lange nach Beendigung des lokalen Clients sichtbar war. Deshalb wird
+bei einem Timeout **zusätzlich** eine gezielte Direkttötung des entfernten
+Prozesses ausgeführt:
+
+1. Jeder `docker exec`-Aufruf erhält eine zufällige, einmalige Marke
+   (`FTBACKUP_OP_ID`), übergeben als `--env FTBACKUP_OP_ID` (Docker
+   reicht dabei den aktuellen Wert aus der lokalen Prozessumgebung durch —
+   dasselbe bereits etablierte Muster wie bei `MYSQL_PWD`).
+2. Bei Timeout wird ein separater, kurzer `docker exec <container> sh -c
+   …`-Aufruf gestartet, der `/proc/*/environ` nach genau dieser Marke
+   durchsucht und den Treffer per `kill -9` direkt im PID-Namespace des
+   Containers beendet.
+3. Das eingebettete Shell-Skript ist fest und unveränderlich; die einzige
+   variable Eingabe (die Operation-ID) wird als Positionsargument (`$1`)
+   übergeben, nie in den Skripttext eingefügt — dadurch bleibt dies frei
+   von Shell-Injection trotz `sh -c`.
+4. Dieser Aufräum-Aufruf selbst trägt ein Flag, das eine erneute,
+   potenziell unbegrenzte Rekursion verhindert (er darf sich nicht selbst
+   per Marke aufräumen, falls auch er timeout-bedingt scheitert).
+
+Automatisiert bewiesen (`backend/test/integration/databaseToolsTimeout.test.js`,
+echte Prozesse gegen den echten Container, kein Mock): ein hängender
+Prozess wird erkannt und beendet; ein Prozess, der `SIGTERM` per `trap`
+ignoriert, ist dennoch danach nachweislich nicht mehr vorhanden (per
+`/proc`-Scan, nicht per `ps`, da dieses Basisimage kein `ps`/`pkill`
+mitbringt); ein schneller, unproblematischer Aufruf wird von der Eskalation
+nicht berührt.
+
+**Windows-Hinweis:** `child.kill("SIGTERM")` ist unter Windows kein echtes
+Signal — Node bildet es auf eine bedingungslose Beendigung ab, es gibt dort
+also keine echte „graceful"-Phase. Die Gnadenfrist-/Hard-Kill-Eskalation ist
+unter Windows dadurch faktisch ein No-op, aber harmlos, und der
+Code-Pfad bleibt auf beiden Plattformen identisch.
+
 ## Kein Klartext-Dump auf Disk (Beweis)
 
 Datenfluss beim Erstellen:
@@ -284,6 +389,24 @@ Stufe-0B/0C-Backup-Code und wurde in dieser Phase nicht neu konstruiert.
 | `npm run db:backup:restore` | `scripts/encryptedBackupRestore.js` | Restauriert in eine explizite Wegwerf-Zieldatenbank |
 | `npm run db:backup:drill` | `scripts/encryptedBackupDrill.js` | Orchestriert Create → Verify → Restore → Doctor → Vergleich → Cleanup |
 
+### Exit-Codes (`scripts/backupExitCodes.js`)
+
+Alle vier Kommandos beenden sich mit einem stabilen, skriptbaren Exit-Code
+statt pauschal `1`:
+
+| Exit-Code | Bedeutung | Beispiel-Fehlercodes |
+| --- | --- | --- |
+| `0` | Erfolg | — |
+| `10` | Konfiguration/Vorbedingung unsicher, nichts wurde ausgeführt | `INVALID_BACKUP_CRYPTO_CONFIG`, `INVALID_BACKUP_TIMEOUT_CONFIG`, `BACKUP_LOCATION_FORBIDDEN`, `RESTORE_NOT_ENABLED`, `RESTORE_ACK_INVALID`, `RESTORE_TARGET_ALREADY_EXISTS`, `LEGACY_UNENCRYPTED_BACKUP_FORBIDDEN` |
+| `20` | Operativer Fehler (Docker/mysqldump/mysql schlugen fehl) | `DATABASE_TOOL_FAILED` |
+| `23` | Integritäts-/Authentifizierungsfehler der Backup-Datei | `BACKUP_INTEGRITY_FAILED`, `BACKUP_INVALID_MAGIC`, `BACKUP_UNSUPPORTED_VERSION`, `BACKUP_KEY_ID_MISMATCH` |
+| `24` | Ein externer Prozess wurde wegen Zeitüberschreitung beendet | `DATABASE_TOOL_TIMEOUT` |
+
+Jeder nicht explizit zugeordnete oder fehlende Fehlercode fällt auf den
+Exit-Code `20` zurück — nie auf `0`. Alle fünf Werte sind paarweise
+verschieden, damit Monitoring/CI zuverlässig zwischen Fehlerklassen
+unterscheiden kann.
+
 ### Create — Ausgabe
 
 ```json
@@ -314,17 +437,31 @@ Kompressions-/Dekryptionsintegrität prüft. Meldet `logicalBytes` und
 
 Siehe „Verify-vor-Trust" oben sowie die Guards im nächsten Abschnitt.
 
+## Restore-Freigabemodell
+
+**Seit der Release-Gate-Härtung ersetzt, bewusst nicht mehr an `NODE_ENV`
+gekoppelt:** Ein früherer Entwurf verlangte `NODE_ENV=test` als
+Restore-Voraussetzung — das hätte einen echten Recovery-Lauf in einer
+echten Incident-/Wiederherstellungsumgebung gezwungen, ein falsches
+`NODE_ENV` vorzutäuschen, nur um das Werkzeug benutzen zu können.
+`BACKUP_RESTORE_ENABLED=true` ist jetzt der einzige explizite
+Autorisierungsschalter; `NODE_ENV` wird für die Restore-Autorisierung an
+keiner Stelle mehr gelesen.
+
 ## Restore-Guards (`encryptedBackupRestore.js`, `databaseSafety.js`)
 
 Alle folgenden Prüfungen laufen **vor** jedem `DROP`/`CREATE DATABASE` und vor
 dem eigentlichen Import:
 
-1. `NODE_ENV=test` ist zwingend.
+1. `BACKUP_RESTORE_ENABLED=true` ist zwingend — der einzige
+   Autorisierungsschalter, unabhängig von `NODE_ENV`.
 2. Der DB-Host muss Loopback sein (`isLoopbackHost`).
-3. `FITTRACK_RESTORE_ACK=restore-local-test-database` ist zwingend
-   (wiederverwendet aus Stufe 0C).
-4. `FITTRACK_RESTORE_TARGET_DATABASE` ist zwingend explizit — es gibt
+3. `FITTRACK_RESTORE_TARGET_DATABASE` ist zwingend explizit — es gibt
    **keinen** impliziten Fallback auf `DB_NAME`.
+4. `FITTRACK_RESTORE_ACK` muss exakt `restore:<FITTRACK_RESTORE_TARGET_DATABASE>`
+   sein — an den **exakten** Zielnamen gebunden, nicht nur eine feste Phrase,
+   damit ein Copy-Paste-Fehler nicht versehentlich eine andere Datenbank
+   bestätigt.
 5. Die Backup-Datei wird **vollständig** authentifiziert (Pass 1, siehe
    oben), bevor irgendetwas an der Zieldatenbank passiert.
 6. Der Zielname muss dem strikten Wegwerfmuster entsprechen
@@ -338,6 +475,14 @@ dem eigentlichen Import:
    (`RESTORE_TARGET_ALREADY_EXISTS`) — ein Neuerstellen ist nur mit der
    expliziten, eindeutigen Bestätigung `FITTRACK_RESTORE_ALLOW_RECREATE=
    recreate-disposable-restore-target` erlaubt.
+10. Eine nicht-disposable Datenbank wird nie automatisch gelöscht — die
+    Wegwerfmuster-Prüfung (Punkt 6) ist eine harte Voraussetzung, nicht nur
+    eine Empfehlung.
+
+Der automatisierte Drill verwendet intern dieselbe, aber eng begrenzte
+Freigabe: `BACKUP_RESTORE_ENABLED=true` plus eine an den selbst erzeugten,
+eindeutigen Wegwerfnamen gebundene Bestätigung (siehe
+`encryptedBackupDrill.js`).
 10. `DROP`/`CREATE DATABASE` verwenden `mysql2#escapeId()` zusätzlich zum
     bereits durch das Wegwerfmuster begrenzten Namen — kein
     SQL-Identifier-Injection-Pfad.
@@ -417,6 +562,27 @@ Automatisiert getestet (`encryptedBackupFormat.test.js`,
   Zieldatenbank, fehlende Bestätigung, fehlender expliziter Zielname,
   ungültiger Datenbankname — jeweils vor jedem `DROP`/`CREATE DATABASE`.
 
+Zusätzlich aus der Release-Gate-Härtung (`databaseTools.test.js`,
+`databaseToolsTimeout.test.js`, `backupAutomation.test.js`,
+`backupExitCodes.test.js`, `encryptedBackupRestoreDrill.test.js`):
+
+- `LEGACY_UNENCRYPTED_BACKUP_FORBIDDEN` — der alte Klartext-Pfad
+  (`db:backup`/`db:backup:daily`) ist in Produktion ohne Override und
+  überall sonst ohne explizites `ALLOW_LEGACY_UNENCRYPTED_BACKUP=true`
+  gesperrt; die Prüfung läuft vor jeder Verzeichnis-/Docker-Operation, es
+  wird keine Datei angelegt;
+- `RESTORE_NOT_ENABLED` — `BACKUP_RESTORE_ENABLED` fehlt oder ist nicht
+  exakt `"true"`; `NODE_ENV` allein genügt an keiner Stelle;
+- `RESTORE_ACK_INVALID` — `FITTRACK_RESTORE_ACK` fehlt oder entspricht nicht
+  exakt `restore:<Zieldatenbank>`;
+- `DATABASE_TOOL_TIMEOUT` — ein `mysqldump`/`mysql`/Docker-Hilfsprozess
+  überschritt sein konfiguriertes Zeitlimit; der lokale `docker exec`-Client
+  wird per SIGTERM/SIGKILL beendet, und zusätzlich wird der entfernte,
+  im Container laufende Prozess über eine `/proc`-Marker-Suche gezielt
+  beendet (siehe „Prozess-Timeouts" oben) — beide Cleanup-Schritte laufen
+  auch dann vollständig, wenn der Timeout während eines Cleanup-Laufs selbst
+  erneut auftritt (Rekursionsschutz).
+
 ## Logging und Datenschutz
 
 Sichere Events (`createStructuredLogger`, bereits bestehende generische
@@ -434,10 +600,25 @@ die in den jeweiligen Abschnitten oben aufgeführten sicheren Felder.
 
 - **Linux:** `.ftbackup`-Dateien werden mit Modus `0o600` (nur Owner
   lesbar/schreibbar) angelegt, identisch zum bestehenden
-  Stufe-0B/0C-Backup-Code.
-- **Windows:** Node/NTFS setzen den POSIX-Modus `0o600` nicht durchgängig um
-  — Windows-ACLs sind das eigentliche Zugriffskontrollmittel und müssen
-  separat (Dateisystemrechte auf dem Backup-Verzeichnis) konfiguriert werden.
+  Stufe-0B/0C-Backup-Code. Das Ausgabeverzeichnis wird, falls es neu
+  angelegt werden muss, mit Modus `0o700` erstellt
+  (`fs.mkdir(..., { recursive: true, mode: 0o700 })`); ein bereits
+  bestehendes Verzeichnis wird nie nachträglich verändert oder geweitet.
+- **Windows:** Node/NTFS setzen den POSIX-Modus `0o600`/`0o700` nicht
+  durchgängig um — Windows-ACLs sind das eigentliche Zugriffskontrollmittel
+  und müssen separat (Dateisystemrechte auf dem Backup-Verzeichnis)
+  konfiguriert werden. Das ist eine ehrliche Plattformgrenze, keine Lücke im
+  Code: Die Datei wird mit den striktesten Node/`fs`-Mitteln angelegt, die
+  unter Windows verfügbar sind.
+- **Exklusives Anlegen, kein stilles Überschreiben:** Die `.ftbackup`- und
+  `.ftbackup.partial`-Dateien werden ausschließlich mit dem exklusiven
+  `wx`-Flag geöffnet (`fs.createWriteStream(..., { flags: "wx", mode: 0o600
+  })`). Existiert die Zieldatei bereits, schlägt das Schreiben mit `EEXIST`
+  fehl, statt den bestehenden Inhalt zu überschreiben. Das
+  `"error"`-Event des Schreibstreams wird dafür explizit abgefangen
+  (`once("error", reject)`), da es unabhängig vom Callback der
+  `.write()`-Aufrufe feuert — ohne diesen Listener würde ein `EEXIST`-Fehler
+  als unbehandelte Exception statt als sauber behandelter Fehler auftreten.
 - **Dateiberechtigungen ergänzen die Verschlüsselung, ersetzen sie nicht:**
   Selbst mit vollkommen offenen Dateirechten bleibt der Inhalt ohne den
   separat aufbewahrten Schlüssel unlesbar. Umgekehrt ersetzt eine restriktive
@@ -451,6 +632,43 @@ Alle Docker-Interaktionen laufen über das bereits bestehende, getestete
 mysqldump|mysql …`, `spawn`, Argumentarray, `shell:false`,
 `MYSQL_PWD`-Umgebungsvariable statt CLI-Argument. Es wird kein neuer
 Docker-Interaktionsweg eingeführt.
+
+## Alter Klartext-Pfad (Legacy)
+
+Der ursprüngliche, unverschlüsselte Backup-Pfad aus Stufe 0B/0C
+(`npm run db:backup`, `scripts/dbBackup.js`, sowie der automatisierte
+`npm run db:backup:daily`, `scripts/dbBackupDaily.js`) blieb im Code
+erhalten — er wird von bestehenden Tests weiterhin regressionsgeprüft und
+war nie funktional kaputt. Die Release-Gate-Härtung hat jedoch eine echte
+Produktionslücke geschlossen: Vor der Härtung gab es **keine** Prüfung, die
+diesen Pfad in einer Produktionsumgebung verhindert hätte — jeder mit
+Zugriff auf die Konfiguration hätte in Produktion versehentlich oder
+absichtlich ein vollständig unverschlüsseltes SQL-Backup erzeugen können.
+
+Seit der Härtung gilt (`assertLegacyUnencryptedBackupAllowed`,
+`databaseSafety.js`, aufgerufen als erste Prüfung in `dbBackup.js` und
+`dbBackupDaily.js`, vor jeder Verzeichnis- oder Docker-Operation):
+
+- **In Produktion (`NODE_ENV=production`) ist der Pfad ausnahmslos
+  gesperrt** — es gibt keinen Override, keine Umgebungsvariable, kein
+  Konfigurationsflag, das dies aufhebt.
+- In jeder anderen Umgebung ist der Pfad standardmäßig ebenfalls gesperrt
+  und erfordert das explizite `ALLOW_LEGACY_UNENCRYPTED_BACKUP=true`, um
+  weiterhin für historische Regressionstests oder einen lokalen
+  Stufe-0-artigen Testlauf nutzbar zu sein.
+- Beide Fälle scheitern mit dem stabilen Fehlercode
+  `LEGACY_UNENCRYPTED_BACKUP_FORBIDDEN`, **bevor** irgendein Verzeichnis
+  angelegt, eine Sperre erworben oder ein Docker-Prozess gestartet wird —
+  es entsteht nie eine Datei, die anschließend wieder gelöscht werden
+  müsste.
+- Es wurden keine historischen Dateien oder Tests dieses Pfades entfernt;
+  die Härtung fügt ausschließlich eine vorgelagerte Sperre hinzu.
+
+**Für den Produktivbetrieb ist ausschließlich der in diesem Dokument
+beschriebene verschlüsselte Pfad (`db:backup:create`/`verify`/`restore`/
+`drill`) zulässig.** Der alte Klartext-Pfad ist ab sofort nicht mehr
+produktionsfähig und darf in keiner produktionsnahen Betriebsanleitung mehr
+als Option dargestellt werden (siehe Korrektur in `docs/BACKUP_RESTORE.md`).
 
 ## Produktionsbetrieb
 
@@ -488,15 +706,40 @@ Produktions-Runbook-Ersatz. Vor echtem Produktionseinsatz zusätzlich nötig
 ## Tests
 
 - **Unit** (`backend/test/unit/backupCryptoConfig.test.js`,
-  `encryptedBackupFormat.test.js`, erweitertes `databaseSafety.test.js`):
-  Key-/Format-/Header-/Krypto-Validierung, alle Manipulationsszenarien aus
-  „Fehlerbehandlung" oben, Restore-Guard-Funktionen isoliert.
-- **Integration** (`backend/test/integration/encryptedBackupRestoreDrill.test.js`):
+  `encryptedBackupFormat.test.js` (18 Tests), erweitertes
+  `databaseSafety.test.js`, `backupExitCodes.test.js` (5 Tests, neu),
+  `encryptedBackupNoPlaintextStaticCheck.test.js` (4 Tests, neu),
+  aktualisiertes `databaseTools.test.js`, erweitertes
+  `backupAutomation.test.js`): Key-/Format-/Header-/Krypto-Validierung,
+  alle Manipulationsszenarien aus „Fehlerbehandlung" oben,
+  Restore-Guard-Funktionen isoliert, Exit-Code-Mapping, statische
+  Quelltext-Prüfung gegen `writeFile`/`createWriteStream`/`mkdtemp`/Shell-
+  Umleitung, Legacy-Pfad-Sperre (Produktion, fehlender Override, kein
+  Datei-Anlegen vor der Prüfung).
+- **Integration** (`backend/test/integration/encryptedBackupRestoreDrill.test.js`,
+  `databaseToolsTimeout.test.js` (5 Tests, neu)):
   ein echter End-to-End-Drill gegen die reale lokale MySQL-Instanz (kein
   Mock, kein Fake), plus gezielte Fehlerfalltests (nicht erreichbarer
-  Container, bestehende Zieldatenbank, fehlende Bestätigung, fehlender
+  Container, bestehende Zieldatenbank, fehlende/falsche Freigabe, fehlender
   Zielname, authentische aber inhaltlich kaputte SQL-Nutzlast,
-  nicht erstellbares Ausgabeverzeichnis).
+  nicht erstellbares Ausgabeverzeichnis), die beiden kritischen
+  GCM-Tamper-Tests (Zieldatenbank wird bei manipuliertem/falschem Schlüssel
+  nie angelegt), der Live-Beweis „kein Klartextartefakt irgendwo" via
+  `fs.watch` plus Vorher/Nachher-Snapshots von Ausgabe- und
+  Temp-Verzeichnis, der Dump-Timeout-End-to-End-Test, der
+  POSIX-Berechtigungstest (0700/0600), sowie fünf echte Prozess-Timeout-Tests
+  gegen den laufenden `fittrack_mysql`-Container (hängender Prozess wird
+  beendet, entfernter Prozess über `/proc`-Scan nachweislich beendet,
+  SIGTERM-ignorierender Prozess wird trotzdem beendet, ein schneller Prozess
+  bleibt unberührt, ein explizit gesetztes Timeout greift weiterhin).
+- Gesamtergebnis der Release-Gate-Härtung: Backend 432/432 Tests grün
+  (278 Unit + 125 Integration + 29 Migrations-Tests), Syntax-Check über 146
+  Dateien grün, `npm audit` ohne Befunde; Frontend 280/280 Unit-Tests grün,
+  Produktionsbuild erfolgreich, `npm audit` ohne Befunde, 26 E2E-Szenarien
+  (inkl. Axe-Smokes) grün, nach Bestätigung eines einzelnen isolierten Flakes
+  in `coachFeedback.spec.js` (bestand bei isolierter Wiederholung
+  aller 7 Tests der Datei) als unabhängig von den Backend-Änderungen
+  eingestuft.
 - Keine externen Netzwerkzugriffe, keine echten Produktionssecrets — der
   Verschlüsselungsschlüssel in jedem Test ist ein frisch generierter,
   zufälliger Wert, der nie das Testverzeichnis verlässt.

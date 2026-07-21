@@ -6,9 +6,11 @@ const zlib = require("node:zlib");
 
 const db = require("../config/db");
 const { readBackupCryptoConfig } = require("../config/backupCryptoConfig");
+const { readBackupTimeoutConfig } = require("../config/backupTimeoutConfig");
 const { createMigrationRunner } = require("../migrations/runner");
 const { createStructuredLogger } = require("../startup/logger");
 const { assertExternalBackupDirectory, isLoopbackHost, safetyError } = require("./databaseSafety");
+const { backupCliExitCode } = require("./backupExitCodes");
 const { runDockerDatabaseTool, sha256File } = require("./databaseTools");
 const {
     IV_LENGTH,
@@ -53,6 +55,11 @@ async function readAppliedMigrations(config) {
 
 async function writePrefix(output, prefix) {
     await new Promise((resolve, reject) => {
+        // The stream's own "error" event (e.g. EEXIST, since the output
+        // file is opened with exclusive-create "wx") fires independently
+        // of the write() callback and, left unhandled, would surface as an
+        // uncaught exception instead of rejecting this promise.
+        output.once("error", reject);
         output.write(prefix, (error) => (error ? reject(error) : resolve()));
     });
 }
@@ -79,8 +86,12 @@ async function createEncryptedBackup({ env = process.env, now = new Date() } = {
     }
 
     const cryptoConfig = readBackupCryptoConfig(env);
+    const timeoutConfig = readBackupTimeoutConfig(env);
     const requestedDirectory = assertExternalBackupDirectory(env.BACKUP_OUTPUT_DIRECTORY, REPOSITORY_ROOT);
-    await fsPromises.mkdir(requestedDirectory, { recursive: true });
+    // mode is a best-effort hint on POSIX (subject to umask, and Windows
+    // ignores it entirely - see STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md); it
+    // does not widen an already-existing, more restrictive directory.
+    await fsPromises.mkdir(requestedDirectory, { recursive: true, mode: 0o700 });
     const backupDirectory = await fsPromises.realpath(requestedDirectory);
     assertExternalBackupDirectory(backupDirectory, await fsPromises.realpath(REPOSITORY_ROOT));
 
@@ -127,7 +138,9 @@ async function createEncryptedBackup({ env = process.env, now = new Date() } = {
                 config.database
             ],
             output,
-            outputTransforms: [gzip, cipher]
+            outputTransforms: [gzip, cipher],
+            timeoutMs: timeoutConfig.dumpTimeoutMs,
+            dockerOperationTimeoutMs: timeoutConfig.dockerOperationTimeoutMs
         });
 
         const tag = cipher.getAuthTag();
@@ -165,7 +178,7 @@ async function main() {
 if (require.main === module) {
     main().catch((error) => {
         createStructuredLogger().error("backup_create_failed", { error });
-        process.exitCode = 1;
+        process.exitCode = backupCliExitCode(error);
     });
 }
 

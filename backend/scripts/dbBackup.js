@@ -6,6 +6,7 @@ const db = require("../config/db");
 const { createStructuredLogger } = require("../startup/logger");
 const {
     assertExternalBackupDirectory,
+    assertLegacyUnencryptedBackupAllowed,
     isLoopbackHost,
     safetyError
 } = require("./databaseSafety");
@@ -19,6 +20,12 @@ const REPOSITORY_ROOT = path.resolve(__dirname, "../..");
 
 async function createBackup({ env = process.env, now = new Date() } = {}) {
     const config = db.readDatabaseConfig(env);
+    // readDatabaseConfig() loads backend/.env as a side effect (via
+    // config/db.js's loadBackendEnvironment), so NODE_ENV/ALLOW_LEGACY_*
+    // are only guaranteed to reflect the real configuration once it has
+    // run - this check must come after that, but still strictly before any
+    // directory, file or Docker operation below.
+    assertLegacyUnencryptedBackupAllowed(env);
     if (!isLoopbackHost(config.host)) {
         throw safetyError(
             "BACKUP_TARGET_FORBIDDEN",

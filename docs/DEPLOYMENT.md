@@ -698,23 +698,41 @@ Restore-Drill (siehe `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md` für das
 vollständige Threat Model, Format und alle Guards). Keine neue Migration,
 kein neues Anwendungsschema, keine Off-host-Speicherung, kein Scheduler.
 
+**Release-Gate-Härtung (Folge-Commit):** Der alte, unverschlüsselte
+Backup-Pfad (`db:backup`/`db:backup:daily`) ist seither in Produktion
+ausnahmslos gesperrt und überall sonst standardmäßig ebenfalls gesperrt.
+**In Produktion ist ausschließlich der verschlüsselte Pfad
+(`db:backup:create/verify/restore/drill`) zulässig.** Restore erfordert
+jetzt eine von `NODE_ENV` unabhängige, explizite Freigabe
+(`BACKUP_RESTORE_ENABLED=true`) plus eine an den exakten Zielnamen
+gebundene Bestätigung. Externe Prozesse (`mysqldump`/`mysql`/Docker-Hilfsoperationen) laufen jetzt mit strikten,
+konfigurierbaren Timeouts inklusive garantierter Bereinigung des entfernten
+Containerprozesses. Details siehe „Release-Gate-Härtung" ganz oben in
+`STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md`.
+
 **Neue Variablen, ausschließlich für `db:backup:create/verify/restore/drill`
-— nie vom laufenden Server gelesen:**
+bzw. den alten `db:backup`/`db:backup:daily`-Pfad — nie vom laufenden
+Anwendungsserver gelesen:**
 
 | Variable | Erforderlich | Bedeutung und Grenze |
 | --- | --- | --- |
 | `BACKUP_ENCRYPTION_KEY_B64` | ja, für Backup-Befehle | Base64, muss exakt 32 Byte ergeben; leer/Platzhalter werden abgelehnt; nie loggen, nie committen |
 | `BACKUP_ENCRYPTION_KEY_ID` | ja, für Backup-Befehle | 1–64 Zeichen, nur Buchstaben/Ziffern/`_`/`-`; nie der Schlüssel selbst |
-| `BACKUP_OUTPUT_DIRECTORY` | ja, für Backup-Befehle | Absoluter Pfad außerhalb des Repositorys |
+| `BACKUP_OUTPUT_DIRECTORY` | ja, für `db:backup:create` | Absoluter Pfad außerhalb des Repositorys |
+| `BACKUP_DUMP_TIMEOUT_MS` | nein | Grenzen 5s–1h, Standard 5 min; Dump-Prozess wird bei Überschreitung beendet |
+| `BACKUP_RESTORE_TIMEOUT_MS` | nein | Grenzen 5s–1h, Standard 10 min; Restore-Import wird bei Überschreitung beendet |
+| `BACKUP_DOCKER_OPERATION_TIMEOUT_MS` | nein | Grenzen 1s–2min, Standard 15s; genereller Docker-Hilfsprozess (u. a. entfernter Kill-Vorgang) |
+| `BACKUP_RESTORE_ENABLED` | ja, für Restore | Muss exakt `true` sein — **einziger** Autorisierungsschalter, `NODE_ENV` genügt nie allein |
 | `FITTRACK_RESTORE_TARGET_DATABASE` | ja, für Restore | Muss dem Wegwerfmuster entsprechen und sich von der Quelldatenbank unterscheiden |
-| `FITTRACK_RESTORE_ACK` | ja, für Restore | Exakt `restore-local-test-database` |
+| `FITTRACK_RESTORE_ACK` | ja, für Restore | Muss exakt `restore:<FITTRACK_RESTORE_TARGET_DATABASE>` sein — an den Zielnamen gebunden |
 | `FITTRACK_RESTORE_ALLOW_RECREATE` | nein | Nur exakt `recreate-disposable-restore-target` erlaubt das Neuerstellen einer bereits existierenden Zieldatenbank |
+| `ALLOW_LEGACY_UNENCRYPTED_BACKUP` | nein | Nur exakt `true`; wirkt nie in Produktion (dort immer gesperrt); erlaubt den alten Klartext-Pfad nur für historische Regressionstests/lokale Läufe |
 
 Vor Produktionseinsatz zusätzlich erforderlich (siehe „Verbleibende Grenzen"
 in `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md`): Off-host-Speicherung, ein
-Scheduler für `db:backup:create` sowie ein dokumentierter Key-Lebenszyklus im
-Secret Store der Zielplattform — keiner dieser drei Punkte ist Teil dieser
-Phase.
+Scheduler für `db:backup:create`, ein dokumentierter Key-Lebenszyklus im
+Secret Store der Zielplattform sowie eine DB-Rollentrennung zwischen
+Dump-/Restore-Benutzer — keiner dieser Punkte ist Teil dieser Phase.
 
 ### Zusätzliche Release-Checks
 
@@ -722,16 +740,30 @@ Phase.
       zu langen Schlüssel sowie bekannte Platzhalter ab
 - [ ] AES-256-GCM-Authentifizierung erkennt jede Manipulation an Header,
       Ciphertext oder Tag (automatisiert mit Bitflip-/Truncation-Tests)
-- [ ] Restore verlangt zwingend `NODE_ENV=test`, Loopback-Host, explizite
+- [ ] der alte, unverschlüsselte Backup-Pfad ist in Produktion ausnahmslos
+      gesperrt (kein Override) und überall sonst ohne
+      `ALLOW_LEGACY_UNENCRYPTED_BACKUP=true` ebenfalls gesperrt, jeweils
+      bevor irgendeine Datei angelegt wird
+- [ ] Restore verlangt zwingend `BACKUP_RESTORE_ENABLED=true` (unabhängig von
+      `NODE_ENV`), Loopback-Host, eine an den exakten Zielnamen gebundene
       Bestätigung, explizites Wegwerf-Ziel ungleich Quelle/Systemdatenbank
 - [ ] eine bereits existierende Zieldatenbank wird ohne explizite
       Recreate-Bestätigung abgelehnt, nie stillschweigend überschrieben
 - [ ] kein Klartext-SQL-Dump entsteht zu irgendeinem Zeitpunkt auf Disk
-      (weder bei Create noch bei Restore)
+      (weder bei Create noch bei Verify noch bei Restore) — automatisiert
+      direkt bewiesen (Live-Dateisystemüberwachung plus statische
+      Quelltext-Prüfung), nicht nur indirekt geschlussfolgert
+- [ ] ein manipuliertes oder mit falschem Schlüssel verschlüsseltes Backup
+      führt nie zu einem tatsächlichen `mysql`-Import und legt die
+      Zieldatenbank nie an (Verify-vor-Trust, zweiphasiger Restore)
+- [ ] hängende oder Signale ignorierende `mysqldump`/`mysql`/Docker-Prozesse
+      werden zuverlässig beendet — sowohl der lokale Client als auch der im
+      Container laufende entfernte Prozess (empirisch gegen echte Prozesse
+      getestet, nicht nur simuliert)
 - [ ] realer Restore-Drill gegen die lokale MySQL-Instanz grün: Backup
       erstellt, verifiziert, in eine disposable Datenbank restauriert,
       Migration Doctor `ready`/`applied:8`, Tabellen- und
       Zeilenzahlvergleich stimmt, Zieldatenbank und Backup-Testartefakt
       danach vollständig entfernt
-- [ ] `.env.example` enthält ausschließlich abgelehnte Platzhalter für die
-      drei neuen Backup-Variablen, keine echten Schlüssel
+- [ ] `.env.example` enthält ausschließlich abgelehnte Platzhalter für alle
+      Backup-/Restore-/Timeout-Variablen, keine echten Schlüssel

@@ -12,6 +12,7 @@ const {
     safeBackupFailure,
     writeJsonExclusive
 } = require("./databaseBackupPolicy");
+const { assertLegacyUnencryptedBackupAllowed } = require("./databaseSafety");
 const {
     compressLogicalBackupFile,
     createBackupFilename,
@@ -136,6 +137,10 @@ async function createDailyBackup({
         ...dependencies
     };
     const config = services.readDatabaseConfig(env);
+    // Must run before resolveBackupDirectory/acquireLock create anything on
+    // disk - a rejected legacy run should leave zero trace, not even a
+    // lock file.
+    assertLegacyUnencryptedBackupAllowed(env);
     const automation = assertAutomatedBackupEnvironment(env, config, repositoryRoot);
     const backupDirectory = await resolveBackupDirectory({
         directory: automation.directory,

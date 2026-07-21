@@ -7,6 +7,7 @@ const { Writable } = require("node:stream");
 const { readBackupCryptoConfig } = require("../config/backupCryptoConfig");
 const { createStructuredLogger } = require("../startup/logger");
 const { safetyError } = require("./databaseSafety");
+const { backupCliExitCode } = require("./backupExitCodes");
 const { readAndProcessEncryptedBackup } = require("./encryptedBackupStream");
 
 // A discard sink that still hashes and counts every decompressed byte, so
@@ -77,7 +78,7 @@ async function main() {
 if (require.main === module) {
     main().catch((error) => {
         createStructuredLogger().error("backup_verify_failed", { error });
-        process.exitCode = 1;
+        process.exitCode = backupCliExitCode(error);
     });
 }
 

@@ -27,7 +27,14 @@ Punkte sind inzwischen erfüllt:
   end-to-end verifizierter Restore-Drill sind implementiert. Die
   sensibelsten Daten im System (P4: Satzresultate, Member-Notizen,
   Trainer-Feedback) sind damit in jedem erstellten Backup verschlüsselt,
-  nicht mehr unverschlüsselt auf Platte.
+  nicht mehr unverschlüsselt auf Platte. Eine anschließende
+  Release-Gate-Härtung (Folge-Commit, gleicher Branch) hat den alten
+  unverschlüsselten Pfad in Produktion vollständig gesperrt, das
+  Restore-Freigabemodell von `NODE_ENV` entkoppelt (explizites
+  `BACKUP_RESTORE_ENABLED` plus zielgebundene Bestätigung) und strikte,
+  erzwungene Timeouts für alle externen Dump-/Restore-/Docker-Aufrufe
+  eingeführt — Stage 2B1 gilt seither inklusive dieser Härtung als
+  abgeschlossene, produktionsfähige Baseline.
 
 ## Was als Nächstes gebaut werden sollte
 
@@ -92,8 +99,9 @@ Unabhängig davon, ob operativ oder funktional priorisiert wird, sollte der
 nächste Auftrag ausdrücklich ausschließen:
 - jede Änderung am bereits stabilen, getesteten Feedback-Datenmodell aus
   Stage 1B.2B2B, am SMTP-Adapter-Vertrag aus Stage 2A und am
-  `.ftbackup`-Containerformat/den Restore-Guards aus Stage 2B1 (alle drei
-  bleiben außer bei expliziter neuer Freigabe unverändert),
+  `.ftbackup`-Containerformat/den Restore-Guards/dem
+  `BACKUP_RESTORE_ENABLED`-Freigabemodell aus Stage 2B1 (alle bleiben außer
+  bei expliziter neuer Freigabe unverändert),
 - die in Stage 1B.2B2B Abschnitt „Klare Grenze zu späteren Phasen" sowie in
   Stage 2A Abschnitt „Nicht enthalten" aufgeführten Themen (Chat,
   Reaktionen, KI-Feedback, Analytics-Dashboard, Churn-Risk, Körpergewicht/

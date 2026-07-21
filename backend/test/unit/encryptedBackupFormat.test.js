@@ -332,3 +332,26 @@ test("an empty plaintext dump still round-trips (edge case: zero-byte logical pa
     await readAndProcessEncryptedBackup({ filePath: file, key, sink: out.sink });
     assert.equal(out.text(), "");
 });
+
+test("writeEncryptedBackup never silently overwrites an existing file at the destination path (exclusive creation)", async (t) => {
+    const dir = await tempDir(t);
+    const key = crypto.randomBytes(32);
+    const file = path.join(dir, "existing.ftbackup");
+    await fsPromises.writeFile(file, "pre-existing content that must not be clobbered");
+
+    await assert.rejects(writeSample(file, key));
+    const content = await fsPromises.readFile(file, "utf8");
+    assert.equal(content, "pre-existing content that must not be clobbered");
+});
+
+test("the written .ftbackup file is created with mode 0600 on POSIX platforms (Windows does not enforce POSIX modes)", async (t) => {
+    if (process.platform === "win32") {
+        return; // documented platform limitation, not testable here
+    }
+    const dir = await tempDir(t);
+    const key = crypto.randomBytes(32);
+    const file = path.join(dir, "perm-check.ftbackup");
+    await writeSample(file, key);
+    const stat = await fsPromises.stat(file);
+    assert.equal(stat.mode & 0o777, 0o600);
+});
