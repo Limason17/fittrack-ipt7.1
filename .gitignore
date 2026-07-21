@@ -40,6 +40,12 @@ frontend/playwright-report/
 *.sql.gz.manifest.json.partial
 .fittrack-backup.lock
 
+# encrypted backup container artifacts (Stage 2B1) - production targets must
+# still be outside the repository; these rules only guard against an
+# accidental local/relative BACKUP_OUTPUT_DIRECTORY or stray drill artifact
+*.ftbackup
+*.ftbackup.partial
+
 # OS files
 .DS_Store
 Thumbs.db

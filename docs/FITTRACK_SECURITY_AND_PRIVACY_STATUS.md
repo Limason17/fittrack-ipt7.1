@@ -78,11 +78,18 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um
 
 ## Backups
 
-- Automatisierter täglicher Lauf: komprimiert, Integritätsmanifest (SHA-256 für Roh- und komprimierte Datei), Lock, Zielidentitätsprüfung, UTC-GFS-Retention (7 täglich/4 wöchentlich/3 monatlich). **[GETESTET]** `backend/test/unit/backupAutomation.test.js`, `backend/test/unit/backupPolicy.test.js`.
-- **Keine Verschlüsselung im Ruhezustand** — Artefakte liegen unverschlüsselt (nur Dateisystemrechte `0o600`). **[OFFEN]**
-- **Keine Off-host-Kopie implementiert** — laut `docs/BACKUP_RESTORE.md` selbst nur dokumentierte Absicht, kein Upload-Adapter vorhanden. **[DOKU]**
-- Restore-Pfad ausschließlich für Wegwerf-Testdatenbanken, kein Produktions-Restore-Codepfad. **[GETESTET]** `backend/test/unit/backupAutomation.test.js:163-212`.
-- Kein nachgewiesener/abgeschlossener Restore-Drill — RPO/RTO sind Planungsannahmen. **[DOKU]**
+- Automatisierter täglicher Lauf (Stage 0C, im Code unverändert): komprimiert, Integritätsmanifest (SHA-256 für Roh- und komprimierte Datei), Lock, Zielidentitätsprüfung, UTC-GFS-Retention (7 täglich/4 wöchentlich/3 monatlich). **[GETESTET]** `backend/test/unit/backupAutomation.test.js`, `backend/test/unit/backupPolicy.test.js`. Dieser Pfad (`db:backup`/`db:backup:daily`) produziert weiterhin unverschlüsselte `.sql`/`.sql.gz`-Artefakte. **Seit der Stage-2B1-Release-Gate-Härtung ist er in Produktion (`NODE_ENV=production`) ausnahmslos gesperrt, ohne Override**, und überall sonst standardmäßig ebenfalls gesperrt (`ALLOW_LEGACY_UNENCRYPTED_BACKUP=true` nötig, aufgerufen als erste Prüfung vor jeder Verzeichnis-/Docker-Operation) — er bleibt nur für historische Regressionstests/lokale Läufe erreichbar. **[GETESTET]** `backend/test/unit/backupAutomation.test.js` (Produktionssperre, fehlender Override, kein Datei-Anlegen vor der Prüfung).
+- **Verschlüsselung im Ruhezustand: seit Stage 2B1 verfügbar und seit der Release-Gate-Härtung der einzige produktionsfähige Pfad** — `db:backup:create` erzeugt ein authentifiziert AES-256-GCM-verschlüsseltes `.ftbackup` (`node:crypto`, 32-Byte-Schlüssel, zufälliger IV pro Backup, GCM-Tag zwingend geprüft, Header als AAD). Kein Klartext-SQL-Dump entsteht dabei zu irgendeinem Zeitpunkt auf Disk — direkt bewiesen (Live-Dateisystemüberwachung plus statische Quelltext-Prüfung), nicht nur indirekt geschlussfolgert. **[GETESTET]** `backend/test/unit/encryptedBackupFormat.test.js`, `backend/test/unit/backupCryptoConfig.test.js`, `backend/test/unit/encryptedBackupNoPlaintextStaticCheck.test.js`, `backend/test/integration/encryptedBackupRestoreDrill.test.js` (echter End-to-End-Drill gegen die lokale MySQL-Instanz, inkl. zweier kritischer GCM-Tamper-Tests, die beweisen, dass die Zieldatenbank bei einem manipulierten oder mit falschem Schlüssel verschlüsselten Backup nie angelegt wird). Siehe `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md`.
+- **Keine Off-host-Kopie implementiert** — laut `docs/BACKUP_RESTORE.md` selbst nur dokumentierte Absicht, kein Upload-Adapter vorhanden; weder Stage 2B1 noch die Release-Gate-Härtung ändern das. **[DOKU]**
+- Restore-Pfad ausschließlich für Wegwerf-Testdatenbanken, kein Produktions-Restore-Codepfad. **[GETESTET]** `backend/test/unit/backupAutomation.test.js:163-212` (unverschlüsselter Pfad, weiterhin `NODE_ENV=test` plus Loopback-Host), `backend/test/integration/encryptedBackupRestoreDrill.test.js` (verschlüsselter Pfad) — der verschlüsselte Restore verlangt seit der Härtung eine von `NODE_ENV` unabhängige, explizite Freigabe (`BACKUP_RESTORE_ENABLED=true`), Loopback-Host, ein streng gemustertes Wegwerfziel sowie eine an den exakten Zielnamen gebundene Bestätigung (`FITTRACK_RESTORE_ACK=restore:<Ziel>`, statt einer festen Phrase); ein explizites Zieldatenbank-Argument ist zwingend, darf nie implizit der Quelle entsprechen, und eine bereits existierende Zieldatenbank wird ohne explizite Bestätigung abgelehnt. Zusätzlich erzwingen konfigurierbare Timeouts (`BACKUP_DUMP_TIMEOUT_MS`/`BACKUP_RESTORE_TIMEOUT_MS`/`BACKUP_DOCKER_OPERATION_TIMEOUT_MS`) eine garantierte Beendigung hängender oder Signale ignorierender `mysqldump`/`mysql`/Docker-Prozesse, einschließlich des im Container laufenden entfernten Prozesses.
+- **Automatisierter, verifizierter Restore-Drill seit Stage 2B1**
+  (`db:backup:drill`): erstellt ein echtes verschlüsseltes Backup, verifiziert
+  es vollständig, restauriert es in eine disposable Datenbank, prüft
+  Migration Doctor (`ready`/`applied:8`) sowie Tabellen-/Zeilenzahlvergleich
+  gegen die Quelle, räumt danach vollständig auf. **[GETESTET]**. RPO/RTO als
+  quantifizierte Planungsannahmen für einen echten Produktionsbetrieb bleiben
+  weiterhin offen — der Drill beweist die Mechanik, nicht einen geplanten
+  Zeitrahmen.
 
 ## Secrets
 
@@ -104,22 +111,30 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um
 | Coaching-Beziehungen | Owner/Admin (alle), Trainer (nur eigene) | `studio_coaching_relationships` | Nein | Ja (nur Membership-IDs) | Ja | Statustransition (`ended`), kein Hard-Delete | — |
 | Programmzuweisungen | Owner/Admin/Trainer (Coachees), Mitglied (eigene) | `studio_program_assignments` | Nein | Ja (Member-ID, Versionsnummer) | Ja | Statustransition, kein Hard-Delete | — |
 | Session-Metadaten (Status, Zeitstempel) | Mitglied selbst, Coach mit aktiver Beziehung | `studio_workout_sessions` | Nein | Ja (nur Assignment-/Tag-ID beim Start, sonst leer) | Ja, unverschlüsselt | Statustransition, kein Hard-Delete | — |
-| **Satzresultate (Gewicht, Wiederholungen, RPE, Distanz, Dauer)** | Mitglied selbst, Coach **nur** mit eigener aktiver Beziehung, **kein** Owner-/Admin-Bypass | `studio_workout_session_sets` | **Nein — explizit ausgeschlossen und getestet** | **Nein — nie, auch nicht als redigierter Wert** | Ja, unverschlüsselt | Kein Hard-Delete-Pfad; laut ADR 003 das sensibelste personenbezogene Datum der Anwendung | Höchste Schutzstufe im System; Backup-Verschlüsselungslücke betrifft dieses Datum am stärksten |
+| **Satzresultate (Gewicht, Wiederholungen, RPE, Distanz, Dauer)** | Mitglied selbst, Coach **nur** mit eigener aktiver Beziehung, **kein** Owner-/Admin-Bypass | `studio_workout_session_sets` | **Nein — explizit ausgeschlossen und getestet** | **Nein — nie, auch nicht als redigierter Wert** | Ja, siehe Fußnote¹ | Kein Hard-Delete-Pfad; laut ADR 003 das sensibelste personenbezogene Datum der Anwendung | Höchste Schutzstufe im System; profitiert am stärksten davon, dass der produktionsfähige Backup-Pfad seit Stage 2B1 verschlüsselt ist |
 | Member-Notizen (Session/Übung/Satz) | Wie Satzresultate | `studio_workout_session*.member_note` | Nein | Nein | Ja, unverschlüsselt | Kein Hard-Delete | — |
 | **Trainer-Feedback zu Sessions** | Mitglied selbst (dauerhaft, auch nach Beziehungsende), Coach **nur** mit eigener aktiver, session-pinnender Beziehung, **kein** Owner-/Admin-Bypass | `studio_workout_session_feedback` (Migration 008) | Nein | Nur `{feedbackId, sessionId}`, nie der Text | Ja, unverschlüsselt | Kein Hard-Delete, kein Update — append-only per Schema-Design (kein PATCH/DELETE-Endpunkt) | Neu in Stage 1B.2B2B; erbt die P4-Schutzstufe der Satzresultate |
+
+¹ „Ja, unverschlüsselt" in dieser Tabelle bezieht sich auf die MySQL-Tabelle
+selbst (keine Verschlüsselung im Ruhezustand innerhalb der Datenbank). Für
+den **Backup-Artefakt-Pfad** gilt seit Stage 2B1: Der einzige in Produktion
+zulässige Weg (`db:backup:create`) erzeugt ein authentifiziert
+AES-256-GCM-verschlüsseltes `.ftbackup`; der alte, unverschlüsselte
+`db:backup`/`db:backup:daily`-Pfad ist in Produktion seit der
+Release-Gate-Härtung ausnahmslos gesperrt (siehe „Backups" oben).
 
 **Technischer Ist-Zustand, keine Rechtsauskunft:** Es existiert kein Recht-auf-Löschung-/Anonymisierungs-Mechanismus für Benutzer- oder Trainingsdaten im gesamten Code (weder `DELETE`-Endpunkt für den eigenen Account noch eine Anonymisierungsroutine). Für einen produktiven Betrieb mit echten Nutzerdaten ist das ein offener Punkt, unabhängig von Sicherheits- oder Funktionsreife.
 
 ## Auffällige Lücken (Zusammenfassung)
 
 1. Kein Off-host-Backup implementiert (nur dokumentiert).
-2. Keine Verschlüsselung von Backup-Artefakten im Ruhezustand — betrifft insbesondere die P4-Trainingsleistungsdaten.
+2. ~~Keine Verschlüsselung von Backup-Artefakten im Ruhezustand~~ — seit Stage 2B1 behoben und seit der Release-Gate-Härtung der einzige produktionsfähige Backup-Pfad (siehe oben); betraf insbesondere die P4-Trainingsleistungsdaten.
 3. Eine einzige DB-Rolle für Runtime/Migration/Restore statt getrennter Privilegien.
 4. Timing-Seitenkanal bei Login-Enumeration.
 5. Audit-Append-only ist reine Anwendungskonvention, nicht DB-erzwungen.
 6. ~~Kein Produktions-E-Mail-Provider verdrahtet~~ — seit Stage 2A behoben: validierter, opt-in SMTP-Adapter vorhanden (siehe oben). Weiterhin offen: kein Bounce-/Complaint-Handling, keine Zustell-Warteschlange, und ein echter Versand wurde in dieser Umgebung mangels Zugangsdaten nicht real nachgewiesen.
 7. CORS-Konfiguration ungetestet.
 8. Rate Limiter ist pro Prozess, nicht zentral (Skalierungsgrenze).
-9. Kein abgeschlossener/nachgewiesener Restore-Drill.
+9. ~~Kein abgeschlossener/nachgewiesener Restore-Drill~~ — seit Stage 2B1 behoben: automatisierter Drill (`db:backup:drill`) und ein manueller Lauf mit synthetischem Schlüssel, beide gegen die lokale MySQL-Instanz, siehe oben.
 10. Kein Recht-auf-Löschung-/Anonymisierungspfad für Benutzerdaten.
 11. `coachActionEligibility` ist toter Code mit irreführender Bypass-Semantik (Drift-Risiko).

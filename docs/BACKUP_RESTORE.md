@@ -1,5 +1,21 @@
 # FitTrack Backup und Restore
 
+> **Korrektur (Stage 2B1 / Release-Gate-Härtung):** Die in diesem Dokument
+> beschriebenen Stage-0B/0C-Wege (`db:backup`, `db:backup:daily`) erzeugen
+> ausschließlich **unverschlüsselte** `.sql`/`.sql.gz`-Artefakte. Seit der
+> Stage-2B1-Release-Gate-Härtung ist dieser Pfad **in Produktion
+> (`NODE_ENV=production`) ausnahmslos gesperrt, ohne Override**, und überall
+> sonst standardmäßig ebenfalls gesperrt (`ALLOW_LEGACY_UNENCRYPTED_BACKUP=
+> true` nötig). **Für jeden Produktivbetrieb ist ausschließlich der
+> verschlüsselte Pfad zulässig:** `npm run db:backup:create/verify/restore/
+> drill`, siehe `docs/STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md`. Dieses Dokument
+> bleibt als Referenz für den historischen, unverschlüsselten Weg gültig
+> (weiterhin regressionsgetestet, weiterhin nutzbar für lokale Läufe/CI mit
+> explizitem Override), ist aber **nicht mehr pilot-/produktionsgeeignet**,
+> unabhängig von Scheduler, Monitoring oder Off-host-Kopie. Die untenstehende
+> Aussage „Ja, sobald Scheduler, Monitoring und Off-host-Kopie eingerichtet
+> sind" (Tabelle „Zwei getrennte Backup-Wege") gilt daher **nicht mehr**.
+
 Diese Anleitung beschreibt den lokalen Backup- und Restore-Weg für die einzelne MySQL-8-Instanz des FitTrack-Piloten. Stage 0B stellte einen bewusst manuellen Dump-/Restore-Nachweis bereit. Stage 0C ergänzt einen täglich planbaren, überwachten Backup-Lauf mit Integritätsmanifest und GFS-Retention. Das ist noch kein Produktions-Runbook und keine Aussage darüber, dass ein bestimmter Lauf bereits ausgeführt wurde.
 
 ## Pilotziele und Geltungsbereich
@@ -16,8 +32,8 @@ Die Skripte sind absichtlich auf ein lokales Docker-/Loopback-Szenario begrenzt.
 
 | Zweck | Befehl | Ergebnis | Geeignet für den täglichen Pilotbetrieb |
 | --- | --- | --- | --- |
-| Manueller Stage-0B-Dump | `npm run db:backup` | Eine geprüfte, unkomprimierte `.sql`-Datei mit `bytes` und `sha256` im JSON-Ergebnis | Nein; Ad-hoc-Diagnose und manueller Nachweis |
-| Automatisierter Stage-0C-Lauf | `npm run db:backup:daily` | Ein verifiziertes `.sql.gz`-/Manifest-Paar, Identitätsprüfung, Lock und UTC-GFS-Retention | Ja, sobald Scheduler, Monitoring und Off-host-Kopie eingerichtet sind |
+| Manueller Stage-0B-Dump | `npm run db:backup` | Eine geprüfte, unkomprimierte `.sql`-Datei mit `bytes` und `sha256` im JSON-Ergebnis | Nein; Ad-hoc-Diagnose und manueller Nachweis; seit der Stage-2B1-Härtung in Produktion ausnahmslos gesperrt |
+| Automatisierter Stage-0C-Lauf | `npm run db:backup:daily` | Ein verifiziertes `.sql.gz`-/Manifest-Paar, Identitätsprüfung, Lock und UTC-GFS-Retention | **Nein** — unverschlüsseltes Artefakt; seit der Stage-2B1-Release-Gate-Härtung in Produktion ausnahmslos gesperrt, unabhängig von Scheduler/Monitoring/Off-host-Kopie. Für den Pilot-/Produktivbetrieb stattdessen `npm run db:backup:create` (siehe `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md`) |
 
 Der manuelle Lauf besitzt kein Completion-Manifest, keinen Parallelitäts-Lock, keine Host-/Container-UUID-Prüfung und keine automatische Retention. Ein manueller Dump allein erfüllt deshalb den automatisierten Pilotprozess nicht.
 

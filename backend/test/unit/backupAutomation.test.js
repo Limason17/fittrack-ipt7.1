@@ -8,6 +8,7 @@ const {
     createDailyBackup,
     readContainerDatabaseIdentity
 } = require("../../scripts/dbBackupDaily");
+const { createBackup } = require("../../scripts/dbBackup");
 const {
     prepareRestoreSource,
     restoreBackup
@@ -31,7 +32,12 @@ function automationEnvironment(backupDirectory, database = "fittrack") {
         DB_PORT: "3306",
         DB_USER: "backup_user",
         DB_PASSWORD: "private-database-password",
-        FITTRACK_DB_CONTAINER: "fittrack_mysql"
+        FITTRACK_DB_CONTAINER: "fittrack_mysql",
+        // This legacy path now requires explicit opt-in (never in
+        // production) - see databaseSafety.js#assertLegacyUnencryptedBackupAllowed.
+        // These tests intentionally exercise the still-supported legacy
+        // behavior itself, not the new gate, so they opt in explicitly.
+        ALLOW_LEGACY_UNENCRYPTED_BACKUP: "true"
     };
 }
 
@@ -207,6 +213,89 @@ test("tampered gzip is rejected before restore can drop its target database", as
         (error) => error.code === "BACKUP_INTEGRITY_FAILED"
     );
     assert.equal(recreated, false);
+});
+
+test("the legacy unencrypted backup path is forbidden in production, with no override, and creates no file first", async (t) => {
+    const { repositoryRoot, backupDirectory } = await createBackupWorkspace(t);
+    const env = {
+        ...automationEnvironment(backupDirectory),
+        NODE_ENV: "production",
+        // Even an explicit opt-in must not help in production.
+        ALLOW_LEGACY_UNENCRYPTED_BACKUP: "true"
+    };
+    let rawCreated = false;
+    await assert.rejects(
+        createDailyBackup({
+            env,
+            now: new Date("2026-07-18T02:00:00.000Z"),
+            repositoryRoot,
+            dependencies: {
+                readDatabaseConfig: () => ({
+                    host: env.DB_HOST,
+                    user: env.DB_USER,
+                    password: env.DB_PASSWORD,
+                    database: env.DB_NAME
+                }),
+                createRawBackup: async () => {
+                    rawCreated = true;
+                }
+            }
+        }),
+        (error) => error.code === "LEGACY_UNENCRYPTED_BACKUP_FORBIDDEN"
+    );
+    assert.equal(rawCreated, false, "no dump attempt may start once production is detected");
+    assert.deepEqual(
+        await fsPromises.readdir(backupDirectory),
+        [],
+        "no lock file, directory entry or artifact may exist after a forbidden legacy run"
+    );
+});
+
+test("the legacy unencrypted backup path is off by default outside production too, and creates no file first", async (t) => {
+    const { repositoryRoot, backupDirectory } = await createBackupWorkspace(t);
+    const env = { ...automationEnvironment(backupDirectory) };
+    delete env.ALLOW_LEGACY_UNENCRYPTED_BACKUP;
+    let rawCreated = false;
+    await assert.rejects(
+        createDailyBackup({
+            env,
+            now: new Date("2026-07-18T02:00:00.000Z"),
+            repositoryRoot,
+            dependencies: {
+                readDatabaseConfig: () => ({
+                    host: env.DB_HOST,
+                    user: env.DB_USER,
+                    password: env.DB_PASSWORD,
+                    database: env.DB_NAME
+                }),
+                createRawBackup: async () => {
+                    rawCreated = true;
+                }
+            }
+        }),
+        (error) => error.code === "LEGACY_UNENCRYPTED_BACKUP_FORBIDDEN"
+    );
+    assert.equal(rawCreated, false);
+    assert.deepEqual(await fsPromises.readdir(backupDirectory), []);
+});
+
+test("the legacy manual backup command (dbBackup.js) is also forbidden in production before any Docker call", async (t) => {
+    const { backupDirectory } = await createBackupWorkspace(t);
+    const env = {
+        NODE_ENV: "production",
+        ALLOW_LEGACY_UNENCRYPTED_BACKUP: "true",
+        DB_HOST: "127.0.0.1",
+        DB_NAME: "fittrack",
+        DB_USER: "root",
+        DB_PASSWORD: "root",
+        FITTRACK_BACKUP_DIR: backupDirectory,
+        FITTRACK_DB_CONTAINER: "fittrack_container_that_must_never_be_reached"
+    };
+    await assert.rejects(
+        createBackup({ env }),
+        (error) => error.code === "LEGACY_UNENCRYPTED_BACKUP_FORBIDDEN"
+    );
+    assert.deepEqual(await fsPromises.readdir(backupDirectory), []);
 });
 
 test("legacy uncompressed logical backups remain restore-compatible", async (t) => {

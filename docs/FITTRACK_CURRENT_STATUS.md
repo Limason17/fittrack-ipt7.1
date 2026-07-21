@@ -61,7 +61,7 @@ Technologie-Inventar (aus `package.json`, `docker-compose.yml`, `.github/workflo
 - **Datenbank:** MySQL 8.0, additive versionierte Forward-Migrationen (kein ORM).
 - **Migrationssystem:** Eigenbau (`backend/migrations/`) mit Advisory-Lock, Checksum-Drift-Erkennung, separatem read-only "Migration Doctor".
 - **CI:** GitHub Actions, drei Jobs (Backend+MySQL+Migrationen, Frontend+Build, Chromium-E2E+Axe), Node 22.17.0 exakt gepinnt.
-- **Backup/Restore:** Eigenbau-Skripte (`backend/scripts/dbBackup*.js`, `dbRestore.js`) mit GFS-Retention.
+- **Backup/Restore:** Eigenbau-Skripte (`backend/scripts/dbBackup*.js`, `dbRestore.js`) mit GFS-Retention (unverschlüsselt); dieser Pfad ist seit der Stage-2B1-Release-Gate-Härtung in Produktion ausnahmslos gesperrt und überall sonst standardmäßig gesperrt (`ALLOW_LEGACY_UNENCRYPTED_BACKUP` nötig, wirkt nie in Produktion) — er bleibt nur für historische Regressionstests/lokale Läufe nutzbar. **Seit Stage 2B1 zusätzlich und für Produktion ausschließlich zulässig:** ein paralleler, authentifiziert AES-256-GCM-verschlüsselter Pfad (`encryptedBackup{Create,Verify,Restore,Drill}.js`, `.ftbackup`-Format) mit automatisiertem, echt gegen die lokale MySQL-Instanz verifiziertem Restore-Drill, strikten Prozess-Timeouts (Dump/Restore/Docker-Hilfsoperation, inkl. garantierter Bereinigung des entfernten Containerprozesses) und einem von `NODE_ENV` unabhängigen, explizit an den Zielnamen gebundenen Restore-Freigabemodell (`BACKUP_RESTORE_ENABLED=true` + `FITTRACK_RESTORE_ACK=restore:<Ziel>`) — siehe `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md`.
 
 ### 3.1 Architekturdiagramm
 
@@ -398,7 +398,7 @@ Alle Zahlen stammen aus tatsächlich in dieser Sitzung ausgeführten Befehlen (C
 | Auto-Migrate | **im Code vorhanden**, in dieser lokalen Konfiguration deaktiviert (`FITTRACK_AUTO_MIGRATE=false`) — Standardeinstellung laut Doku ist ebenfalls "aus" |
 | Tägliche Backups + GFS-Retention | **im Code vorhanden, automatisiert getestet**, lokal nicht in dieser Sitzung ausgeführt (kein produktiver Lauf angefordert) |
 | Off-host-Backup-Kopie | **nicht eingerichtet, nicht implementiert** — laut Doku selbst nur eine geplante Erweiterung |
-| Restore-Drill | **nicht nachgewiesen** — Doku selbst weist ausdrücklich darauf hin, dass kein bestimmter Lauf bereits erfolgt ist |
+| Restore-Drill (verschlüsselter Pfad) | **nachgewiesen** — automatisierter Drill (`db:backup:drill`) sowie ein manueller Lauf mit synthetischem Schlüssel gegen die lokale MySQL-Instanz, jeweils inkl. Migration Doctor und Zeilenzahlvergleich, siehe `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md`. Restore erfordert seit der Release-Gate-Härtung eine von `NODE_ENV` unabhängige, explizite Freigabe (`BACKUP_RESTORE_ENABLED=true` + zielgebundene Bestätigung). |
 | Produktions-E-Mail-Provider für Einladungen | **nicht eingerichtet** — Code verweigert produktive Einladungen bewusst fail-closed ohne einen |
 | Getrennte DB-Rollen (Runtime vs. Migration) | **nur dokumentiert als Absicht**, im Code eine einzige Rolle |
 | TLS/Reverse-Proxy | **nur dokumentiert** — bewusst als Infrastrukturaufgabe außerhalb des Repositorys |
@@ -414,13 +414,13 @@ Skala: nicht vorhanden · Proof of Concept · technisch vorhanden · intern test
 |---|---|---|
 | Technische Stabilität | **intern testbar** | 232 Backend- + 147 Frontend- + 12 E2E-Tests grün, Migration Doctor sauber; keine produktive Lasttest-/Monitoring-Evidenz |
 | Datenmodell | **pilotbereit mit Einschränkungen** | Sauber normalisiert, Snapshot-Muster konsequent angewendet, aber kein Löschkonzept für Nutzerdaten |
-| Sicherheit | **pilotbereit mit Einschränkungen** | Starkes Default-Deny/Tenant-Isolation/Audit-Fundament; offene Punkte: Backup-Verschlüsselung, DB-Rollentrennung, Timing-Seitenkanal |
+| Sicherheit | **pilotbereit mit Einschränkungen** | Starkes Default-Deny/Tenant-Isolation/Audit-Fundament; Backup-Verschlüsselung mit gehärtetem Restore-Freigabemodell und Prozess-Timeouts seit Stage 2B1 vorhanden; weiterhin offene Punkte: DB-Rollentrennung, Timing-Seitenkanal |
 | Datenschutzarchitektur | **pilotbereit mit Einschränkungen** | Klare Klassifikation und konsequente Zugriffskontrolle für die sensibelste Datenklasse (P4), aber kein Lösch-/Anonymisierungspfad |
 | UX | **intern testbar** | Konsistentes Design-System, Loading/Empty/Error-States durchgängig vorhanden; 403-Behandlung im Frontend uneinheitlich (nicht jede View reconciled) |
 | Funktionsumfang für Member | **technisch vorhanden, nicht nutzbar** | Workout-Ausführung — die für ein Mitglied zentrale neue Funktion — hat keine UI |
 | Funktionsumfang für Trainer | **pilotbereit mit Einschränkungen** | Coaching, Programmerstellung, Zuweisung vollständig nutzbar; Ergebnis-Einsicht (Coach-Resultatzugriff) nur backend-seitig vorhanden |
 | Funktionsumfang für Studio-Owner | **pilotbereit mit Einschränkungen** | Studio-/Mitglieder-/Einladungsverwaltung vollständig nutzbar und getestet |
-| Betrieb | **technisch vorhanden** | Backup-/Migrations-Tooling vorhanden und getestet, aber Off-host-Kopie/Verschlüsselung/Monitoring/Restore-Nachweis fehlen |
+| Betrieb | **technisch vorhanden** | Backup-/Migrations-Tooling vorhanden und getestet, verschlüsselter Pfad mit nachgewiesenem Restore-Drill, Prozess-Timeouts und zielgebundener Restore-Freigabe seit Stage 2B1; weiterhin offen: Off-host-Kopie, Scheduler für den verschlüsselten Pfad, Monitoring |
 | Supportfähigkeit | **intern testbar** | Strukturierte Logs mit Request-ID, aber kein zentrales Log-Aggregations-/Ticketing-System |
 | Pilotfähigkeit (gesamt) | **pilotbereit mit Einschränkungen für Owner/Trainer, nicht pilotfähig für Member-Workout-Ausführung** | Ein echter Pilotbetrieb bräuchte mindestens die Workout-Ausführungs-UI (Stage 1B.2B2) |
 | Verkaufsfähigkeit | **nicht verkaufsnah** | Fehlende Kernfunktion (Workout-Logging-UI), fehlender Produktions-E-Mail-Provider und fehlende Off-host-Backups sind harte Blocker für einen zahlenden Kunden |
@@ -432,7 +432,7 @@ Skala: nicht vorhanden · Proof of Concept · technisch vorhanden · intern test
 2. Kein Produktions-E-Mail-Provider — Einladungen funktionieren in Produktion nicht.
 3. Keine Off-host-Backup-Kopie — RPO-Ziel nicht erfüllbar bei Hostverlust.
 
-**Nicht kritisch, aber relevant:** siehe Abschnitt 14 (`FITTRACK_SECURITY_AND_PRIVACY_STATUS.md` "Auffällige Lücken") — Backup-Verschlüsselung, DB-Rollentrennung, Timing-Seitenkanal, CORS ungetestet, toter Policy-Code, kein Löschkonzept, fehlender Restore-Nachweis, uneinheitliche Frontend-403-Behandlung.
+**Nicht kritisch, aber relevant:** siehe Abschnitt 14 (`FITTRACK_SECURITY_AND_PRIVACY_STATUS.md` "Auffällige Lücken") — DB-Rollentrennung, Timing-Seitenkanal, CORS ungetestet, toter Policy-Code, kein Löschkonzept, uneinheitliche Frontend-403-Behandlung. Backup-Verschlüsselung und ein automatisierter, verifizierter Restore-Drill sind seit Stage 2B1 vorhanden, und die Release-Gate-Härtung hat den alten unverschlüsselten Backup-Pfad in Produktion vollständig gesperrt, das Restore-Freigabemodell von `NODE_ENV` entkoppelt und strikte Prozess-Timeouts für alle externen Dump-/Restore-/Docker-Aufrufe eingeführt (siehe `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md`); Off-host-Backup-Kopie, ein Scheduler für den verschlüsselten Pfad und DB-Rollentrennung bleiben weiterhin offen.
 
 ## 13. Empfohlene nächste Schritte
 
