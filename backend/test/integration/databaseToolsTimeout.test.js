@@ -137,3 +137,37 @@ test("no timeout is applied when timeoutMs is explicitly falsy (defense against 
     });
     assert.equal(result.trim(), "ok");
 });
+
+// CI regression guard: a misconfigured or unresolved FITTRACK_DB_CONTAINER
+// (e.g. a GitHub Actions job that forgets to point it at the real service
+// container) must be reported immediately as an operational failure, never
+// waited out against a multi-minute dump/restore timeout. `docker exec`
+// against a name that does not exist fails within the daemon's response
+// time, not the configured timeout - this proves that failure mode stays
+// fast even with a production-sized timeout configured, and that the exact
+// container name passed in is what actually reached Docker (not a silent
+// fallback to CONTAINER/"fittrack_mysql").
+test("an explicitly configured but nonexistent container name fails fast, identifies that exact name, and never waits toward the configured timeout", async () => {
+    const distinctMissingContainer = `${CONTAINER}-does-not-exist-${Date.now()}`;
+    const started = Date.now();
+    await assert.rejects(
+        runDockerDatabaseTool({
+            container: distinctMissingContainer,
+            executable: "mysqldump",
+            password: "unused",
+            toolArgs: ["--version"],
+            // Production-sized dump timeout: if this ever regressed into
+            // waiting for the timeout instead of failing immediately, this
+            // test would hang for 5 real minutes instead of failing fast.
+            timeoutMs: 300_000
+        }),
+        (error) =>
+            error.code === "DATABASE_TOOL_FAILED" &&
+            error.toolMessage.includes(distinctMissingContainer)
+    );
+    const elapsed = Date.now() - started;
+    assert.ok(
+        elapsed < 5000,
+        `a missing container must fail immediately rather than waiting toward a 5-minute timeout; took ${elapsed}ms`
+    );
+});

@@ -53,6 +53,46 @@ jobs:
       - name: Repository auschecken
         uses: actions/checkout@v4
 
+      # GitHub-Actions-Service-Container laufen unter einem intern generierten
+      # Namen, nie unter "fittrack_mysql" - nur der über den Job-Kontext
+      # ausgelieferte Container-ID-Wert (job.services.mysql.id) referenziert
+      # zuverlässig genau den für diesen Job gestarteten MySQL-Dienst. Dieser
+      # Schritt validiert diesen Kandidaten fail-closed (muss existieren, muss
+      # laufen, muss exakt ein Treffer sein, muss das konfigurierte
+      # mysql:8.0-Image sein) und schreibt ihn genau einmal nach GITHUB_ENV,
+      # damit alle nachfolgenden Schritte in diesem Job denselben, geprüften
+      # Container über FITTRACK_DB_CONTAINER verwenden - ohne den Namen
+      # irgendwo erneut zu erraten oder hart zu codieren.
+      - name: MySQL-Service-Container auflösen und validieren
+        run: |
+          set -euo pipefail
+          CANDIDATE="${{ job.services.mysql.id }}"
+          if [ -z "$CANDIDATE" ]; then
+            echo "::error::job.services.mysql.id ist leer - der MySQL-Service-Container konnte nicht ermittelt werden."
+            exit 1
+          fi
+          MATCH_COUNT=$(docker ps -q --filter "id=$CANDIDATE" --filter "status=running" | wc -l | tr -d ' ')
+          if [ "$MATCH_COUNT" != "1" ]; then
+            echo "::error::Erwartet genau einen laufenden Container für ID $CANDIDATE, gefunden: $MATCH_COUNT"
+            exit 1
+          fi
+          IMAGE=$(docker inspect --format '{{.Config.Image}}' "$CANDIDATE")
+          if [ "$IMAGE" != "mysql:8.0" ]; then
+            echo "::error::Aufgelöster Container $CANDIDATE nutzt Image '$IMAGE', erwartet 'mysql:8.0' (siehe services.mysql in diesem Workflow)."
+            exit 1
+          fi
+          echo "FITTRACK_DB_CONTAINER=$CANDIDATE" >> "$GITHUB_ENV"
+          echo "MySQL-Service-Container aufgelöst und validiert (ID: $CANDIDATE, Image: $IMAGE)."
+
+      - name: "Preflight: Docker und MySQL-Client im aufgelösten Container prüfen"
+        run: |
+          set -euo pipefail
+          echo "Docker-Version:"
+          docker --version
+          echo "Aufgelöster Container: $FITTRACK_DB_CONTAINER"
+          docker inspect --format 'Status: {{.State.Status}} | Image: {{.Config.Image}}' "$FITTRACK_DB_CONTAINER"
+          docker exec "$FITTRACK_DB_CONTAINER" mysqldump --version
+
       - name: Node.js 22.17.0 einrichten
         uses: actions/setup-node@v4
         with:
@@ -99,8 +139,9 @@ jobs:
           # assertLegacyUnencryptedBackupAllowed in backend/scripts/databaseSafety.js.
           # Für den produktiven, verschlüsselten Pfad siehe
           # docs/STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md.
+          # FITTRACK_DB_CONTAINER kommt bereits validiert aus GITHUB_ENV (siehe
+          # Schritt "MySQL-Service-Container auflösen und validieren" oben).
           ALLOW_LEGACY_UNENCRYPTED_BACKUP: "true"
-          FITTRACK_DB_CONTAINER: ${{ job.services.mysql.id }}
           FITTRACK_BACKUP_DIR: ${{ runner.temp }}/fittrack-ci-backups
           FITTRACK_BACKUP_EXPECTED_DATABASE: fittrack_test_ci
           FITTRACK_BACKUP_ACK: backup:fittrack_test_ci
