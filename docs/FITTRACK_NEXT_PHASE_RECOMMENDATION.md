@@ -2,9 +2,10 @@
 
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-
-Ergebnisansicht/Feedback/Footer-Entfernung) und Stage 2A (produktionsfähiger
-SMTP-Einladungsversand — siehe
-`STAGE_2A_PRODUCTION_INVITATION_EMAIL.md`). Diese Empfehlung trifft keine
+Ergebnisansicht/Feedback/Footer-Entfernung), Stage 2A (produktionsfähiger
+SMTP-Einladungsversand — siehe `STAGE_2A_PRODUCTION_INVITATION_EMAIL.md`) und
+Stage 2B1 (verschlüsselte Datenbank-Backups mit verifiziertem Restore-Drill —
+siehe `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md`). Diese Empfehlung trifft keine
 Entscheidung — sie liefert eine begründete Grundlage für eine explizite
 Freigabe durch den Auftraggeber.
 
@@ -12,47 +13,55 @@ Freigabe durch den Auftraggeber.
 
 Die vorherige Version dieses Dokuments empfahl, zunächst die operativen
 Pilot-Blocker zu schließen, beginnend mit einem Produktions-E-Mail-Provider
-für Einladungen. Dieser erste Punkt ist mit Stage 2A erfüllt: Ein validierter,
-providerneutraler SMTP-Adapter (Nodemailer, erzwungenes TLS, Fail-Closed ohne
-Konfiguration, sichere Fehlerklassifikation, keine Secrets in Logs/Audit) ist
-implementiert und automatisiert getestet. Einladungen sind damit — sobald ein
-Operator echte SMTP-Zugangsdaten hinterlegt und den dokumentierten manuellen
-Smoke-Test durchführt — produktiv nutzbar. Ein echter Versand wurde in dieser
-Entwicklungsumgebung mangels Zugangsdaten nicht nachgewiesen; das bleibt ein
-offener, aber rein operativer (nicht mehr programmiertechnischer) Schritt.
+für Einladungen, gefolgt von Backup-Verschlüsselung im Ruhezustand. Beide
+Punkte sind inzwischen erfüllt:
+
+- **Stage 2A:** Ein validierter, providerneutraler SMTP-Adapter (Nodemailer,
+  erzwungenes TLS, Fail-Closed ohne Konfiguration, sichere
+  Fehlerklassifikation, keine Secrets in Logs/Audit) ist implementiert und
+  automatisiert getestet, seither zusätzlich manuell mit einem echten
+  SMTP-Server verifiziert (echter Versand bestätigt angenommen).
+- **Stage 2B1:** Ein klar versioniertes, authentifiziertes
+  Verschlüsselungsformat (`.ftbackup`, AES-256-GCM über `node:crypto`) plus
+  sichere Create-/Verify-/Restore-Befehle und ein automatisierter,
+  end-to-end verifizierter Restore-Drill sind implementiert. Die
+  sensibelsten Daten im System (P4: Satzresultate, Member-Notizen,
+  Trainer-Feedback) sind damit in jedem erstellten Backup verschlüsselt,
+  nicht mehr unverschlüsselt auf Platte.
 
 ## Was als Nächstes gebaut werden sollte
 
 **Die verbleibenden operativen Pilot-Blocker, in dieser Reihenfolge:**
 
-1. **Backup-Verschlüsselung im Ruhezustand.** Betrifft am stärksten genau
-   die sensibelsten Daten im System (P4: Satzresultate, Member-Notizen,
-   Trainer-Feedback) — alle aktuell unverschlüsselt auf Platte.
-2. **Off-host-Backup-Kopie.** Aktuell nur dokumentierte Absicht, kein
-   Upload-Adapter — ein einzelner Host-Verlust ist nicht wiederherstellbar.
-3. **Getrennte DB-Rolle für Runtime vs. Migration/Restore.** Aktuell eine
+1. **Off-host-Backup-Kopie.** Aktuell nur dokumentierte Absicht, kein
+   Upload-Adapter — ein einzelner Host-Verlust ist weiterhin nicht
+   wiederherstellbar, selbst mit dem seit Stage 2B1 verschlüsselten lokalen
+   Backup.
+2. **Getrennte DB-Rolle für Runtime vs. Migration/Restore.** Aktuell eine
    einzige DB-Rolle für alles.
+3. **Backup-Scheduler und Key-Rotation für den verschlüsselten Pfad.**
+   Stage 2B1 liefert bewusst nur die Mechanik (Create/Verify/Restore/Drill),
+   nicht deren automatisierten Zeitplan oder eine Rotationsstrategie für
+   `BACKUP_ENCRYPTION_KEY_B64`/`_KEY_ID`.
 
-Diese drei sind bewusst als *eine* zusammenhängende „Backup-/DB-Härtung"-Phase
-zu verstehen (nicht Gegenstand von Stage 2A, siehe dessen Abgrenzung), da sie
-alle denselben operativen Bereich betreffen und gemeinsam die
-Backup-/Restore-Infrastruktur absichern.
+Diese Punkte sind bewusst als *eine* zusammenhängende „Backup-/DB-Härtung"-
+Fortsetzung zu verstehen (nicht Gegenstand von Stage 2B1, siehe dessen
+Abgrenzung), da sie alle denselben operativen Bereich betreffen und gemeinsam
+die Backup-/Restore-Infrastruktur produktionsreif machen.
 
 ## Warum weiterhin operativ vor funktional
 
 - Alle drei Punkte sind seit dem ursprünglichen Audit bekannt und wurden
-  bewusst zurückgestellt; mit dem E-Mail-Provider ist der erste von vier
-  operativen Blockern geschlossen — die Logik, jetzt konsequent
-  weiterzumachen statt zurück zu Feature-Arbeit zu wechseln, bleibt
-  bestehen.
-- Alle drei sind weiterhin rollenunabhängig und betreffen die
+  bewusst zurückgestellt; mit E-Mail-Provider und Backup-Verschlüsselung
+  sind zwei von vier ursprünglichen operativen Blockern geschlossen — die
+  Logik, jetzt konsequent weiterzumachen statt zurück zu Feature-Arbeit zu
+  wechseln, bleibt bestehen.
+- Alle verbleibenden Punkte sind weiterhin rollenunabhängig und betreffen die
   Betriebssicherheit für den gesamten Pilotbetrieb, nicht eine einzelne
   Nutzergruppe.
-- Stage 2A hat zusätzliche, unverschlüsselt gespeicherte sensible Daten
-  geschaffen (SMTP-Zugangsdaten selbst liegen nur in der Prozessumgebung,
-  nicht in der DB — aber jede zusätzliche versendete Einladung ist ein
-  weiterer Datenpunkt, dessen Absicherung von denselben Backup-/DB-Härtungs-
-  Maßnahmen abhängt).
+- Ein verschlüsseltes, aber ausschließlich lokal gespeichertes Backup schützt
+  nicht gegen den Verlust des Hosts selbst — Off-host-Kopie bleibt deshalb
+  der unmittelbar nächste, am stärksten verbleibende Single-Point-of-Failure.
 
 ## Falls stattdessen funktional priorisiert werden soll
 
@@ -82,8 +91,9 @@ ab, dies vor den verbleibenden operativen Punkten zu priorisieren.
 Unabhängig davon, ob operativ oder funktional priorisiert wird, sollte der
 nächste Auftrag ausdrücklich ausschließen:
 - jede Änderung am bereits stabilen, getesteten Feedback-Datenmodell aus
-  Stage 1B.2B2B und am SMTP-Adapter-Vertrag aus Stage 2A (beide bleiben
-  außer bei expliziter neuer Freigabe unverändert),
+  Stage 1B.2B2B, am SMTP-Adapter-Vertrag aus Stage 2A und am
+  `.ftbackup`-Containerformat/den Restore-Guards aus Stage 2B1 (alle drei
+  bleiben außer bei expliziter neuer Freigabe unverändert),
 - die in Stage 1B.2B2B Abschnitt „Klare Grenze zu späteren Phasen" sowie in
   Stage 2A Abschnitt „Nicht enthalten" aufgeführten Themen (Chat,
   Reaktionen, KI-Feedback, Analytics-Dashboard, Churn-Risk, Körpergewicht/

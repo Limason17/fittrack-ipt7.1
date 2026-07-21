@@ -690,3 +690,48 @@ Zusätzliche Stage-2A-Smokes nach Freigabe:
       bereits bestehende Dev-Preview-Einladungsfluss in `studios.spec.js`
 - [ ] manueller SMTP-Smoke-Test durchgeführt und dokumentiert, bevor echte
       Einladungen an Studios verschickt werden
+
+## Ergänzung für Stufe 2B1
+
+Stufe 2B1 liefert verschlüsselte Datenbank-Backups mit verifiziertem
+Restore-Drill (siehe `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md` für das
+vollständige Threat Model, Format und alle Guards). Keine neue Migration,
+kein neues Anwendungsschema, keine Off-host-Speicherung, kein Scheduler.
+
+**Neue Variablen, ausschließlich für `db:backup:create/verify/restore/drill`
+— nie vom laufenden Server gelesen:**
+
+| Variable | Erforderlich | Bedeutung und Grenze |
+| --- | --- | --- |
+| `BACKUP_ENCRYPTION_KEY_B64` | ja, für Backup-Befehle | Base64, muss exakt 32 Byte ergeben; leer/Platzhalter werden abgelehnt; nie loggen, nie committen |
+| `BACKUP_ENCRYPTION_KEY_ID` | ja, für Backup-Befehle | 1–64 Zeichen, nur Buchstaben/Ziffern/`_`/`-`; nie der Schlüssel selbst |
+| `BACKUP_OUTPUT_DIRECTORY` | ja, für Backup-Befehle | Absoluter Pfad außerhalb des Repositorys |
+| `FITTRACK_RESTORE_TARGET_DATABASE` | ja, für Restore | Muss dem Wegwerfmuster entsprechen und sich von der Quelldatenbank unterscheiden |
+| `FITTRACK_RESTORE_ACK` | ja, für Restore | Exakt `restore-local-test-database` |
+| `FITTRACK_RESTORE_ALLOW_RECREATE` | nein | Nur exakt `recreate-disposable-restore-target` erlaubt das Neuerstellen einer bereits existierenden Zieldatenbank |
+
+Vor Produktionseinsatz zusätzlich erforderlich (siehe „Verbleibende Grenzen"
+in `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md`): Off-host-Speicherung, ein
+Scheduler für `db:backup:create` sowie ein dokumentierter Key-Lebenszyklus im
+Secret Store der Zielplattform — keiner dieser drei Punkte ist Teil dieser
+Phase.
+
+### Zusätzliche Release-Checks
+
+- [ ] `readBackupCryptoConfig` lehnt fehlenden/leeren/ungültigen/zu kurzen/
+      zu langen Schlüssel sowie bekannte Platzhalter ab
+- [ ] AES-256-GCM-Authentifizierung erkennt jede Manipulation an Header,
+      Ciphertext oder Tag (automatisiert mit Bitflip-/Truncation-Tests)
+- [ ] Restore verlangt zwingend `NODE_ENV=test`, Loopback-Host, explizite
+      Bestätigung, explizites Wegwerf-Ziel ungleich Quelle/Systemdatenbank
+- [ ] eine bereits existierende Zieldatenbank wird ohne explizite
+      Recreate-Bestätigung abgelehnt, nie stillschweigend überschrieben
+- [ ] kein Klartext-SQL-Dump entsteht zu irgendeinem Zeitpunkt auf Disk
+      (weder bei Create noch bei Restore)
+- [ ] realer Restore-Drill gegen die lokale MySQL-Instanz grün: Backup
+      erstellt, verifiziert, in eine disposable Datenbank restauriert,
+      Migration Doctor `ready`/`applied:8`, Tabellen- und
+      Zeilenzahlvergleich stimmt, Zieldatenbank und Backup-Testartefakt
+      danach vollständig entfernt
+- [ ] `.env.example` enthält ausschließlich abgelehnte Platzhalter für die
+      drei neuen Backup-Variablen, keine echten Schlüssel

@@ -78,11 +78,18 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um
 
 ## Backups
 
-- Automatisierter täglicher Lauf: komprimiert, Integritätsmanifest (SHA-256 für Roh- und komprimierte Datei), Lock, Zielidentitätsprüfung, UTC-GFS-Retention (7 täglich/4 wöchentlich/3 monatlich). **[GETESTET]** `backend/test/unit/backupAutomation.test.js`, `backend/test/unit/backupPolicy.test.js`.
-- **Keine Verschlüsselung im Ruhezustand** — Artefakte liegen unverschlüsselt (nur Dateisystemrechte `0o600`). **[OFFEN]**
-- **Keine Off-host-Kopie implementiert** — laut `docs/BACKUP_RESTORE.md` selbst nur dokumentierte Absicht, kein Upload-Adapter vorhanden. **[DOKU]**
-- Restore-Pfad ausschließlich für Wegwerf-Testdatenbanken, kein Produktions-Restore-Codepfad. **[GETESTET]** `backend/test/unit/backupAutomation.test.js:163-212`.
-- Kein nachgewiesener/abgeschlossener Restore-Drill — RPO/RTO sind Planungsannahmen. **[DOKU]**
+- Automatisierter täglicher Lauf (Stage 0C, unverändert): komprimiert, Integritätsmanifest (SHA-256 für Roh- und komprimierte Datei), Lock, Zielidentitätsprüfung, UTC-GFS-Retention (7 täglich/4 wöchentlich/3 monatlich). **[GETESTET]** `backend/test/unit/backupAutomation.test.js`, `backend/test/unit/backupPolicy.test.js`. Dieser Pfad (`db:backup`/`db:backup:daily`) produziert weiterhin unverschlüsselte `.sql`/`.sql.gz`-Artefakte — er wurde durch Stage 2B1 nicht ersetzt oder verändert.
+- **Verschlüsselung im Ruhezustand: seit Stage 2B1 verfügbar über einen neuen, parallelen Pfad** — `db:backup:create` erzeugt ein authentifiziert AES-256-GCM-verschlüsseltes `.ftbackup` (`node:crypto`, 32-Byte-Schlüssel, zufälliger IV pro Backup, GCM-Tag zwingend geprüft, Header als AAD). Kein Klartext-SQL-Dump entsteht dabei zu irgendeinem Zeitpunkt auf Disk. **[GETESTET]** `backend/test/unit/encryptedBackupFormat.test.js`, `backend/test/unit/backupCryptoConfig.test.js`, `backend/test/integration/encryptedBackupRestoreDrill.test.js` (echter End-to-End-Drill gegen die lokale MySQL-Instanz). Siehe `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md`. **Weiterhin offen:** Der alte, unverschlüsselte `db:backup:daily`-Pfad existiert unverändert parallel weiter — ein Operator, der weiterhin diesen statt `db:backup:create` verwendet, erhält keine Verschlüsselung.
+- **Keine Off-host-Kopie implementiert** — laut `docs/BACKUP_RESTORE.md` selbst nur dokumentierte Absicht, kein Upload-Adapter vorhanden; Stage 2B1 ändert das ausdrücklich nicht. **[DOKU]**
+- Restore-Pfad ausschließlich für Wegwerf-Testdatenbanken, kein Produktions-Restore-Codepfad. **[GETESTET]** `backend/test/unit/backupAutomation.test.js:163-212` (unverschlüsselter Pfad), `backend/test/integration/encryptedBackupRestoreDrill.test.js` (verschlüsselter Pfad) — beide erzwingen `NODE_ENV=test`, Loopback-Host und ein streng gemustertes Wegwerfziel; der verschlüsselte Restore verlangt zusätzlich ein explizites Zieldatenbank-Argument, das nie implizit der Quelle entsprechen darf, und lehnt eine bereits existierende Zieldatenbank ohne explizite Bestätigung ab.
+- **Automatisierter, verifizierter Restore-Drill seit Stage 2B1**
+  (`db:backup:drill`): erstellt ein echtes verschlüsseltes Backup, verifiziert
+  es vollständig, restauriert es in eine disposable Datenbank, prüft
+  Migration Doctor (`ready`/`applied:8`) sowie Tabellen-/Zeilenzahlvergleich
+  gegen die Quelle, räumt danach vollständig auf. **[GETESTET]**. RPO/RTO als
+  quantifizierte Planungsannahmen für einen echten Produktionsbetrieb bleiben
+  weiterhin offen — der Drill beweist die Mechanik, nicht einen geplanten
+  Zeitrahmen.
 
 ## Secrets
 

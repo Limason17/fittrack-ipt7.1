@@ -61,7 +61,7 @@ Technologie-Inventar (aus `package.json`, `docker-compose.yml`, `.github/workflo
 - **Datenbank:** MySQL 8.0, additive versionierte Forward-Migrationen (kein ORM).
 - **Migrationssystem:** Eigenbau (`backend/migrations/`) mit Advisory-Lock, Checksum-Drift-Erkennung, separatem read-only "Migration Doctor".
 - **CI:** GitHub Actions, drei Jobs (Backend+MySQL+Migrationen, Frontend+Build, Chromium-E2E+Axe), Node 22.17.0 exakt gepinnt.
-- **Backup/Restore:** Eigenbau-Skripte (`backend/scripts/dbBackup*.js`, `dbRestore.js`) mit GFS-Retention.
+- **Backup/Restore:** Eigenbau-Skripte (`backend/scripts/dbBackup*.js`, `dbRestore.js`) mit GFS-Retention (unverschlüsselt). **Seit Stage 2B1 zusätzlich:** ein paralleler, authentifiziert AES-256-GCM-verschlüsselter Pfad (`encryptedBackup{Create,Verify,Restore,Drill}.js`, `.ftbackup`-Format) mit automatisiertem, echt gegen die lokale MySQL-Instanz verifiziertem Restore-Drill — siehe `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md`. Der alte unverschlüsselte Pfad wurde dadurch nicht ersetzt.
 
 ### 3.1 Architekturdiagramm
 
@@ -432,7 +432,7 @@ Skala: nicht vorhanden · Proof of Concept · technisch vorhanden · intern test
 2. Kein Produktions-E-Mail-Provider — Einladungen funktionieren in Produktion nicht.
 3. Keine Off-host-Backup-Kopie — RPO-Ziel nicht erfüllbar bei Hostverlust.
 
-**Nicht kritisch, aber relevant:** siehe Abschnitt 14 (`FITTRACK_SECURITY_AND_PRIVACY_STATUS.md` "Auffällige Lücken") — Backup-Verschlüsselung, DB-Rollentrennung, Timing-Seitenkanal, CORS ungetestet, toter Policy-Code, kein Löschkonzept, fehlender Restore-Nachweis, uneinheitliche Frontend-403-Behandlung.
+**Nicht kritisch, aber relevant:** siehe Abschnitt 14 (`FITTRACK_SECURITY_AND_PRIVACY_STATUS.md` "Auffällige Lücken") — DB-Rollentrennung, Timing-Seitenkanal, CORS ungetestet, toter Policy-Code, kein Löschkonzept, uneinheitliche Frontend-403-Behandlung. Backup-Verschlüsselung und ein automatisierter, verifizierter Restore-Drill sind seit Stage 2B1 vorhanden (siehe `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md`); Off-host-Backup-Kopie bleibt weiterhin offen.
 
 ## 13. Empfohlene nächste Schritte
 
