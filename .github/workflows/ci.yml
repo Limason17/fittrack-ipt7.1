@@ -93,6 +93,38 @@ jobs:
           docker inspect --format 'Status: {{.State.Status}} | Image: {{.Config.Image}}' "$FITTRACK_DB_CONTAINER"
           docker exec "$FITTRACK_DB_CONTAINER" mysqldump --version
 
+      # Stage 2B2A off-host storage integration tests need a real S3-compatible
+      # endpoint. GitHub Actions' `services:` block cannot override a
+      # container's command, and the minio/minio image requires an explicit
+      # `server /data` argument to start - so this runs it as a job-local
+      # `docker run` step instead (this job controls the container's name
+      # directly, unlike the MySQL service, so no dynamic-container-ID
+      # resolution is needed here). Credentials are synthetic and
+      # test-only, matching the defaults in
+      # backend/test/integration/backupRemoteMinio.test.js; bound to
+      # loopback only. Nothing here creates or configures a bucket - that
+      # stays the test suite's own job (see
+      # backend/test/helpers/minioTestBucket.js), consistent with
+      # production code never creating buckets either.
+      - name: MinIO für Stage-2B2A-Remote-Backup-Tests starten
+        run: |
+          set -euo pipefail
+          docker run -d --name fittrack_ci_minio \
+            -p 127.0.0.1:9000:9000 -p 127.0.0.1:9001:9001 \
+            -e MINIO_ROOT_USER=fittrack-test-minio-user \
+            -e MINIO_ROOT_PASSWORD=fittrack-test-minio-password \
+            minio/minio server /data --console-address ":9001"
+          for i in $(seq 1 30); do
+            if curl -fs http://127.0.0.1:9000/minio/health/ready >/dev/null 2>&1; then
+              echo "MinIO ist bereit."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::MinIO wurde nicht innerhalb von 30 Sekunden bereit."
+          docker logs fittrack_ci_minio || true
+          exit 1
+
       - name: Node.js 22.17.0 einrichten
         uses: actions/setup-node@v4
         with:
@@ -156,6 +188,10 @@ jobs:
       - name: Unit-Coverage erzeugen
         working-directory: backend
         run: npm run test:coverage
+
+      - name: MinIO-Testcontainer stoppen
+        if: always()
+        run: docker rm -f fittrack_ci_minio || true
 
   frontend:
     name: Frontend-Tests und Produktionsbuild
