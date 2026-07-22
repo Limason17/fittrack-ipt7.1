@@ -15,6 +15,24 @@ lief gegen eine lokale, isolierte MinIO-Testinstanz mit synthetischen
 Zugangsdaten. Die tatsächliche Einrichtung und Verifikation eines echten
 Off-host-Buckets bleibt ausdrücklich Stufe 2B2B vorbehalten.
 
+## Release-Gate-Härtung (Folge-Commit)
+
+Eine anschließende Härtung hat die ursprüngliche Remote-Publish-Semantik
+ersetzt: Die ursprüngliche Reihenfolge (`HeadObject`-Vorabprüfung → Upload
+über `@aws-sdk/lib-storage` → `HeadObject`-Nachprüfung) war **kein**
+atomarer Schutz vor Überschreiben — zwischen Vorabprüfung und Schreiben
+bestand ein reales Zeitfenster für einen zweiten, gleichzeitigen Schreiber.
+Der Upload verwendet jetzt einen einzelnen, serverseitig atomar-bedingten
+`PutObjectCommand` (`IfNoneMatch: "*"`), empirisch bewiesen gegen echtes
+MinIO — inklusive zweier genuin gleichzeitiger Uploads auf denselben
+Schlüssel, von denen zuverlässig genau einer gewinnt. `@aws-sdk/lib-storage`
+wurde entfernt, das Upload-Limit auf 2 GiB gesenkt (ausschließlich
+Single-`PutObject`, kein Multipart mehr), und ein neues, nachweisbares
+Besitz-/Versionsmodell steuert, wann ein inkonsistent veröffentlichtes
+Objekt sicher entfernt werden darf. Details siehe „Remote-Publish-Semantik",
+„Größenlimit und Single-Put", „Post-Upload-Fehler und Cleanup-Grenzen" und
+„Version-ID-Verhalten" unten.
+
 ## Architektur
 
 Kein Parallel-Backup-Pfad: Der Remote-Pfad besteht aus reinen
@@ -76,10 +94,11 @@ und `backend/test/integration/backupRemoteMinio.test.js`):
 - Unverschlüsselte HTTP-Verbindung in Produktion — `BACKUP_S3_ENDPOINT` muss
   in Produktion HTTPS sein, ausnahmslos; HTTP ist nur für einen expliziten
   Loopback-Endpoint außerhalb der Produktion erlaubt.
-- Versehentliches Überschreiben eines Remote-Objekts — `HeadObject`-Vorabprüfung
-  lehnt einen bereits existierenden Objektschlüssel ab
-  (`REMOTE_OBJECT_ALREADY_EXISTS`); Downloads überschreiben nie eine
-  bestehende lokale Datei.
+- Versehentliches Überschreiben eines Remote-Objekts — ein atomar-bedingter
+  `PutObject` (`IfNoneMatch: "*"`) lehnt einen bereits existierenden
+  Objektschlüssel serverseitig ab (`REMOTE_OBJECT_ALREADY_EXISTS`), auch bei
+  echt gleichzeitigen Schreibversuchen (siehe „Remote-Publish-Semantik");
+  Downloads überschreiben nie eine bestehende lokale Datei.
 - Unbekannte/fremde Objekte im Backup-Prefix — werden im Inventar als
   `recognized: false` markiert, nie automatisch gelöscht (Retention wie
   Preflight fassen ausschließlich erkannte `.ftbackup`-Objekte an).
@@ -128,7 +147,8 @@ Beispiel: `fittrack-backups/2026/07/fittrack-20260722T010203Z-a1b2c3d4.ftbackup`
   konfigurierte Prefix verlässt (`..`, Backslashes, führende/doppelte
   Slashes, falsche Endung) — angewendet auf Erzeugung **und** auf jeden von
   außen übergebenen Schlüssel (Download/Verify);
-- keine Überschreibung: `HeadObject`-Vorabprüfung vor jedem Upload.
+- keine Überschreibung: atomar-bedingter `PutObject` (`IfNoneMatch: "*"`),
+  siehe „Remote-Publish-Semantik".
 
 ## Konfiguration (`backend/config/backupRemoteConfig.js`)
 
@@ -187,37 +207,168 @@ Ablauf, in dieser Reihenfolge:
 2. **Volle Stufe-2B1-Verifikation** über `encryptedBackupVerify.js#verifyEncryptedBackup`
    (dieselbe Funktion wie `db:backup:verify`) — GCM-Authentifizierung,
    Key-ID-Abgleich, unterstützte Formatversion. Erst nach Erfolg geht es weiter.
-3. Dateigröße gegen `MAX_UPLOAD_BYTES` (5 GiB, S3-Einzel-PUT-Praxisgrenze)
-   geprüft.
+3. Dateigröße gegen `MAX_UPLOAD_BYTES` (siehe „Größenlimit und Single-Put"
+   unten) geprüft — vor jedem Netzwerkzugriff.
 4. `ciphertext-sha256` über die volle Datei berechnet (`sha256File`,
    wiederverwendet aus `databaseTools.js`).
-5. Objektschlüssel deterministisch gebildet, `HeadObject`-Vorabprüfung gegen
-   Überschreiben.
-6. Upload via `@aws-sdk/lib-storage`'s `Upload`-Klasse (siehe „Remote-Publish-Semantik").
-7. Post-Upload-`HeadObject`: Größe und sichere Metadaten müssen übereinstimmen,
-   sonst `REMOTE_METADATA_INCONSISTENT`.
+5. Objektschlüssel deterministisch gebildet.
+6. **Ein einzelner, atomar-bedingter `PutObject`-Aufruf** (siehe
+   „Remote-Publish-Semantik" — **kein** `HeadObject`-Vorabcheck mehr).
+7. Post-Upload-`HeadObject`: Größe und sichere Metadaten müssen zum eigenen,
+   soeben erfolgreichen Upload passen, sonst `REMOTE_METADATA_INCONSISTENT`
+   (siehe „Post-Upload-Fehler und Cleanup-Grenzen").
 
 Bei jedem Fehler bleibt die lokale `.ftbackup`-Datei unangetastet — dieser
 Befehl löscht sie an keiner Stelle.
 
 ## Remote-Publish-Semantik
 
-`@aws-sdk/lib-storage`'s `Upload`-Klasse wurde bewusst gewählt: Sie
-entscheidet selbst zwischen einem einzelnen `PutObject` und echtem
-Multipart-Upload, und bricht bei einem Fehler während eines laufenden
-Multipart-Uploads automatisch mit `AbortMultipartUploadCommand` ab — ein
-fehlgeschlagener Upload hinterlässt daher kein sichtbares Teilobjekt. Ein
-Remote-Objekt gilt **erst** nach erfolgreichem `Upload.done()` **und**
-einem anschließenden `HeadObject`, das Größe und sichere Metadaten bestätigt,
-als veröffentlicht (siehe Schritt 7 oben). Da der Dateiname
-kryptografisch-zufällige Bestandteile trägt (Stufe-2B1-`createBackupFilename`),
-wird der berechnete finale Schlüssel direkt verwendet — kein zusätzlicher
-Zwei-Phasen-Umbenennungsschritt remote nötig, solange (a) der Upload nie
-überschreibt (`HeadObject`-Vorabprüfung) und (b) der Provider bei Fehlschlag
-kein sichtbares Teilobjekt zeigt (durch die `Upload`-Klasse sichergestellt).
-Bei unklarem Zustand (z. B. Timeout während der Veröffentlichungsprüfung)
-schlägt der Befehl fail-closed mit einem stabilen Fehlercode fehl, statt
-Erfolg zu behaupten.
+**Release-Gate-Härtung (Folge-Commit):** Die ursprüngliche Reihenfolge
+(`HeadObject`-Vorabprüfung → Upload → `HeadObject`-Nachprüfung) war **kein**
+atomarer Schutz vor Überschreiben — zwischen der Vorabprüfung und dem
+eigentlichen Schreiben lag ein reales Zeitfenster, in dem ein zweiter,
+gleichzeitig laufender Prozess denselben Objektschlüssel hätte anlegen
+können, ohne dass eine der beiden Seiten das bemerkt hätte
+(„Time-of-check to time-of-use", TOCTOU). Der Objektschlüssel ist zudem nur
+*wahrscheinlich* eindeutig, nicht kryptografisch eindeutig: Der Zufallsanteil
+im Dateinamen (`encryptedBackupCreate.js#createBackupFilename`) besteht aus
+nur 4 Byte (32 Bit) Zufall, kombiniert mit der Sekunden-genauen
+Erstellungszeit — ausreichend, um zufällige Kollisionen im Normalbetrieb
+extrem unwahrscheinlich zu machen, aber kein kryptografischer Beweis wie
+z. B. eine 122-Bit-UUIDv4.
+
+**Neue, tatsächlich atomare Lösung:** Der Upload verwendet jetzt einen
+einzelnen `PutObjectCommand` mit `IfNoneMatch: "*"`. Diese Bedingung wird
+**serverseitig, atomar**, gegen den tatsächlichen Zustand des Buckets zum
+Zeitpunkt des Schreibens ausgewertet: Existiert am Zielschlüssel bereits
+irgendein Objekt — egal ob eine Mikrosekunde oder ein Jahr zuvor angelegt —
+lehnt der Provider den Schreibvorgang mit `412 Precondition Failed` ab, und
+das bestehende Objekt bleibt vollständig unverändert. Es gibt kein
+Zeitfenster mehr zwischen einer Prüfung und einem Schreibvorgang, in das ein
+zweiter Writer eindringen könnte, weil es keine getrennte Prüfung mehr gibt
+— die Bedingung *ist* der Schreibvorgang.
+
+**Empirisch bewiesen, nicht nur behauptet**, gegen eine echte lokale
+MinIO-Instanz (`minio/minio:latest`):
+
+1. Ein einzelner bedingter `PutObject` gegen einen noch nicht existierenden
+   Schlüssel gelingt.
+2. Ein zweiter bedingter `PutObject` gegen denselben, jetzt existierenden
+   Schlüssel scheitert mit `412 Precondition Failed`; das Objekt behält den
+   Inhalt des ersten Schreibvorgangs.
+3. **Zwei echt gleichzeitige** (`Promise.allSettled`, keine künstliche
+   Verzögerung) bedingte `PutObject`-Aufrufe gegen denselben Schlüssel: genau
+   einer gelingt, der andere scheitert mit `412`.
+4. Derselbe Nachweis wiederholt auf Anwendungsebene über zwei echte,
+   gleichzeitige `uploadEncryptedBackup()`-Aufrufe auf dieselbe lokale
+   `.ftbackup`-Datei (identischer Objektschlüssel): genau ein Aufruf gelingt,
+   der andere scheitert stabil mit `REMOTE_OBJECT_ALREADY_EXISTS`, das
+   verbleibende Remote-Objekt entspricht bytegenau dem Gewinner, und es
+   bleibt kein zusätzliches Objekt am Schlüssel zurück.
+
+Siehe `backend/test/integration/backupRemoteMinio.test.js` (Tests 7 und 8)
+für den automatisierten Nachweis. AWS S3 unterstützt bedingte Schreibvorgänge
+(`If-None-Match`) auf `PutObject` seit August 2024 offiziell und generell
+verfügbar (laut AWS-Dokumentation; in dieser Umgebung nicht gegen ein echtes
+AWS-Konto nachgetestet, da keine echten Cloud-Credentials verwendet werden
+dürfen — siehe „Verbleibende Grenzen").
+
+**Genaue Garantie:** Ein Remote-Objekt gilt als veröffentlicht, sobald der
+bedingte `PutObject`-Aufruf erfolgreich zurückkehrt. Der anschließende
+`HeadObject`-Aufruf ist **keine** zweite Kollisionsprüfung mehr (die
+Kollisionsfrage ist mit dem `PutObject`-Ergebnis bereits abschließend
+beantwortet) — er ist ein reiner Publish-/Metadaten-Nachweis: Er bestätigt,
+dass das, was jetzt unter diesem Schlüssel sichtbar ist, tatsächlich Größe
+und Metadaten des soeben abgeschlossenen Uploads trägt (siehe
+„Post-Upload-Fehler und Cleanup-Grenzen" für den — in der Praxis gegen
+AWS S3 und MinIO praktisch unerreichbaren, aber dennoch behandelten —
+Fall, dass das nicht zutrifft).
+
+**Verbleibende Grenze dieser Garantie:** Die Atomarität gilt für einen
+einzelnen `PutObject`-Aufruf. Sie deckt keine geteilten/fragmentierten
+Uploads ab, weil FitTrack bewusst keine mehr verwendet (siehe
+„Größenlimit und Single-Put").
+
+## Größenlimit und Single-Put
+
+`MAX_UPLOAD_BYTES` = **2 GiB** (2.147.483.648 Byte), geprüft in
+`backupRemoteStorage.js#uploadObject` **vor** jedem Netzwerkzugriff (die
+Prüfung ist die erste Anweisung der Funktion). Überschreitet die lokale
+Datei dieses Limit, scheitert der Upload sofort mit dem stabilen Fehlercode
+`REMOTE_BACKUP_TOO_LARGE` — ohne dass auch nur eine Verbindung zum Provider
+aufgebaut wird.
+
+**Release-Gate-Härtung:** Das vorherige Limit war 5 GiB (S3s dokumentierte
+Einzel-PUT-Praxisgrenze) und wurde bewusst über `@aws-sdk/lib-storage`
+realisiert, das automatisch zwischen einem einzelnen `PutObject` und echtem
+Multipart-Upload wechselt. Da bedingte Schreibvorgänge (`IfNoneMatch`) zwar
+laut AWS-API-Modell sowohl für `PutObject` als auch für
+`CompleteMultipartUpload` dokumentiert sind, aber die MinIO-Unterstützung
+für den Multipart-Fall nicht eigenständig nachgewiesen wurde, wurde
+`@aws-sdk/lib-storage` vollständig entfernt: **Jeder Upload ist jetzt ein
+einzelner `PutObject`-Aufruf, niemals Multipart.** Das Limit wurde auf 2 GiB
+gesenkt — weit unterhalb von S3s realer 5-GiB-Einzel-PUT-Grenze, mit
+großzügigem Sicherheitsabstand, und weit über jeder bisher real
+beobachteten FitTrack-Backupgröße (alle bisherigen Testläufe lagen im
+niedrigen zweistelligen Kilobyte-Bereich).
+
+**Betriebliche Grenze:** Sollte ein künftiger FitTrack-Datenbestand ein
+`.ftbackup` erzeugen, das dieses 2-GiB-Limit erreicht, ist das eine
+bewusste, gesondert zu treffende Entscheidung (Limit anheben und/oder
+Multipart mit einer eigenständig für Multipart nachgewiesenen
+Publish-Garantie einführen) — kein stillschweigender Nebeneffekt einer
+Konfigurationsänderung.
+
+## Post-Upload-Fehler und Cleanup-Grenzen
+
+Der Post-Upload-`HeadObject`-Aufruf kann selbst fehlschlagen (z. B.
+Netzwerkabbruch unmittelbar nach einem erfolgreichen Upload) oder ein
+inkonsistentes Ergebnis liefern (Größe/Metadaten passen nicht zum soeben
+hochgeladenen Inhalt — gegen echtes AWS S3 und MinIO durch deren
+Lese-nach-Schreib-Konsistenzgarantie praktisch unerreichbar, aber dennoch
+sicher behandelt, nicht angenommen):
+
+- **`HeadObject` selbst schlägt fehl:** Der Upload war nachweislich
+  erfolgreich (der bedingte `PutObject`-Aufruf ist bereits zurückgekehrt),
+  aber der veröffentlichte Zustand kann nicht bestätigt werden. Kein
+  Rateversuch, keine Löschung — stabiler Fehlercode
+  `REMOTE_PUBLISH_STATE_UNKNOWN`.
+- **`HeadObject` liefert inkonsistente Größe/Metadaten:**
+  `evaluatePublishConsistency()` (`encryptedBackupRemoteUpload.js`,
+  eigenständig unit-getestet mit sieben Szenarien) entscheidet, ob das
+  Objekt am Schlüssel **nachweislich** vom soeben abgeschlossenen eigenen
+  Upload stammt: Nur wenn der Provider beim `PutObject` eine `VersionId`
+  zurückgegeben hat **und** der nachfolgende `HeadObject`-Aufruf exakt
+  dieselbe `VersionId` zeigt, gilt der Besitz als bewiesen
+  (`ownershipConfirmed: true`). Nur in diesem Fall wird das inkonsistente
+  Objekt **exakt versionsgenau** gelöscht (`deleteObject(..., versionId)`).
+  Fehlt eine `VersionId` (unversionierter Bucket) oder weicht sie ab (ein
+  anderer Prozess hat inzwischen eine neuere Version veröffentlicht), wird
+  **nichts gelöscht** — ein fremdes oder bereits vorhandenes Objekt wird nie
+  automatisch entfernt. In jedem Fall: stabiler Fehlercode
+  `REMOTE_METADATA_INCONSISTENT`, niemals ein stiller Erfolg, und ein
+  strukturiertes `remote_backup_publish_inconsistent`-Log-Ereignis
+  (Schlüssel, `ownershipConfirmed`, `cleanupPerformed`, `cleanupError` —
+  nie Secrets) macht einen eventuellen Cleanup-Fehlschlag sichtbar, statt
+  ihn zu verschlucken.
+- Die lokale `.ftbackup`-Datei bleibt in jedem dieser Fälle unangetastet.
+
+## Version-ID-Verhalten
+
+Liefert der Provider beim `PutObject` eine `VersionId` (Bucket-Versioning
+aktiv), wird sie im Upload-Report gespeichert (`versionId`-Feld) und für
+zwei Zwecke verwendet: als Besitznachweis für die oben beschriebene
+Cleanup-Entscheidung, und als exaktes Ziel für nachfolgende
+`DeleteObject`-Aufrufe (Remote-Drill-Cleanup) — so entsteht nie ein
+Delete-Marker über einer fremden, neueren Version oder eine versehentliche
+Löschung der falschen Version. Liefert der Provider keine `VersionId`
+(unversioniert), wird das ehrlich als reduzierte Cleanup-Garantie behandelt:
+kein riskantes automatisches Löschen ohne Versionsnachweis, siehe oben.
+`ETag` bleibt ausdrücklich **kein** allgemeiner Integritätsnachweis (siehe
+„Remote-Inventar") — für ein via Einzel-`PutObject` hochgeladenes Objekt ist
+es zwar meist der MD5 der Bytes, das wird hier aber bewusst nicht als
+Sicherheitseigenschaft vorausgesetzt; die maßgebliche Prüfgröße bleibt der
+selbst berechnete `ciphertext-sha256`.
 
 ## Metadaten
 
@@ -364,24 +515,34 @@ zweite Retention-Implementierung.
 | Download | `BACKUP_S3_DOWNLOAD_TIMEOUT_MS` |
 | Remote-Drill | Summe der obigen plus der bestehenden Stufe-2B1-Dump-/Restore-Timeouts — kein eigener Drill-Timeout-Wert, exakt wie beim lokalen Drill |
 
-Jede Operation nutzt einen echten `AbortController`. Bei Ablauf: der
-HTTP-Request wird abgebrochen (Node zerstört den zugrunde liegenden
-Socket), Streams werden zerstört, ein laufender Multipart-Upload wird von
-`@aws-sdk/lib-storage` automatisch abgebrochen, lokale `.partial`-Dateien
-werden entfernt. Kein Secret erscheint dabei in Logs. **Wichtige
-Implementierungslektion:** `@aws-sdk/lib-storage`'s `Upload`-Klasse erwartet
-eine `abortController`-Option, **nicht** `abortSignal` — Letzteres wird
-stillschweigend ignoriert und hätte einen Upload erzeugt, der nie wirklich
-abbricht. Dieser Fehler wurde während der Entwicklung dieser Phase durch
-einen echten Integrationstest gegen einen absichtlich nie antwortenden
-TCP-Endpunkt gefunden und behoben (siehe „Tests").
+Jede Operation nutzt einen echten `AbortController`, dessen `signal` direkt
+als `abortSignal`-Option an `client.send(command, { abortSignal })`
+übergeben wird (seit der Release-Gate-Härtung der einzige Aufrufweg — kein
+`@aws-sdk/lib-storage` mehr, siehe „Größenlimit und Single-Put"). Bei
+Ablauf: der HTTP-Request wird abgebrochen (Node zerstört den zugrunde
+liegenden Socket), Streams werden zerstört, lokale `.partial`-Dateien werden
+entfernt. Kein Secret erscheint dabei in Logs.
+
+**Historische Implementierungslektion (vor der Release-Gate-Härtung):** Die
+ursprüngliche, inzwischen entfernte `@aws-sdk/lib-storage`-`Upload`-Klasse
+erwartete eine `abortController`-Option, **nicht** `abortSignal` — Letzteres
+wurde von ihr stillschweigend ignoriert und hätte einen Upload erzeugt, der
+nie wirklich abbricht. Dieser Fehler wurde während der ursprünglichen
+Entwicklung dieser Phase durch einen echten Integrationstest gegen einen
+absichtlich nie antwortenden TCP-Endpunkt gefunden und war mit ein Grund,
+`@aws-sdk/lib-storage` in der Härtung vollständig durch einen direkten,
+einfacheren `client.send(new PutObjectCommand(...), { abortSignal })`-Aufruf
+zu ersetzen (siehe „Tests").
 
 ## Cleanup
 
 Der Remote-Drill (`db:backup:remote:drill`) räumt in einem `finally`-Block
 auf: Ziel-Pool schließen, disposable Restore-Datenbank löschen, lokales
 Original **und** heruntergeladenes Artefakt entfernen, Remote-Testobjekt
-löschen. **Strenger als der lokale Drill:** Schlägt einer dieser
+löschen — bei aktiviertem Bucket-Versioning wird die vom eigenen Upload
+zurückgegebene `versionId` an `deleteObject` übergeben, sodass exakt die
+selbst erzeugte Version entfernt wird (siehe „Version-ID-Verhalten").
+**Strenger als der lokale Drill:** Schlägt einer dieser
 Cleanup-Schritte fehl, meldet der Remote-Drill **niemals** Erfolg — er wirft
 `REMOTE_DRILL_CLEANUP_FAILED` (Exitcode 26), selbst wenn alle Kernschritte
 (Erstellen, Hochladen, Herunterladen, Restaurieren, Migration Doctor)
@@ -412,11 +573,18 @@ lokalen Codes/Zuordnungen bleiben unverändert):
 
 | Exitcode | Bedeutung | Beispiele |
 | --- | --- | --- |
-| `10` (bestehend) | Konfiguration/Autorisierung unsicher | `INVALID_BACKUP_REMOTE_CONFIG`, `REMOTE_OBJECT_KEY_OUTSIDE_PREFIX`, `REMOTE_VERSIONING_REQUIRED`, `REMOTE_OBJECT_LOCK_REQUIRED`, `REMOTE_BUCKET_NOT_PRIVATE`, `REMOTE_OBJECT_ALREADY_EXISTS`, `REMOTE_UPLOAD_SIZE_LIMIT_EXCEEDED`, `REMOTE_RETENTION_NOT_AUTHORIZED`, `REMOTE_DOWNLOAD_TARGET_EXISTS` |
+| `10` (bestehend) | Konfiguration/Autorisierung unsicher | `INVALID_BACKUP_REMOTE_CONFIG`, `REMOTE_OBJECT_KEY_OUTSIDE_PREFIX`, `REMOTE_VERSIONING_REQUIRED`, `REMOTE_OBJECT_LOCK_REQUIRED`, `REMOTE_BUCKET_NOT_PRIVATE`, `REMOTE_OBJECT_ALREADY_EXISTS`, `REMOTE_BACKUP_TOO_LARGE`, `REMOTE_RETENTION_NOT_AUTHORIZED`, `REMOTE_DOWNLOAD_TARGET_EXISTS` |
 | `23` (bestehend) | Integrität fehlgeschlagen | `REMOTE_CIPHERTEXT_HASH_MISMATCH`, `REMOTE_METADATA_INCONSISTENT`, `REMOTE_KEY_ID_MISMATCH`, `REMOTE_DOWNLOAD_INCOMPLETE` |
 | `24` (bestehend) | Timeout | `REMOTE_OPERATION_TIMEOUT` |
-| `25` (**neu**) | Remote nicht erreichbar/autorisiert | `REMOTE_AUTH_FAILED`, `REMOTE_BUCKET_UNAVAILABLE`, `REMOTE_OBJECT_NOT_FOUND`, `REMOTE_OPERATION_FAILED`, `REMOTE_UPLOAD_FAILED`, `REMOTE_DOWNLOAD_FAILED` |
+| `25` (**neu**) | Remote nicht erreichbar/autorisiert/unbestätigt | `REMOTE_AUTH_FAILED`, `REMOTE_BUCKET_UNAVAILABLE`, `REMOTE_OBJECT_NOT_FOUND`, `REMOTE_OPERATION_FAILED`, `REMOTE_UPLOAD_FAILED`, `REMOTE_DOWNLOAD_FAILED`, `REMOTE_PUBLISH_STATE_UNKNOWN` |
 | `26` (**neu**) | Cleanup nach ansonsten erfolgreicher Operation fehlgeschlagen | `REMOTE_DRILL_CLEANUP_FAILED`, `REMOTE_PREFLIGHT_CLEANUP_FAILED` |
+
+**Release-Gate-Härtung:** `REMOTE_UPLOAD_SIZE_LIMIT_EXCEEDED` wurde in
+`REMOTE_BACKUP_TOO_LARGE` umbenannt (siehe „Größenlimit und Single-Put").
+`REMOTE_PUBLISH_STATE_UNKNOWN` ist neu (siehe „Post-Upload-Fehler und
+Cleanup-Grenzen") — der Upload selbst war bereits erfolgreich, nur die
+anschließende Bestätigung war nicht erreichbar; dennoch Exitcode `25`, nie
+`0`.
 
 Kein roher Provider-Fehler wird je ungefiltert an den CLI-Nutzer
 weitergegeben — jeder Fehler wird zuerst in einen dieser Codes normalisiert.
@@ -464,26 +632,44 @@ nicht startet). Erwartetes Verhalten ist identisch zu Linux-Produktionsservern.
 - Kein permanentes Versions-Purging bei aktivem Bucket-Versioning.
 - Objekt-Lock wird geprüft, aber kein echter Object-Lock-Bucket in dieser
   Phase eingerichtet.
+- Die atomare `IfNoneMatch`-Bedingung ist gegen echtes MinIO empirisch
+  bewiesen (siehe „Remote-Publish-Semantik"), aber mangels echter
+  Cloud-Credentials **nicht** gegen ein echtes AWS-S3-Konto nachgetestet —
+  die Aussage zu AWS S3 stützt sich auf dessen offizielle Dokumentation
+  (bedingte Schreibvorgänge, allgemein verfügbar seit August 2024), nicht
+  auf einen eigenen Testlauf in dieser Umgebung.
+- 2 GiB Upload-Limit, ausschließlich Single-`PutObject`, kein Multipart
+  (siehe „Größenlimit und Single-Put") — eine künftige Anhebung ist eine
+  bewusste, gesondert zu treffende Entscheidung.
 - Migration 009 wurde nicht eingeführt — kein neues Anwendungsschema.
 
 ## Tests
 
 - **Unit** (`backend/test/unit/backupRemoteConfig.test.js`,
   `backupRemoteObjectKey.test.js`, `backupRemoteStorage.test.js`,
-  `backupRemoteRetention.test.js`, erweitertes `backupExitCodes.test.js`):
+  `backupRemoteRetention.test.js`, `encryptedBackupRemoteUpload.test.js`
+  (neu, 7 Tests), erweitertes `backupExitCodes.test.js`):
   Konfigurationsvalidierung (Bucket/Prefix/Endpoint/Credentials/Timeouts/SSE),
   Objektschlüssel-Erzeugung und Prefix-Escape-Schutz, Metadaten-Allowlist,
   Credential-Wiring (nie `AWS_*`-Fallback), Fehlernormalisierung,
-  Retention-Guards, Exit-Code-Zuordnung.
+  Retention-Guards, Exit-Code-Zuordnung, und — isoliert von echtem
+  Netzwerkzugriff — die reine Entscheidungslogik
+  `evaluatePublishConsistency()` für alle Konsistenz-/Besitz-Kombinationen
+  (passend+versioniert, passend+unversioniert, Größenabweichung,
+  Hash-Abweichung, Key-ID-Abweichung, fremde neuere Version, fehlende
+  Metadaten).
 - **Integration** (`backend/test/integration/backupRemoteMinio.test.js`,
-  21 Tests, gegen eine echte lokale MinIO-Instanz und die reale lokale
+  22 Tests, gegen eine echte lokale MinIO-Instanz und die reale lokale
   MySQL-Instanz — kein Mock): Preflight (Erfolg, Versioning-Pflicht,
   Object-Lock-Pflicht), Upload (Erfolg, manipulierte lokale Datei,
-  falscher Dateityp, Kollision), Liste mit echter Mehrseiten-Pagination
-  und unerkannten Objekten, Download/Remote-Verify (Erfolg, Prefix-Flucht,
-  Zielkollision, manipulierte Metadaten, manipuliertes Objekt mit
-  neu berechnetem Hash, falsche Key-ID), echte Upload-/Download-Timeouts
-  gegen einen absichtlich nie antwortenden TCP-Endpunkt, vollständiger
-  Remote-Restore-Drill, Retention-Plan/-Apply inklusive
-  Maximal-Löschanzahl-Schutz.
+  falscher Dateityp, Kollision mit Nachweis, dass das fremde Objekt
+  bytegenau unverändert bleibt, **zwei echt gleichzeitige Uploads auf
+  denselben Schlüssel** mit Nachweis, dass genau einer gewinnt und das
+  Endobjekt bytegenau dem Gewinner entspricht), Liste mit echter
+  Mehrseiten-Pagination und unerkannten Objekten, Download/Remote-Verify
+  (Erfolg, Prefix-Flucht, Zielkollision, manipulierte Metadaten,
+  manipuliertes Objekt mit neu berechnetem Hash, falsche Key-ID), echte
+  Upload-/Download-Timeouts gegen einen absichtlich nie antwortenden
+  TCP-Endpunkt, vollständiger Remote-Restore-Drill, Retention-Plan/-Apply
+  inklusive Maximal-Löschanzahl-Schutz.
 - Keine externen Netzwerkzugriffe außer zum lokalen MinIO-Service.

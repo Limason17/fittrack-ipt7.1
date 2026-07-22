@@ -781,6 +781,14 @@ synthetischen Zugangsdaten verifiziert — kein echter externer Cloud-Bucket
 wurde eingerichtet oder verbunden.** Keine neue Migration, kein neues
 Anwendungsschema, kein echter Scheduler, keine Key-Rotation.
 
+**Release-Gate-Härtung (Folge-Commit):** Der Upload verwendet seither einen
+einzelnen, atomar-bedingten `PutObjectCommand` (`IfNoneMatch: "*"`) statt
+einer `HeadObject`-Vorabprüfung — empirisch gegen echtes MinIO bewiesen,
+inklusive zweier echt gleichzeitiger Uploads auf denselben Schlüssel.
+`@aws-sdk/lib-storage` wurde entfernt, das Upload-Limit auf 2 GiB gesenkt
+(ausschließlich Single-`PutObject`, kein Multipart mehr). Details siehe
+„Release-Gate-Härtung" ganz oben in `STAGE_2B2A_S3_OFFHOST_BACKUPS.md`.
+
 **Neue Variablen, ausschließlich für `db:backup:remote:*` — nie vom
 laufenden Anwendungsserver gelesen:**
 
@@ -818,8 +826,10 @@ dieser Punkte ist Teil dieser Phase.
       `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` zurückzufallen
 - [ ] Upload verlangt zwingend vollständige, erfolgreiche Stufe-2B1-Verifikation
       der lokalen Datei, bevor irgendein Netzwerkzugriff erfolgt
-- [ ] ein bereits existierendes Remote-Objekt wird nie überschrieben
-      (`HeadObject`-Vorabprüfung, `REMOTE_OBJECT_ALREADY_EXISTS`)
+- [ ] ein bereits existierendes Remote-Objekt wird nie überschrieben — ein
+      atomar-bedingter `PutObject` (`IfNoneMatch: "*"`) garantiert das auch
+      bei zwei echt gleichzeitigen Upload-Versuchen auf denselben Schlüssel
+      (`REMOTE_OBJECT_ALREADY_EXISTS`), empirisch gegen echtes MinIO bewiesen
 - [ ] Download/Verify prüfen `ciphertext-sha256` gegen die tatsächlich
       empfangenen Bytes und führen danach die volle Stufe-2B1-GCM-Authentifizierung
       aus, bevor eine lokale Datei als vertrauenswürdig gilt
@@ -830,8 +840,11 @@ dieser Punkte ist Teil dieser Phase.
 - [ ] Retention-Apply verlangt alle drei expliziten Bestätigungen
       (Enable-Flag, Bucket-Ack, Prefix-Ack) plus eine harte
       Maximal-Löschanzahl
-- [ ] echte Upload-/Download-Timeouts greifen zuverlässig und brechen
-      Multipart-Uploads sauber ab (`@aws-sdk/lib-storage`)
+- [ ] echte Upload-/Download-Timeouts greifen zuverlässig gegen einen real
+      nie antwortenden Endpunkt und brechen den HTTP-Request sauber ab
+      (Single-`PutObject`, kein Multipart, kein `@aws-sdk/lib-storage` mehr)
+- [ ] eine lokale Datei über dem 2-GiB-Limit wird mit `REMOTE_BACKUP_TOO_LARGE`
+      abgelehnt, bevor irgendein Netzwerkzugriff erfolgt
 - [ ] realer Remote-Restore-Drill gegen lokale MinIO- und MySQL-Instanzen
       grün: Backup erstellt, hochgeladen, heruntergeladen, vollständig
       verifiziert, in eine disposable Datenbank restauriert, Migration Doctor

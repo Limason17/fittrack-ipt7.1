@@ -100,8 +100,12 @@ test("uploadObject rejects a body whose size exceeds the documented remote uploa
             contentLength: MAX_UPLOAD_BYTES + 1,
             metadataFields: { "format-version": "1", "key-id": "k", application: "fittrack", "backup-type": "encrypted-logical" }
         }),
-        (error) => error.code === "REMOTE_UPLOAD_SIZE_LIMIT_EXCEEDED"
+        (error) => error.code === "REMOTE_BACKUP_TOO_LARGE"
     );
+});
+
+test("MAX_UPLOAD_BYTES is the documented 2 GiB single-PutObject ceiling, comfortably below S3's real 5 GiB single-PUT limit", () => {
+    assert.equal(MAX_UPLOAD_BYTES, 2 * 1024 * 1024 * 1024);
 });
 
 test("uploadObject rejects a non-positive or non-integer content length before touching the network", async () => {

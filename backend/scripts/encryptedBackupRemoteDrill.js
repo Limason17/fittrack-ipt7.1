@@ -51,6 +51,7 @@ async function runRemoteRestoreDrill({ env = process.env } = {}) {
     let backupPath;
     let downloadDirectory;
     let remoteKey;
+    let remoteVersionId;
     let targetDatabase;
     let targetPool;
     let result;
@@ -70,6 +71,7 @@ async function runRemoteRestoreDrill({ env = process.env } = {}) {
             env: { ...env, FITTRACK_BACKUP_REMOTE_FILE: backupPath }
         });
         remoteKey = uploadReport.key;
+        remoteVersionId = uploadReport.versionId;
 
         const head = await headObject({ client, remoteConfig, key: remoteKey });
         if (head.ContentLength !== uploadReport.bytes) {
@@ -212,7 +214,11 @@ async function runRemoteRestoreDrill({ env = process.env } = {}) {
         }
         if (remoteKey) {
             try {
-                await deleteObject({ client, remoteConfig, key: remoteKey });
+                // Delete the exact version this drill created, when known -
+                // on a versioned bucket this avoids ever creating a delete
+                // marker over (or removing) a different version than the
+                // one the drill itself published.
+                await deleteObject({ client, remoteConfig, key: remoteKey, versionId: remoteVersionId });
             } catch (error) {
                 cleanupNotes.push({ step: "delete_remote_test_object", error: error.message });
             }

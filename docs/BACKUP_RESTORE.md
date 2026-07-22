@@ -231,7 +231,10 @@ Im Windows Task Scheduler zeigt die Action beispielsweise auf `powershell.exe` m
 > auch als Ziel für eine Off-host-Kopie nicht mehr relevant. Der tatsächlich
 > implementierte, produktionsfähige Off-host-Pfad lädt ausschließlich
 > bereits verschlüsselte `.ftbackup`-Dateien hoch (`db:backup:remote:upload`
-> u. a.) und ist in `docs/STAGE_2B2A_S3_OFFHOST_BACKUPS.md` vollständig
+> u. a.) über einen einzelnen, atomar-bedingten `PutObject`
+> (`IfNoneMatch: "*"`, empirisch gegen echtes MinIO inklusive echter
+> Nebenläufigkeit bewiesen — kein Überschreiben eines bestehenden Objekts
+> möglich) und ist in `docs/STAGE_2B2A_S3_OFFHOST_BACKUPS.md` vollständig
 > dokumentiert. **Auch dieser neue Pfad ist bislang nur gegen eine lokale
 > MinIO-Testinstanz verifiziert — es besteht keine Verbindung zu einem
 > echten externen Bucket** (das bleibt Stufe 2B2B). Der folgende Abschnitt

@@ -17,13 +17,30 @@ const { buildRemoteObjectKey } = require("./backupRemoteObjectKey");
 const {
     MAX_UPLOAD_BYTES,
     createS3Client,
+    deleteObject,
     headObject,
-    objectExists,
     remoteError,
     uploadObject
 } = require("./backupRemoteStorage");
 
 const REPOSITORY_ROOT = path.resolve(__dirname, "../..");
+
+// Decides, from already-fetched data only (no I/O here), whether a
+// post-upload HeadObject matches what this exact upload just published, and
+// whether the caller can *prove* ownership of whatever is currently at that
+// key. Ownership is only provable when the bucket returned a versionId for
+// our own write and the HeadObject we just read reports that same
+// versionId - if either is missing (unversioned bucket) or they differ
+// (someone else has since published a newer version at this key), ownership
+// is not confirmed and nothing at the key may be touched.
+function evaluatePublishConsistency({ uploadResult, head, expectedBytes, expectedCiphertextSha256, expectedKeyId }) {
+    const ownershipConfirmed = Boolean(uploadResult.versionId) && head.VersionId === uploadResult.versionId;
+    const sizeOk = head.ContentLength === expectedBytes;
+    const metadataOk =
+        head.Metadata?.["ciphertext-sha256"] === expectedCiphertextSha256 &&
+        head.Metadata?.["key-id"] === expectedKeyId;
+    return { consistent: sizeOk && metadataOk, ownershipConfirmed };
+}
 
 async function resolveUploadFile(env) {
     const value = env.FITTRACK_BACKUP_REMOTE_FILE;
@@ -61,7 +78,7 @@ async function uploadEncryptedBackup({ env = process.env } = {}) {
     const stat = await fsPromises.stat(filePath);
     if (stat.size > MAX_UPLOAD_BYTES) {
         throw remoteError(
-            "REMOTE_UPLOAD_SIZE_LIMIT_EXCEEDED",
+            "REMOTE_BACKUP_TOO_LARGE",
             `Backup file (${stat.size} bytes) exceeds the documented remote upload limit of ${MAX_UPLOAD_BYTES} bytes.`
         );
     }
@@ -71,14 +88,6 @@ async function uploadEncryptedBackup({ env = process.env } = {}) {
     const key = buildRemoteObjectKey({ prefix: remoteConfig.prefix, filename, now: createdAt });
 
     const client = createS3Client(remoteConfig);
-
-    if (await objectExists({ client, remoteConfig, key })) {
-        throw remoteError(
-            "REMOTE_OBJECT_ALREADY_EXISTS",
-            "A remote object already exists at the computed key; uploads never overwrite an existing object."
-        );
-    }
-
     const logger = createStructuredLogger();
     logger.info("remote_backup_upload_started", { bucket: remoteConfig.bucket, key, bytes: stat.size });
 
@@ -92,7 +101,14 @@ async function uploadEncryptedBackup({ env = process.env } = {}) {
         "backup-type": "encrypted-logical"
     };
 
-    await uploadObject({
+    // Single atomically-conditional PutObject (IfNoneMatch: "*") - no
+    // HeadObject pre-check. If an object already exists at this key
+    // (created a microsecond or a year ago), the provider itself rejects
+    // this write with 412 Precondition Failed, surfaced here as
+    // REMOTE_OBJECT_ALREADY_EXISTS; the pre-existing object is never
+    // touched. See backupRemoteStorage.js#uploadObject for the full
+    // rationale and the empirical concurrency proof.
+    const uploadResult = await uploadObject({
         client,
         remoteConfig,
         key,
@@ -101,24 +117,57 @@ async function uploadEncryptedBackup({ env = process.env } = {}) {
         metadataFields
     });
 
-    // A remote object only counts as "published" once a post-upload
-    // HeadObject confirms its size and safe metadata actually match what
-    // was intended - a successful multipart completion alone is not
-    // sufficient proof.
-    const head = await headObject({ client, remoteConfig, key });
-    if (head.ContentLength !== stat.size) {
+    // The PutObject call already proved this exact process published the
+    // object (or the whole call would have thrown already) - this
+    // HeadObject is a publish/metadata proof, not a second race-prone
+    // check. A failure here does not mean "someone else has it" - it means
+    // the publish state is now unknown and must not be guessed at.
+    let head;
+    try {
+        head = await headObject({ client, remoteConfig, key });
+    } catch (error) {
         throw remoteError(
-            "REMOTE_METADATA_INCONSISTENT",
-            "Uploaded object size does not match the local file after publish."
+            "REMOTE_PUBLISH_STATE_UNKNOWN",
+            "The backup was uploaded, but its published state could not be confirmed afterward.",
+            { cause: error, versionId: uploadResult.versionId }
         );
     }
-    if (
-        head.Metadata?.["ciphertext-sha256"] !== ciphertextSha256 ||
-        head.Metadata?.["key-id"] !== verifyReport.keyId
-    ) {
+
+    const { consistent, ownershipConfirmed } = evaluatePublishConsistency({
+        uploadResult,
+        head,
+        expectedBytes: stat.size,
+        expectedCiphertextSha256: ciphertextSha256,
+        expectedKeyId: verifyReport.keyId
+    });
+
+    if (!consistent) {
+        // Only ever remove what we can prove is the exact object/version
+        // this call just created (a versioned bucket returning a matching
+        // versionId) - an unversioned bucket, or a mismatched versionId
+        // (someone else has since published a newer version at this key),
+        // means ownership cannot be proven, and nothing is deleted.
+        let cleanupPerformed = false;
+        let cleanupError = null;
+        if (ownershipConfirmed) {
+            try {
+                await deleteObject({ client, remoteConfig, key, versionId: uploadResult.versionId });
+                cleanupPerformed = true;
+            } catch (error) {
+                cleanupError = error.message;
+            }
+        }
+        logger.error("remote_backup_publish_inconsistent", {
+            bucket: remoteConfig.bucket,
+            key,
+            ownershipConfirmed,
+            cleanupPerformed,
+            cleanupError
+        });
         throw remoteError(
             "REMOTE_METADATA_INCONSISTENT",
-            "Uploaded object metadata does not match the local backup after publish."
+            "Uploaded object does not match the local backup after publish.",
+            { ownershipConfirmed, cleanupPerformed }
         );
     }
 
@@ -132,12 +181,14 @@ async function uploadEncryptedBackup({ env = process.env } = {}) {
         keyId: verifyReport.keyId,
         createdAt: verifyReport.createdAt,
         sourceDatabase: verifyReport.database,
+        versionId: uploadResult.versionId,
         durationMs: Date.now() - started
     };
     logger.info("remote_backup_upload_succeeded", {
         bucket: report.bucket,
         key: report.key,
         bytes: report.bytes,
+        versionId: report.versionId,
         durationMs: report.durationMs
     });
     return report;
@@ -157,6 +208,7 @@ if (require.main === module) {
 
 module.exports = {
     REPOSITORY_ROOT,
+    evaluatePublishConsistency,
     main,
     resolveUploadFile,
     uploadEncryptedBackup

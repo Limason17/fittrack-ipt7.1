@@ -14,9 +14,9 @@ const {
     HeadBucketCommand,
     HeadObjectCommand,
     ListObjectsV2Command,
+    PutObjectCommand,
     S3Client
 } = require("@aws-sdk/client-s3");
-const { Upload } = require("@aws-sdk/lib-storage");
 
 const CONTENT_TYPE = "application/vnd.fittrack.backup";
 const METADATA_ALLOWLIST = Object.freeze([
@@ -28,10 +28,16 @@ const METADATA_ALLOWLIST = Object.freeze([
     "application",
     "backup-type"
 ]);
-// S3's single-PUT practical ceiling; comfortably above any realistic
-// FitTrack logical dump today, and Upload (lib-storage) would still switch
-// to multipart well before this if it ever needed to.
-const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024;
+// Deliberately far below S3's real single-PUT ceiling (5 GiB) rather than
+// pushed up against it: every real FitTrack logical dump observed so far is
+// in the tens of kilobytes, so 2 GiB leaves enormous headroom while keeping
+// every upload a single, atomically-conditional PutObject (see
+// uploadObject below) - no multipart, no ambiguity about whether a
+// conditional write is honored across multipart completion on every
+// provider. If a future backup ever needs to exceed this, that is a
+// deliberate, separate decision, not an accidental side effect of removing
+// this ceiling.
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
 
 function remoteError(code, message, details = {}) {
     const error = new Error(message);
@@ -218,73 +224,84 @@ async function headObject({ client, remoteConfig, key }) {
     );
 }
 
-async function objectExists({ client, remoteConfig, key }) {
-    try {
-        await headObject({ client, remoteConfig, key });
-        return true;
-    } catch (error) {
-        if (error.code === "REMOTE_OBJECT_NOT_FOUND") return false;
-        throw error;
-    }
-}
-
-async function deleteObject({ client, remoteConfig, key }) {
+// deleteObject accepts an optional `versionId`: when the bucket is
+// versioned and the caller already knows which specific version it created
+// (see uploadObject's returned versionId), passing it ensures the delete
+// removes exactly that version rather than creating a delete marker over
+// whatever the current version happens to be at cleanup time - important if
+// another writer has since published a newer version at the same key.
+async function deleteObject({ client, remoteConfig, key, versionId }) {
     return sendWithTimeout(
         client,
-        new DeleteObjectCommand({ Bucket: remoteConfig.bucket, Key: key }),
+        new DeleteObjectCommand({
+            Bucket: remoteConfig.bucket,
+            Key: key,
+            ...(versionId ? { VersionId: versionId } : {})
+        }),
         { timeoutMs: remoteConfig.operationTimeoutMs, context: "DeleteObject" }
     );
 }
 
-// Uploads via lib-storage's Upload helper, which transparently chooses a
-// single PutObject for small bodies and a real multipart upload for larger
-// ones, and - critically - calls AbortMultipartUploadCommand automatically
-// if the upload fails partway through, so a failed upload never leaves a
-// billable, invisible-to-ListObjectsV2 stray multipart session behind.
-// Never sets an ACL: modern buckets increasingly reject any ACL at all
-// ("Bucket Owner Enforced"), and omitting it is also the only way to
-// guarantee the object is never accidentally public.
+function preconditionFailed(error) {
+    return error?.name === "PreconditionFailed" || error?.$metadata?.httpStatusCode === 412;
+}
+
+// Publishes with a single, atomically-conditional PutObject - no HeadObject
+// pre-check, no multipart, no @aws-sdk/lib-storage. IfNoneMatch: "*" is
+// evaluated server-side, atomically, against the bucket's actual state at
+// write time: if any object already exists at this key (created a
+// microsecond ago by a different process, or a year ago by a human), S3/
+// MinIO reject the write with 412 Precondition Failed and the existing
+// object is left completely untouched - there is no window between a
+// check and a write for a second writer to slip into. Empirically verified
+// against real MinIO, including two genuinely concurrent PutObject calls
+// racing for the same key (exactly one succeeds, the loser gets 412, the
+// object holds the winner's bytes) - see
+// backend/test/integration/backupRemoteMinio.test.js and
+// docs/STAGE_2B2A_S3_OFFHOST_BACKUPS.md for the documented guarantee and
+// its remaining limits. Never sets an ACL: modern buckets increasingly
+// reject any ACL at all ("Bucket Owner Enforced"), and omitting it is also
+// the only way to guarantee the object is never accidentally public.
 async function uploadObject({ client, remoteConfig, key, body, contentLength, metadataFields }) {
     if (!Number.isSafeInteger(contentLength) || contentLength <= 0) {
         throw remoteError("REMOTE_UPLOAD_FAILED", "Upload body size could not be determined.");
     }
     if (contentLength > MAX_UPLOAD_BYTES) {
         throw remoteError(
-            "REMOTE_UPLOAD_SIZE_LIMIT_EXCEEDED",
-            `Backup file exceeds the documented remote upload limit of ${MAX_UPLOAD_BYTES} bytes.`
+            "REMOTE_BACKUP_TOO_LARGE",
+            `Backup file (${contentLength} bytes) exceeds the documented remote upload limit of ${MAX_UPLOAD_BYTES} bytes.`
         );
     }
-    // lib-storage's Upload takes an `abortController` option, not a plain
-    // `abortSignal` - passing the latter is silently ignored (Upload just
-    // creates its own internal AbortController that nothing ever triggers),
-    // which would leave an upload that never actually times out. Upload
-    // itself races its own internal operation against this controller's
-    // signal, so done() rejects promptly once abort() fires, independent of
-    // whether the underlying HTTP request settles on its own afterward.
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), remoteConfig.uploadTimeoutMs);
-    const upload = new Upload({
-        client,
-        abortController: controller,
-        params: {
-            Bucket: remoteConfig.bucket,
-            Key: key,
-            Body: body,
-            ContentType: CONTENT_TYPE,
-            ChecksumAlgorithm: "SHA256",
-            Metadata: buildMetadata(metadataFields),
-            ...sseParams(remoteConfig)
-        }
-    });
+    const { signal, cancel } = abortAfter(remoteConfig.uploadTimeoutMs);
     try {
-        return await upload.done();
+        const result = await client.send(
+            new PutObjectCommand({
+                Bucket: remoteConfig.bucket,
+                Key: key,
+                Body: body,
+                ContentLength: contentLength,
+                ContentType: CONTENT_TYPE,
+                ChecksumAlgorithm: "SHA256",
+                IfNoneMatch: "*",
+                Metadata: buildMetadata(metadataFields),
+                ...sseParams(remoteConfig)
+            }),
+            { abortSignal: signal }
+        );
+        return { versionId: result.VersionId ?? null, etag: result.ETag ?? null };
     } catch (error) {
-        if (error?.name === "AbortError" || controller.signal.aborted) {
+        if (error?.name === "AbortError" || signal.aborted) {
             throw remoteError("REMOTE_OPERATION_TIMEOUT", "Upload did not complete within its configured timeout.");
         }
-        throw normalizeRemoteError(error, "Upload");
+        if (preconditionFailed(error)) {
+            throw remoteError(
+                "REMOTE_OBJECT_ALREADY_EXISTS",
+                "A remote object already exists at this key; uploads never overwrite an existing object."
+            );
+        }
+        throw normalizeRemoteError(error, "PutObject");
     } finally {
-        clearTimeout(timer);
+        cancel();
     }
 }
 
@@ -376,7 +393,6 @@ module.exports = {
     headObject,
     listAllObjects,
     normalizeRemoteError,
-    objectExists,
     remoteError,
     sendWithTimeout,
     uploadObject

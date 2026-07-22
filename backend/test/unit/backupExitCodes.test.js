@@ -42,7 +42,7 @@ test("Stage 2B2A remote configuration/authorization errors map to CONFIG_UNSAFE"
         "REMOTE_OBJECT_LOCK_REQUIRED",
         "REMOTE_BUCKET_NOT_PRIVATE",
         "REMOTE_OBJECT_ALREADY_EXISTS",
-        "REMOTE_UPLOAD_SIZE_LIMIT_EXCEEDED",
+        "REMOTE_BACKUP_TOO_LARGE",
         "REMOTE_RETENTION_NOT_AUTHORIZED",
         "REMOTE_DOWNLOAD_TARGET_EXISTS"
     ]) {
@@ -68,7 +68,8 @@ test("Stage 2B2A remote availability errors map to their own distinct REMOTE_UNA
         "REMOTE_OBJECT_NOT_FOUND",
         "REMOTE_OPERATION_FAILED",
         "REMOTE_UPLOAD_FAILED",
-        "REMOTE_DOWNLOAD_FAILED"
+        "REMOTE_DOWNLOAD_FAILED",
+        "REMOTE_PUBLISH_STATE_UNKNOWN"
     ]) {
         assert.equal(backupCliExitCode({ code }), EXIT_CODES.REMOTE_UNAVAILABLE, `expected ${code} to map to REMOTE_UNAVAILABLE`);
     }

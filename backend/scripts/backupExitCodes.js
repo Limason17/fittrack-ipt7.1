@@ -42,7 +42,7 @@ const CONFIG_UNSAFE_CODES = new Set([
     "REMOTE_OBJECT_LOCK_REQUIRED",
     "REMOTE_BUCKET_NOT_PRIVATE",
     "REMOTE_OBJECT_ALREADY_EXISTS",
-    "REMOTE_UPLOAD_SIZE_LIMIT_EXCEEDED",
+    "REMOTE_BACKUP_TOO_LARGE",
     "REMOTE_RETENTION_NOT_AUTHORIZED",
     "REMOTE_DOWNLOAD_TARGET_EXISTS"
 ]);
@@ -72,7 +72,13 @@ const REMOTE_UNAVAILABLE_CODES = new Set([
     "REMOTE_OBJECT_NOT_FOUND",
     "REMOTE_OPERATION_FAILED",
     "REMOTE_UPLOAD_FAILED",
-    "REMOTE_DOWNLOAD_FAILED"
+    "REMOTE_DOWNLOAD_FAILED",
+    // The upload itself already succeeded (proven by the atomic conditional
+    // PutObject), but the immediately-following publish/metadata check
+    // could not be reached - the underlying cause is almost always the same
+    // connectivity problem as the other codes in this bucket, and the
+    // caller must treat the remote object's state as unconfirmed either way.
+    "REMOTE_PUBLISH_STATE_UNKNOWN"
 ]);
 
 // Stage 2B2A: the operation's core purpose already succeeded, but cleanup

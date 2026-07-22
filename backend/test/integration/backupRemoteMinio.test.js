@@ -14,6 +14,7 @@ const path = require("node:path");
 const mysql = require("mysql2/promise");
 const {
     CreateBucketCommand,
+    GetObjectCommand,
     PutBucketVersioningCommand,
     PutObjectCommand
 } = require("@aws-sdk/client-s3");
@@ -43,6 +44,7 @@ const { planRemoteRetention, applyRemoteRetention } = require("../../scripts/bac
 const {
     createS3Client,
     downloadObjectToSink,
+    headObject,
     uploadObject,
     remoteError
 } = require("../../scripts/backupRemoteStorage");
@@ -212,7 +214,7 @@ test("uploadEncryptedBackup rejects a file that is not a .ftbackup", async () =>
     await fsPromises.rm(notABackup, { force: true });
 });
 
-test("uploadEncryptedBackup refuses to overwrite an object that already exists at the computed key", async () => {
+test("uploadEncryptedBackup refuses to overwrite an object that already exists at the computed key, and the pre-existing foreign object is left byte-for-byte unchanged", async () => {
     const env = baseEnv();
     const createReport = await createEncryptedBackup({ env });
     const backupPath = path.join(backupDirectory, createReport.filename);
@@ -221,16 +223,65 @@ test("uploadEncryptedBackup refuses to overwrite an object that already exists a
         new Date(createReport.createdAt).getUTCMonth() + 1
     ).padStart(2, "0")}/${createReport.filename}`;
 
-    // Publish a pre-existing object at the exact key this upload would use,
-    // bypassing the upload command entirely, to force a genuine collision.
+    // Publish a pre-existing, entirely unrelated ("foreign") object at the
+    // exact key this upload would use, bypassing the upload command
+    // entirely, to force a genuine collision.
+    const foreignBody = "pre-existing-foreign-object-must-survive";
     await client.send(
-        new PutObjectCommand({ Bucket: remoteConfig.bucket, Key: collisionKey, Body: Buffer.from("pre-existing") })
+        new PutObjectCommand({ Bucket: remoteConfig.bucket, Key: collisionKey, Body: Buffer.from(foreignBody) })
     );
 
     await assert.rejects(
         uploadEncryptedBackup({ env: { ...env, FITTRACK_BACKUP_REMOTE_FILE: backupPath } }),
         (error) => error.code === "REMOTE_OBJECT_ALREADY_EXISTS"
     );
+
+    // The atomic conditional write must never have touched the pre-existing
+    // object - not its bytes, not its metadata.
+    const got = await client.send(new GetObjectCommand({ Bucket: remoteConfig.bucket, Key: collisionKey }));
+    const chunks = [];
+    for await (const chunk of got.Body) chunks.push(chunk);
+    assert.equal(Buffer.concat(chunks).toString(), foreignBody);
+
+    await fsPromises.rm(backupPath, { force: true });
+});
+
+test("two genuinely concurrent uploads racing for the same object key: exactly one succeeds atomically, the loser fails stably with REMOTE_OBJECT_ALREADY_EXISTS, and the final object matches the winner byte-for-byte with no stray artifact left behind", async () => {
+    const env = baseEnv();
+    const createReport = await createEncryptedBackup({ env });
+    const backupPath = path.join(backupDirectory, createReport.filename);
+    const localBytes = await fsPromises.readFile(backupPath);
+    const localSha256 = crypto.createHash("sha256").update(localBytes).digest("hex");
+
+    // Both concurrent calls target the *same* local file, so both compute
+    // the identical remote object key - this is what forces a genuine race
+    // for the same key rather than two independent, naturally-distinct keys.
+    const uploadEnv = { ...env, FITTRACK_BACKUP_REMOTE_FILE: backupPath };
+    const results = await Promise.allSettled([
+        uploadEncryptedBackup({ env: uploadEnv }),
+        uploadEncryptedBackup({ env: uploadEnv })
+    ]);
+
+    const succeeded = results.filter((result) => result.status === "fulfilled");
+    const failed = results.filter((result) => result.status === "rejected");
+    assert.equal(succeeded.length, 1, "exactly one concurrent upload must succeed");
+    assert.equal(failed.length, 1, "exactly one concurrent upload must fail");
+    assert.equal(failed[0].reason.code, "REMOTE_OBJECT_ALREADY_EXISTS");
+
+    const winnerReport = succeeded[0].value;
+    assert.equal(winnerReport.ciphertextSha256, localSha256);
+
+    const remoteConfig = readBackupRemoteConfig(env);
+    const head = await headObject({ client, remoteConfig, key: winnerReport.key });
+    assert.equal(head.ContentLength, localBytes.length);
+    assert.equal(head.Metadata["ciphertext-sha256"], localSha256);
+    assert.equal(head.Metadata["key-id"], winnerReport.keyId);
+
+    // No stray/temporary object was left behind by the losing attempt -
+    // exactly one object exists at this key.
+    const inventory = await listRemoteBackups({ env });
+    const matches = inventory.entries.filter((entry) => entry.key === winnerReport.key);
+    assert.equal(matches.length, 1);
 
     await fsPromises.rm(backupPath, { force: true });
 });

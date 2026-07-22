@@ -45,7 +45,10 @@ Punkte sind inzwischen erfüllt:
 
 1. **Stage 2B2B: echten Off-host-Bucket einrichten und verifizieren.**
    Stage 2B2A liefert die vollständige, automatisiert getestete
-   S3-kompatible Upload-/Download-/Verifikations-/Retention-Mechanik, aber
+   S3-kompatible Upload-/Download-/Verifikations-/Retention-Mechanik
+   inklusive einer seit einer Release-Gate-Härtung nachweislich atomaren,
+   race-sicheren Veröffentlichung (`IfNoneMatch`-bedingter `PutObject`,
+   empirisch inklusive echter Nebenläufigkeit gegen MinIO bewiesen), aber
    ausschließlich gegen eine lokale MinIO-Testinstanz — es besteht keine
    Verbindung zu einem echten Cloud-Konto. Ein einzelner Host-Verlust ist
    weiterhin nicht wiederherstellbar, bis ein echter Bucket verbunden und
