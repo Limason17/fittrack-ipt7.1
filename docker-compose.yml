@@ -11,5 +11,29 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
 
+  # Stage 2B2A local off-host-storage integration testing only - never
+  # started by a plain `docker compose up` (requires the "backup-test"
+  # profile explicitly). Synthetic credentials, no persistent volume (data
+  # lives in the container's writable layer and is gone as soon as the
+  # container is removed), console/API bound to loopback only. Not used by
+  # the running application at any point - only by
+  # backend/scripts/db:backup:remote:* commands and their tests.
+  minio:
+    image: minio/minio:latest
+    container_name: fittrack_minio
+    profiles: ["backup-test"]
+    environment:
+      MINIO_ROOT_USER: fittrack-test-minio-user
+      MINIO_ROOT_PASSWORD: fittrack-test-minio-password
+    command: server /data --console-address ":9001"
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
 volumes:
   mysql_data:

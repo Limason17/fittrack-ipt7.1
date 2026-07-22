@@ -46,6 +46,12 @@ frontend/playwright-report/
 *.ftbackup
 *.ftbackup.partial
 
+# local MinIO off-host-storage test data (Stage 2B2A) - the compose service
+# itself has no volume mount (data lives only in the container), but this
+# guards against a developer adding a local bind-mount for persistence
+minio-data/
+.minio/
+
 # OS files
 .DS_Store
 Thumbs.db

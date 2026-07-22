@@ -3,9 +3,12 @@
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-
 Ergebnisansicht/Feedback/Footer-Entfernung), Stage 2A (produktionsfähiger
-SMTP-Einladungsversand — siehe `STAGE_2A_PRODUCTION_INVITATION_EMAIL.md`) und
+SMTP-Einladungsversand — siehe `STAGE_2A_PRODUCTION_INVITATION_EMAIL.md`),
 Stage 2B1 (verschlüsselte Datenbank-Backups mit verifiziertem Restore-Drill —
-siehe `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md`). Diese Empfehlung trifft keine
+siehe `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md`) und Stage 2B2A
+(providerneutrale S3-kompatible Off-host-Speicherung, bislang ausschließlich
+gegen eine lokale MinIO-Testinstanz verifiziert — siehe
+`STAGE_2B2A_S3_OFFHOST_BACKUPS.md`). Diese Empfehlung trifft keine
 Entscheidung — sie liefert eine begründete Grundlage für eine explizite
 Freigabe durch den Auftraggeber.
 
@@ -40,21 +43,28 @@ Punkte sind inzwischen erfüllt:
 
 **Die verbleibenden operativen Pilot-Blocker, in dieser Reihenfolge:**
 
-1. **Off-host-Backup-Kopie.** Aktuell nur dokumentierte Absicht, kein
-   Upload-Adapter — ein einzelner Host-Verlust ist weiterhin nicht
-   wiederherstellbar, selbst mit dem seit Stage 2B1 verschlüsselten lokalen
-   Backup.
+1. **Stage 2B2B: echten Off-host-Bucket einrichten und verifizieren.**
+   Stage 2B2A liefert die vollständige, automatisiert getestete
+   S3-kompatible Upload-/Download-/Verifikations-/Retention-Mechanik
+   inklusive einer seit einer Release-Gate-Härtung nachweislich atomaren,
+   race-sicheren Veröffentlichung (`IfNoneMatch`-bedingter `PutObject`,
+   empirisch inklusive echter Nebenläufigkeit gegen MinIO bewiesen), aber
+   ausschließlich gegen eine lokale MinIO-Testinstanz — es besteht keine
+   Verbindung zu einem echten Cloud-Konto. Ein einzelner Host-Verlust ist
+   weiterhin nicht wiederherstellbar, bis ein echter Bucket verbunden und
+   ein realer Restore-Drill dagegen gefahren wurde.
 2. **Getrennte DB-Rolle für Runtime vs. Migration/Restore.** Aktuell eine
    einzige DB-Rolle für alles.
-3. **Backup-Scheduler und Key-Rotation für den verschlüsselten Pfad.**
-   Stage 2B1 liefert bewusst nur die Mechanik (Create/Verify/Restore/Drill),
-   nicht deren automatisierten Zeitplan oder eine Rotationsstrategie für
-   `BACKUP_ENCRYPTION_KEY_B64`/`_KEY_ID`.
+3. **Backup-/Upload-Scheduler und Key-Rotation.** Weder Stage 2B1 noch
+   Stage 2B2A liefern einen automatisierten Zeitplan oder eine
+   Rotationsstrategie für `BACKUP_ENCRYPTION_KEY_B64`/`_KEY_ID` oder die
+   S3-Zugangsdaten — beide Phasen liefern bewusst nur die jeweilige Mechanik
+   (Create/Verify/Restore/Drill bzw. Upload/List/Download/Verify/Drill/Retention).
 
 Diese Punkte sind bewusst als *eine* zusammenhängende „Backup-/DB-Härtung"-
-Fortsetzung zu verstehen (nicht Gegenstand von Stage 2B1, siehe dessen
-Abgrenzung), da sie alle denselben operativen Bereich betreffen und gemeinsam
-die Backup-/Restore-Infrastruktur produktionsreif machen.
+Fortsetzung zu verstehen (nicht Gegenstand von Stage 2B1/2B2A, siehe deren
+jeweilige Abgrenzung), da sie alle denselben operativen Bereich betreffen und
+gemeinsam die Backup-/Restore-Infrastruktur produktionsreif machen.
 
 ## Warum weiterhin operativ vor funktional
 
@@ -67,8 +77,11 @@ die Backup-/Restore-Infrastruktur produktionsreif machen.
   Betriebssicherheit für den gesamten Pilotbetrieb, nicht eine einzelne
   Nutzergruppe.
 - Ein verschlüsseltes, aber ausschließlich lokal gespeichertes Backup schützt
-  nicht gegen den Verlust des Hosts selbst — Off-host-Kopie bleibt deshalb
-  der unmittelbar nächste, am stärksten verbleibende Single-Point-of-Failure.
+  nicht gegen den Verlust des Hosts selbst. Die Upload-/Download-Mechanik
+  dafür ist seit Stage 2B2A fertig und automatisiert getestet — es fehlt nur
+  noch die Verbindung zu einem echten Bucket (Stage 2B2B), was den
+  verbleibenden Aufwand hier deutlich kleiner macht als die übrigen zwei
+  Punkte, aber der Single-Point-of-Failure bleibt bis dahin real bestehen.
 
 ## Falls stattdessen funktional priorisiert werden soll
 
@@ -100,8 +113,9 @@ nächste Auftrag ausdrücklich ausschließen:
 - jede Änderung am bereits stabilen, getesteten Feedback-Datenmodell aus
   Stage 1B.2B2B, am SMTP-Adapter-Vertrag aus Stage 2A und am
   `.ftbackup`-Containerformat/den Restore-Guards/dem
-  `BACKUP_RESTORE_ENABLED`-Freigabemodell aus Stage 2B1 (alle bleiben außer
-  bei expliziter neuer Freigabe unverändert),
+  `BACKUP_RESTORE_ENABLED`-Freigabemodell aus Stage 2B1 sowie am
+  Objektpfad-/Metadaten-/Remote-Freigabemodell aus Stage 2B2A (alle bleiben
+  außer bei expliziter neuer Freigabe unverändert),
 - die in Stage 1B.2B2B Abschnitt „Klare Grenze zu späteren Phasen" sowie in
   Stage 2A Abschnitt „Nicht enthalten" aufgeführten Themen (Chat,
   Reaktionen, KI-Feedback, Analytics-Dashboard, Churn-Risk, Körpergewicht/

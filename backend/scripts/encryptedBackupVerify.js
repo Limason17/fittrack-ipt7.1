@@ -83,6 +83,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+    hashingDiscardSink,
     resolveBackupFile,
     main,
     verifyEncryptedBackup
