@@ -224,6 +224,20 @@ Im Windows Task Scheduler zeigt die Action beispielsweise auf `powershell.exe` m
 
 ## Off-host-Kopie als nachgelagerter Adapter
 
+> **Korrektur (Stage 2B2A):** Der unten beschriebene Adapter-Entwurf bezog
+> sich auf den unverschlüsselten Stage-0C-Pfad und wurde nie implementiert.
+> Da dieser Pfad seit der Stage-2B1-Release-Gate-Härtung in Produktion
+> ohnehin gesperrt ist (siehe Korrekturhinweis am Dokumentanfang), ist er
+> auch als Ziel für eine Off-host-Kopie nicht mehr relevant. Der tatsächlich
+> implementierte, produktionsfähige Off-host-Pfad lädt ausschließlich
+> bereits verschlüsselte `.ftbackup`-Dateien hoch (`db:backup:remote:upload`
+> u. a.) und ist in `docs/STAGE_2B2A_S3_OFFHOST_BACKUPS.md` vollständig
+> dokumentiert. **Auch dieser neue Pfad ist bislang nur gegen eine lokale
+> MinIO-Testinstanz verifiziert — es besteht keine Verbindung zu einem
+> echten externen Bucket** (das bleibt Stufe 2B2B). Der folgende Abschnitt
+> bleibt als historischer Entwurf für den Legacy-Pfad stehen, ist aber
+> **nicht** die aktuelle Off-host-Strategie.
+
 Der aktuelle Stage-0C-Code erstellt und verwaltet lokale externe Backup-Paare; ein Upload-Adapter ist noch nicht implementiert. Der dokumentierte nächste Schritt beginnt **erst nach** lokalem Exitcode `0`, `BACKUP_CREATED`, vollständigem Manifest-/Hash-Nachweis und erfolgreichem `db:backup:status`:
 
 1. Genau das neue `.sql.gz` und sein `.manifest.json` als unveränderliches Paar auswählen.

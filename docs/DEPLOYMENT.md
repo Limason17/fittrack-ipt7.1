@@ -696,7 +696,10 @@ Zusätzliche Stage-2A-Smokes nach Freigabe:
 Stufe 2B1 liefert verschlüsselte Datenbank-Backups mit verifiziertem
 Restore-Drill (siehe `STAGE_2B1_ENCRYPTED_BACKUP_RESTORE.md` für das
 vollständige Threat Model, Format und alle Guards). Keine neue Migration,
-kein neues Anwendungsschema, keine Off-host-Speicherung, kein Scheduler.
+kein neues Anwendungsschema, kein Scheduler. Off-host-Speicherung ist seit
+Stufe 2B2A als S3-kompatibler Upload/Download-Pfad vorhanden (siehe unten) —
+bislang jedoch ausschließlich gegen eine lokale MinIO-Testinstanz verifiziert,
+nicht gegen einen echten externen Bucket (das bleibt Stufe 2B2B).
 
 **Release-Gate-Härtung (Folge-Commit):** Der alte, unverschlüsselte
 Backup-Pfad (`db:backup`/`db:backup:daily`) ist seither in Produktion
@@ -767,3 +770,73 @@ Dump-/Restore-Benutzer — keiner dieser Punkte ist Teil dieser Phase.
       danach vollständig entfernt
 - [ ] `.env.example` enthält ausschließlich abgelehnte Platzhalter für alle
       Backup-/Restore-/Timeout-Variablen, keine echten Schlüssel
+
+## Ergänzung für Stufe 2B2A
+
+Stufe 2B2A liefert einen providerneutralen, S3-kompatiblen Off-host-Speicher
+für bereits verschlüsselte `.ftbackup`-Dateien (siehe
+`STAGE_2B2A_S3_OFFHOST_BACKUPS.md` für Threat Model, Objektpfad und alle
+Guards). **Bislang ausschließlich gegen eine lokale MinIO-Testinstanz mit
+synthetischen Zugangsdaten verifiziert — kein echter externer Cloud-Bucket
+wurde eingerichtet oder verbunden.** Keine neue Migration, kein neues
+Anwendungsschema, kein echter Scheduler, keine Key-Rotation.
+
+**Neue Variablen, ausschließlich für `db:backup:remote:*` — nie vom
+laufenden Anwendungsserver gelesen:**
+
+| Variable | Erforderlich | Bedeutung und Grenze |
+| --- | --- | --- |
+| `BACKUP_REMOTE_ENABLED` | ja, für alle Remote-Befehle | Muss exakt `true` sein — einziger Aktivierungsschalter |
+| `BACKUP_REMOTE_PROVIDER` | ja | Nur `s3` unterstützt |
+| `BACKUP_S3_ENDPOINT` | ja | HTTPS in Produktion zwingend, HTTP nur für expliziten Loopback-Endpoint außerhalb Produktion |
+| `BACKUP_S3_REGION` | ja | 1–32 Zeichen, Kleinbuchstaben/Ziffern/Bindestrich |
+| `BACKUP_S3_BUCKET` | ja | Striktes S3-Namensschema, bekannte Platzhalter abgelehnt |
+| `BACKUP_S3_PREFIX` | ja | Normalisierter Segmentpfad, kein `..`, kein Backslash |
+| `BACKUP_S3_ACCESS_KEY_ID` / `BACKUP_S3_SECRET_ACCESS_KEY` | ja, zusammen | Nie `AWS_ACCESS_KEY_ID`-Fallback, nie einzeln gesetzt |
+| `BACKUP_S3_SESSION_TOKEN` | nein | Nur bei temporären/STS-Zugangsdaten |
+| `BACKUP_S3_FORCE_PATH_STYLE` | nein | Strikt `true`/`false`, Standard `false` |
+| `BACKUP_S3_UPLOAD_TIMEOUT_MS` / `BACKUP_S3_DOWNLOAD_TIMEOUT_MS` | nein | Je 5s–1h, Standard 10 min |
+| `BACKUP_S3_OPERATION_TIMEOUT_MS` | nein | 1s–2min, Standard 15s (Preflight/Head/List/Delete) |
+| `BACKUP_S3_REQUIRE_VERSIONING` / `BACKUP_S3_REQUIRE_OBJECT_LOCK` | nein | Bei `true` fail-closed, falls Provider es nicht bestätigt |
+| `BACKUP_S3_SERVER_SIDE_ENCRYPTION` | nein | `none`/`AES256`/`aws:kms`, ergänzt Stufe-2B1-Verschlüsselung, ersetzt sie nie |
+| `BACKUP_S3_KMS_KEY_ID` | nur bei `aws:kms` | KMS-Schlüssel-ID, darf geloggt werden |
+| `BACKUP_REMOTE_RETENTION_APPLY` | nein | Muss exakt `true` sein, um überhaupt löschen zu dürfen |
+| `FITTRACK_REMOTE_RETENTION_BUCKET_ACK` / `..._PREFIX_ACK` | ja, für Retention-Apply | Müssen exakt Bucket/Prefix entsprechen |
+| `FITTRACK_REMOTE_RETENTION_MAX_DELETE` | ja, für Retention-Apply | Harte Obergrenze; überschreitet der Plan sie, wird nichts gelöscht |
+
+Vor Produktionseinsatz zusätzlich erforderlich (siehe „Verbleibende Grenzen"
+in `STAGE_2B2A_S3_OFFHOST_BACKUPS.md`): ein echter, von Stufe 2B2B
+eingerichteter und verifizierter Cloud-Bucket, ein Scheduler für
+`db:backup:remote:upload`, ein dokumentierter Zugangsdaten-Lebenszyklus
+sowie permanentes Versions-Purging bei aktivem Bucket-Versioning — keiner
+dieser Punkte ist Teil dieser Phase.
+
+### Zusätzliche Release-Checks
+
+- [ ] `readBackupRemoteConfig` lehnt fehlende/ungültige/Platzhalter-Werte für
+      Endpoint, Region, Bucket, Prefix und Credentials ab, ohne je auf
+      `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` zurückzufallen
+- [ ] Upload verlangt zwingend vollständige, erfolgreiche Stufe-2B1-Verifikation
+      der lokalen Datei, bevor irgendein Netzwerkzugriff erfolgt
+- [ ] ein bereits existierendes Remote-Objekt wird nie überschrieben
+      (`HeadObject`-Vorabprüfung, `REMOTE_OBJECT_ALREADY_EXISTS`)
+- [ ] Download/Verify prüfen `ciphertext-sha256` gegen die tatsächlich
+      empfangenen Bytes und führen danach die volle Stufe-2B1-GCM-Authentifizierung
+      aus, bevor eine lokale Datei als vertrauenswürdig gilt
+- [ ] ein manipuliertes Remote-Objekt (auch mit passend neu berechnetem Hash)
+      scheitert zuverlässig an der GCM-Authentifizierung
+- [ ] unerkannte Objekte im Prefix werden nie automatisch gelöscht (weder von
+      der Inventarliste noch von der Retention-Planung/-Anwendung)
+- [ ] Retention-Apply verlangt alle drei expliziten Bestätigungen
+      (Enable-Flag, Bucket-Ack, Prefix-Ack) plus eine harte
+      Maximal-Löschanzahl
+- [ ] echte Upload-/Download-Timeouts greifen zuverlässig und brechen
+      Multipart-Uploads sauber ab (`@aws-sdk/lib-storage`)
+- [ ] realer Remote-Restore-Drill gegen lokale MinIO- und MySQL-Instanzen
+      grün: Backup erstellt, hochgeladen, heruntergeladen, vollständig
+      verifiziert, in eine disposable Datenbank restauriert, Migration Doctor
+      `ready`, Tabellen-/Zeilenzahlvergleich stimmt, lokale und Remote-Artefakte
+      danach vollständig entfernt — ein Cleanup-Fehler darf dabei nie als
+      Erfolg gemeldet werden
+- [ ] `.env.example` enthält ausschließlich abgelehnte Platzhalter für alle
+      neuen S3-/Retention-Variablen, keine echten Zugangsdaten
