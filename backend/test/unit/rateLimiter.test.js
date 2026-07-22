@@ -63,6 +63,51 @@ test("login and registration windows are independent and clients do not block ea
     assert.equal(headers["RateLimit-Remaining"], "0");
 });
 
+test("Stage 3B1: passwordChange, emailChangeRequest and emailChangeConfirm limiters exist and are independent of login/registration", () => {
+    const limiters = createAuthRateLimiters({
+        now: () => 1000,
+        passwordChangeMax: 1,
+        emailChangeRequestMax: 1,
+        emailChangeConfirmMax: 1,
+        passwordChangeWindowMs: 60_000,
+        emailChangeRequestWindowMs: 60_000,
+        emailChangeConfirmWindowMs: 60_000
+    });
+    assert.equal(typeof limiters.passwordChange, "function");
+    assert.equal(typeof limiters.emailChangeRequest, "function");
+    assert.equal(typeof limiters.emailChangeConfirm, "function");
+
+    const res = { setHeader() {} };
+    const outcomes = [];
+    limiters.passwordChange(request("client-a"), res, (error) => outcomes.push(error || null));
+    limiters.passwordChange(request("client-a"), res, (error) => outcomes.push(error || null));
+    limiters.emailChangeRequest(request("client-a"), res, (error) => outcomes.push(error || null));
+    limiters.emailChangeConfirm(request("client-a"), res, (error) => outcomes.push(error || null));
+
+    assert.equal(outcomes[0], null);
+    assert.equal(outcomes[1].status, 429);
+    assert.equal(outcomes[2], null, "emailChangeRequest limiter must not share passwordChange state");
+    assert.equal(outcomes[3], null, "emailChangeConfirm limiter must not share passwordChange state");
+});
+
+test("Stage 3B1: account rate limiter env var overrides are honoured with sane defaults", () => {
+    const limiters = createAuthRateLimiters({
+        env: {
+            AUTH_PASSWORD_CHANGE_RATE_LIMIT_MAX: "2",
+            AUTH_EMAIL_CHANGE_RATE_LIMIT_MAX: "3"
+        },
+        now: () => 1000
+    });
+    const res = { setHeader() {} };
+    const outcomes = [];
+    limiters.passwordChange(request("client-a"), res, (error) => outcomes.push(error || null));
+    limiters.passwordChange(request("client-a"), res, (error) => outcomes.push(error || null));
+    limiters.passwordChange(request("client-a"), res, (error) => outcomes.push(error || null));
+    assert.equal(outcomes[0], null);
+    assert.equal(outcomes[1], null);
+    assert.equal(outcomes[2].status, 429);
+});
+
 test("429 responses retain request ID and retry metadata", () => {
     const headers = {};
     const res = {

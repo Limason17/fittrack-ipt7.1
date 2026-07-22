@@ -83,12 +83,57 @@ function createAuthRateLimiters(options = {}) {
         5,
         "AUTH_REGISTRATION_RATE_LIMIT_MAX"
     );
+    const passwordChangeWindowMs = options.passwordChangeWindowMs ?? positiveInteger(
+        env.AUTH_PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS,
+        60 * 60 * 1000,
+        "AUTH_PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS"
+    );
+    const passwordChangeMax = options.passwordChangeMax ?? positiveInteger(
+        env.AUTH_PASSWORD_CHANGE_RATE_LIMIT_MAX,
+        5,
+        "AUTH_PASSWORD_CHANGE_RATE_LIMIT_MAX"
+    );
+    const emailChangeRequestWindowMs = options.emailChangeRequestWindowMs ?? positiveInteger(
+        env.AUTH_EMAIL_CHANGE_RATE_LIMIT_WINDOW_MS,
+        60 * 60 * 1000,
+        "AUTH_EMAIL_CHANGE_RATE_LIMIT_WINDOW_MS"
+    );
+    const emailChangeRequestMax = options.emailChangeRequestMax ?? positiveInteger(
+        env.AUTH_EMAIL_CHANGE_RATE_LIMIT_MAX,
+        5,
+        "AUTH_EMAIL_CHANGE_RATE_LIMIT_MAX"
+    );
+    const emailChangeConfirmWindowMs = options.emailChangeConfirmWindowMs ?? positiveInteger(
+        env.AUTH_EMAIL_CHANGE_CONFIRM_RATE_LIMIT_WINDOW_MS,
+        15 * 60 * 1000,
+        "AUTH_EMAIL_CHANGE_CONFIRM_RATE_LIMIT_WINDOW_MS"
+    );
+    const emailChangeConfirmMax = options.emailChangeConfirmMax ?? positiveInteger(
+        env.AUTH_EMAIL_CHANGE_CONFIRM_RATE_LIMIT_MAX,
+        20,
+        "AUTH_EMAIL_CHANGE_CONFIRM_RATE_LIMIT_MAX"
+    );
 
     return {
         login: createFixedWindowRateLimiter({ windowMs: loginWindowMs, max: loginMax, now }),
         registration: createFixedWindowRateLimiter({
             windowMs: registrationWindowMs,
             max: registrationMax,
+            now
+        }),
+        passwordChange: createFixedWindowRateLimiter({
+            windowMs: passwordChangeWindowMs,
+            max: passwordChangeMax,
+            now
+        }),
+        emailChangeRequest: createFixedWindowRateLimiter({
+            windowMs: emailChangeRequestWindowMs,
+            max: emailChangeRequestMax,
+            now
+        }),
+        emailChangeConfirm: createFixedWindowRateLimiter({
+            windowMs: emailChangeConfirmWindowMs,
+            max: emailChangeConfirmMax,
             now
         })
     };

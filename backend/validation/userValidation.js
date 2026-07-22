@@ -48,6 +48,13 @@ function validatePassword(value, { enforceMinimum }) {
     return value;
 }
 
+function requiredRawString(value, field) {
+    if (typeof value !== "string" || value.length === 0) {
+        invalid(field, "This field is required.");
+    }
+    return value;
+}
+
 function allowedPreference(value, field, allowed, fallback) {
     if (value === undefined || value === null || value === "") {
         return fallback;
@@ -88,10 +95,51 @@ function validateLoginPayload(body) {
     };
 }
 
+// Reuses the exact same password policy as registration (validatePassword)
+// rather than a parallel "account" password policy - Stage 3A's audit found
+// no dedicated PASSWORD_POLICY_VIOLATION code anywhere in the codebase, and
+// registration itself already reports policy violations as the generic
+// VALIDATION_ERROR envelope. A change-password endpoint following a
+// different contract for the identical underlying rule would be a needless
+// inconsistency, not a security improvement.
+function validateChangePasswordPayload(body) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+        invalid("body", "A JSON object is required.");
+    }
+    return {
+        currentPassword: requiredRawString(body.currentPassword, "currentPassword"),
+        newPassword: validatePassword(body.newPassword, { enforceMinimum: true }),
+        newPasswordConfirmation: requiredRawString(body.newPasswordConfirmation, "newPasswordConfirmation")
+    };
+}
+
+function validateEmailChangeRequestPayload(body) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+        invalid("body", "A JSON object is required.");
+    }
+    return {
+        newEmail: validateEmail(body.newEmail),
+        currentPassword: requiredRawString(body.currentPassword, "currentPassword")
+    };
+}
+
+function validateEmailChangeConfirmPayload(body) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+        invalid("body", "A JSON object is required.");
+    }
+    return {
+        token: requiredRawString(body.token, "token")
+    };
+}
+
 module.exports = {
     EMAIL_PATTERN,
     LIMITS,
+    validateChangePasswordPayload,
     validateEmail,
+    validateEmailChangeConfirmPayload,
+    validateEmailChangeRequestPayload,
     validateLoginPayload,
+    validatePassword,
     validateRegistrationPayload
 };
