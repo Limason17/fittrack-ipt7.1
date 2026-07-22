@@ -224,6 +224,21 @@ const routes = [
         },
     },
     {
+        path: '/account/email-change/:token',
+        name: 'account-email-change-confirm',
+        component: () => import('../views/EmailChangeConfirmView.vue'),
+        // Deliberately no requiresAuth: the backend confirmation endpoint is
+        // public and token-only (see backend/routes/accountRouter.js) since
+        // the link is delivered to the new e-mail address, which may be
+        // opened in a browser session that isn't logged into FitTrack at
+        // all. sensitiveHistory still applies so the token never lingers in
+        // the app shell/sidebar the way an authenticated route's chrome would.
+        meta: {
+            sensitiveHistory: true,
+            titleKey: 'routing.titles.accountEmailChangeConfirm',
+        },
+    },
+    {
         path: '/:pathMatch(.*)*',
         name: 'not-found',
         component: () => import('../views/NotFoundView.vue'),
