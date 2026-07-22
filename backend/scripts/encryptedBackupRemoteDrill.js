@@ -1,17 +1,33 @@
+// Stage 2B2A full remote restore drill: create -> local verify -> upload to
+// S3-compatible storage -> remote HeadObject/metadata check -> remote
+// inventory check -> download into a fresh directory -> ciphertext-sha256
+// check -> full Stage 2B1 GCM verify -> restore *from the downloaded copy*
+// (never the original local file - this is what actually proves the round
+// trip) into a disposable database -> Migration Doctor -> table/row
+// comparison against the real source database. Cleanup always runs in
+// `finally`; unlike the local drill (encryptedBackupDrill.js), a cleanup
+// failure here is never allowed to present as success - see the explicit
+// check after the try/finally block below.
 const crypto = require("node:crypto");
 const fsPromises = require("node:fs/promises");
 const path = require("node:path");
 const mysql = require("mysql2");
 
 const db = require("../config/db");
+const { readBackupRemoteConfig } = require("../config/backupRemoteConfig");
 const { createStructuredLogger } = require("../startup/logger");
 const { safetyError } = require("./databaseSafety");
+const { backupCliExitCode } = require("./backupExitCodes");
 const { createEncryptedBackup } = require("./encryptedBackupCreate");
 const { verifyEncryptedBackup } = require("./encryptedBackupVerify");
 const { restoreEncryptedBackup } = require("./encryptedBackupRestore");
+const { uploadEncryptedBackup } = require("./encryptedBackupRemoteUpload");
+const { fetchAndVerifyRemoteBackup } = require("./encryptedBackupRemoteFetch");
+const { listRemoteBackups } = require("./encryptedBackupRemoteList");
+const { createS3Client, deleteObject, headObject, remoteError } = require("./backupRemoteStorage");
+const { snapshotTableCounts } = require("./encryptedBackupDrill");
 const { createMigrationRuntime } = require("./migrationRuntime");
 const migrateDoctor = require("./migrateDoctor");
-const { backupCliExitCode } = require("./backupExitCodes");
 
 const NOOP_LOGGER = { info() {}, warn() {}, error() {} };
 
@@ -20,51 +36,24 @@ function randomToken(bytes = 6) {
 }
 
 // Matches databaseSafety.js#isDisposableDatabaseName: fittrack_restore_...
-function drillDatabaseName() {
-    return `fittrack_restore_stage2b1_${randomToken()}`;
+function remoteDrillDatabaseName() {
+    return `fittrack_restore_stage2b2a_${randomToken()}`;
 }
 
-async function listTables(pool, database) {
-    const [rows] = await pool.promise().query(
-        `SELECT TABLE_NAME AS name
-         FROM information_schema.TABLES
-         WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
-         ORDER BY TABLE_NAME`,
-        [database]
-    );
-    return rows.map((row) => row.name);
-}
-
-async function countRows(pool, database, tableName) {
-    if (!/^[A-Za-z0-9_$-]+$/.test(database || "")) {
-        throw safetyError("DRILL_TABLE_NAME_INVALID", "Encountered an unsafe database name during the drill.");
-    }
-    if (!/^[A-Za-z0-9_$]+$/.test(tableName || "")) {
-        throw safetyError("DRILL_TABLE_NAME_INVALID", "Encountered an unsafe table name during the drill.");
-    }
-    const [rows] = await pool.promise().query(
-        `SELECT COUNT(*) AS total FROM ${mysql.escapeId(database)}.${mysql.escapeId(tableName)}`
-    );
-    return Number(rows[0].total);
-}
-
-async function snapshotTableCounts(pool, database) {
-    const tables = await listTables(pool, database);
-    const counts = {};
-    for (const table of tables) {
-        counts[table] = await countRows(pool, database, table);
-    }
-    return { tables, counts };
-}
-
-async function runRestoreDrill({ env = process.env } = {}) {
+async function runRemoteRestoreDrill({ env = process.env } = {}) {
     const startedAt = Date.now();
+    const remoteConfig = readBackupRemoteConfig(env);
+    const client = createS3Client(remoteConfig);
+
     const sourceConfig = db.readDatabaseConfig(env);
     const sourcePool = db.createPool(sourceConfig);
 
     let backupPath;
+    let downloadDirectory;
+    let remoteKey;
     let targetDatabase;
     let targetPool;
+    let result;
     const cleanupNotes = [];
 
     try {
@@ -77,16 +66,39 @@ async function runRestoreDrill({ env = process.env } = {}) {
             env: { ...env, FITTRACK_BACKUP_VERIFY_FILE: backupPath }
         });
 
-        // The drill uses its own narrowly-scoped, explicit restore
-        // authorization: BACKUP_RESTORE_ENABLED plus an acknowledgement
-        // bound to the exact disposable target name it just generated -
-        // never NODE_ENV, which is not a restore authorization mechanism.
-        targetDatabase = drillDatabaseName();
+        const uploadReport = await uploadEncryptedBackup({
+            env: { ...env, FITTRACK_BACKUP_REMOTE_FILE: backupPath }
+        });
+        remoteKey = uploadReport.key;
+
+        const head = await headObject({ client, remoteConfig, key: remoteKey });
+        if (head.ContentLength !== uploadReport.bytes) {
+            throw remoteError("REMOTE_METADATA_INCONSISTENT", "Remote HeadObject size does not match the upload report.");
+        }
+
+        const inventory = await listRemoteBackups({ env });
+        const inventoryEntry = inventory.entries.find((entry) => entry.key === remoteKey);
+        if (!inventoryEntry || !inventoryEntry.recognized) {
+            throw remoteError("REMOTE_METADATA_INCONSISTENT", "Uploaded object did not appear as a recognized entry in the remote inventory.");
+        }
+
+        downloadDirectory = path.join(path.dirname(backupPath), `remote-drill-download-${randomToken(4)}`);
+        const downloadReport = await fetchAndVerifyRemoteBackup({
+            env,
+            key: remoteKey,
+            destinationDirectory: downloadDirectory,
+            keepFile: true
+        });
+
+        // The critical proof: restore from the *downloaded* copy, never the
+        // original local file - this is what actually exercises the full
+        // off-host round trip rather than just the local pipeline again.
+        targetDatabase = remoteDrillDatabaseName();
         const restoreReport = await restoreEncryptedBackup({
             env: {
                 ...env,
                 BACKUP_RESTORE_ENABLED: "true",
-                FITTRACK_RESTORE_FILE: backupPath,
+                FITTRACK_RESTORE_FILE: downloadReport.localPath,
                 FITTRACK_RESTORE_TARGET_DATABASE: targetDatabase,
                 FITTRACK_RESTORE_ACK: `restore:${targetDatabase}`
             }
@@ -94,7 +106,6 @@ async function runRestoreDrill({ env = process.env } = {}) {
 
         const targetConfig = { ...sourceConfig, database: targetDatabase };
         targetPool = db.createPool(targetConfig);
-
         const doctorRuntime = createMigrationRuntime({ pool: targetPool, logger: NOOP_LOGGER });
         const doctorReport = await migrateDoctor.main({
             env: { NODE_ENV: "test" },
@@ -133,19 +144,25 @@ async function runRestoreDrill({ env = process.env } = {}) {
             );
         }
 
-        return {
+        result = {
             result: "ok",
             sourceDatabase: sourceConfig.database,
             targetDatabase,
+            bucket: remoteConfig.bucket,
+            remoteKey,
             backup: {
                 filename: createReport.filename,
                 bytes: createReport.bytes,
                 ciphertextSha256: createReport.ciphertextSha256,
                 keyId: createReport.keyId
             },
-            verify: {
+            localVerify: {
                 logicalBytes: verifyReport.logicalBytes,
                 logicalSha256: verifyReport.logicalSha256
+            },
+            remoteVerify: {
+                bytes: downloadReport.bytes,
+                ciphertextSha256: downloadReport.ciphertextSha256
             },
             restore: {
                 restoredTables: restoreReport.restoredTables
@@ -183,20 +200,48 @@ async function runRestoreDrill({ env = process.env } = {}) {
             try {
                 await fsPromises.rm(backupPath, { force: true });
             } catch (error) {
-                cleanupNotes.push({ step: "remove_backup_artifact", error: error.message });
+                cleanupNotes.push({ step: "remove_local_backup_artifact", error: error.message });
+            }
+        }
+        if (downloadDirectory) {
+            try {
+                await fsPromises.rm(downloadDirectory, { recursive: true, force: true });
+            } catch (error) {
+                cleanupNotes.push({ step: "remove_downloaded_artifact", error: error.message });
+            }
+        }
+        if (remoteKey) {
+            try {
+                await deleteObject({ client, remoteConfig, key: remoteKey });
+            } catch (error) {
+                cleanupNotes.push({ step: "delete_remote_test_object", error: error.message });
             }
         }
         if (cleanupNotes.length > 0) {
-            createStructuredLogger().error("backup_restore_drill_cleanup_incomplete", { cleanupNotes });
+            createStructuredLogger().error("remote_backup_drill_cleanup_incomplete", { cleanupNotes });
         }
     }
+
+    // A cleanup failure must never present as a successful drill, even
+    // though every core step above already succeeded - this is stricter
+    // than the local drill (encryptedBackupDrill.js), which only logs
+    // cleanup problems, because a remote test object left behind is a real,
+    // billable, off-host artifact rather than a purely local one.
+    if (cleanupNotes.length > 0) {
+        throw remoteError(
+            "REMOTE_DRILL_CLEANUP_FAILED",
+            `Remote drill cleanup did not fully succeed: ${cleanupNotes.map((note) => note.step).join(", ")}.`
+        );
+    }
+    return result;
 }
 
 async function main() {
-    const report = await runRestoreDrill();
-    createStructuredLogger().info("restore_drill_succeeded", {
+    const report = await runRemoteRestoreDrill();
+    createStructuredLogger().info("remote_backup_drill_succeeded", {
         sourceDatabase: report.sourceDatabase,
         targetDatabase: report.targetDatabase,
+        bucket: report.bucket,
         tablesCompared: report.tablesCompared,
         durationMs: report.durationMs
     });
@@ -205,16 +250,13 @@ async function main() {
 
 if (require.main === module) {
     main().catch((error) => {
-        createStructuredLogger().error("backup_restore_drill_failed", { error });
+        createStructuredLogger().error("remote_backup_drill_failed", { error });
         process.exitCode = backupCliExitCode(error);
     });
 }
 
 module.exports = {
-    countRows,
-    drillDatabaseName,
-    listTables,
     main,
-    runRestoreDrill,
-    snapshotTableCounts
+    remoteDrillDatabaseName,
+    runRemoteRestoreDrill
 };
