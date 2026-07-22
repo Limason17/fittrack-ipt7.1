@@ -21,6 +21,26 @@
 > Diese Empfehlung wurde durch Stage 3A **nicht** rückwirkend umgeschrieben.
 >
 > ---
+>
+> **Nachtrag (2026-07-22, Stage 3B1 Account Self-Service):** Stage 3B1
+> (Konto-Selbstverwaltung, siehe `STAGE_3B1_ACCOUNT_SELF_SERVICE.md`) ist
+> abgeschlossen: Passwortänderung, verifizierte E-Mail-Änderung und
+> zuverlässige Token-Invalidierung (`auth_version`-Claim, Migration 009) sind
+> implementiert und vollständig automatisiert getestet. Von den oben
+> genannten Stage-3A-P1-Punkten sind damit **zwei geschlossen**
+> (Passwort-/E-Mail-Selbstverwaltungs-UI, JWT-Invalidierung nach
+> sicherheitsrelevanten Kontoänderungen). Weiterhin offen und nicht Teil
+> dieser Phase: Einladungs-Resend, JWT-**Refresh** (nur die Invalidierung
+> wurde adressiert, kein Refresh-Token-Mechanismus), Geräte-/
+> Sitzungsübersicht, uneinheitliche Audit-Log-Übersetzung, Rate-Limiting
+> weiterhin pro Prozess (jetzt zusätzlich für die drei neuen
+> Konto-Endpunkte, mit denselben Grenzen wie Login/Registrierung). Die in
+> Stage 3A vorgeschlagene Blockreihenfolge (3B1 → 3B2 Sitzungs-Härtung → 3C
+> UX-Politur → 3D Rate-Limiting/CORS) bleibt unverändert; **Stage 3B2 wurde
+> nicht begonnen.** Stage 2B2B bleibt weiterhin **Deferred until first
+> customer / production deployment** — unverändert durch diese Phase.
+>
+> ---
 
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-

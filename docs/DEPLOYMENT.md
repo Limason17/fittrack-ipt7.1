@@ -853,3 +853,66 @@ dieser Punkte ist Teil dieser Phase.
       Erfolg gemeldet werden
 - [ ] `.env.example` enthält ausschließlich abgelehnte Platzhalter für alle
       neuen S3-/Retention-Variablen, keine echten Zugangsdaten
+
+## Ergänzung für Stufe 3B1
+
+Stufe 3B1 liefert Konto-Selbstverwaltung: Passwortänderung, verifizierte
+E-Mail-Änderung und JWT-Invalidierung nach beiden Vorgängen (siehe
+`STAGE_3B1_ACCOUNT_SELF_SERVICE.md`). **Neue Migration 009** — vor dem Start
+einer neuen Version zwingend anwenden (`npm run db:migrate`), sonst schlägt
+`authMiddleware.js`s neue `auth_version`-Spaltenabfrage fehl.
+
+**Sitzungsverhalten nach dem Deployment:** Jedes vor Migration 009
+ausgestellte JWT hat keinen `authVersion`-Claim und wird beim ersten
+nachfolgenden Request einheitlich mit `401 AUTH_SESSION_INVALIDATED`
+abgelehnt. **Alle aktiven Sitzungen müssen sich nach diesem Deployment
+einmalig neu anmelden** — dies ist beabsichtigt (siehe Migrationsabschnitt
+im Stage-3B1-Dokument), keine Störung, aber sollte vor einem
+Produktions-Rollout an Betroffene kommuniziert werden.
+
+**Keine neue Umgebungsvariable für die Bestätigungs-Basis-URL:**
+E-Mail-Änderungs-Bestätigungslinks verwenden das bereits vorhandene
+`INVITATION_ACCEPT_BASE_URL` weiter (nur ein anderer Pfad). Die
+E-Mail-Zustellung selbst nutzt denselben `INVITATION_EMAIL_PROVIDER=smtp`-
+Opt-in und dieselben `SMTP_*`-Variablen wie Einladungen — keine zusätzliche
+Aktivierung nötig, sobald Stufe 2A bereits konfiguriert ist.
+
+**Neue, optionale Rate-Limit-Variablen** (siehe `backend/.env.example`):
+`AUTH_PASSWORD_CHANGE_RATE_LIMIT_MAX`/`_WINDOW_MS`,
+`AUTH_EMAIL_CHANGE_RATE_LIMIT_MAX`/`_WINDOW_MS`,
+`AUTH_EMAIL_CHANGE_CONFIRM_RATE_LIMIT_MAX`/`_WINDOW_MS` — sinnvolle Defaults
+greifen, wenn nicht gesetzt.
+
+**SMTP-Transport-Sharing:** Bei aktiviertem `INVITATION_EMAIL_PROVIDER=smtp`
+teilen sich Einladungs- und Konto-E-Mail-Versand denselben, einmal
+aufgebauten Nodemailer-Transport (`startup/app.js`s
+`resolveSharedSmtpTransportFactory`) — keine zweite Verbindung zum selben
+Mailserver.
+
+### Zusätzliche Release-Checks
+
+- [ ] Migration 009 angewendet (`npm run db:migrate:status` zeigt `applied`,
+      keine `pending`), Migration Doctor meldet `ready` mit `schemaIssues: 0`
+- [ ] alle aktiven Sitzungen wurden vor/nach dem Deployment-Fenster über die
+      erforderliche einmalige Neuanmeldung informiert
+- [ ] Passwortänderung: falsches aktuelles Passwort, identisches neues
+      Passwort, Bestätigungs-Mismatch, Policy-Verletzung — alle vier
+      Integrationstests grün
+- [ ] altes JWT wird nach Passwortänderung/E-Mail-Bestätigung zuverlässig mit
+      `AUTH_SESSION_INVALIDATED` abgelehnt (nicht mit dem generischen
+      `AUTHENTICATION_REQUIRED`)
+- [ ] E-Mail-Bestätigungsendpunkt bleibt ohne Bearer-Token erreichbar
+      (öffentlich, token-only) — kein Regressionsrisiko durch versehentlich
+      hinzugefügte Auth-Middleware
+- [ ] Replay eines bereits bestätigten/widerrufenen/abgelaufenen Tokens wird
+      mit dem jeweils korrekten Fehlercode abgelehnt, nie stillschweigend
+      erneut verarbeitet
+- [ ] zwei echt gleichzeitige Bestätigungsversuche desselben Tokens: genau
+      einer erfolgreich (Integrationstest mit `Promise.all`)
+- [ ] eine simulierte Zustellfehler-Situation widerruft die betroffene
+      E-Mail-Änderungsanfrage atomar; sie ist danach nicht mehr bestätigbar
+- [ ] Passwort-/Token-Werte erscheinen in keinem geloggten Feld
+      (`password change never appears in the structured request log`)
+- [ ] vollständige bestehende Test-/E2E-Suite bleibt grün, insbesondere
+      `invitationDeliveryComposition.test.js`s „exactly one SMTP transport"-
+      Regressionstest (SMTP-Transport-Sharing darf diesen nicht brechen)
