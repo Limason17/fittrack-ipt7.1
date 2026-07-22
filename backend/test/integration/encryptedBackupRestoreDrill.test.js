@@ -99,7 +99,7 @@ test("a real encrypted backup + restore drill against the disposable source data
     assert.ok(report.restore.restoredTables > 0);
 
     assert.equal(report.migrationDoctor.state, "ready");
-    assert.equal(report.migrationDoctor.summary.applied, 8);
+    assert.equal(report.migrationDoctor.summary.applied, 9);
     assert.equal(report.migrationDoctor.summary.pending, 0);
     assert.equal(report.migrationDoctor.summary.dirty, 0);
     assert.equal(report.migrationDoctor.summary.drift, 0);

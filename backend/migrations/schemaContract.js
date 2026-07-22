@@ -1177,6 +1177,104 @@ const feedbackChecks = [
     )
 );
 
+const accountSelfServiceMigrationId = "009_account_self_service";
+const accountSelfServiceExistingTableElement = { pendingMissingAllowed: false };
+
+const accountSelfServiceUserColumns = [
+    ["users", "auth_version", "int", false],
+    ["users", "email_changed_at", "timestamp(3)", true],
+    ["users", "password_changed_at", "timestamp(3)", true]
+].map(([tableName, columnName, columnType, nullable]) =>
+    column(
+        accountSelfServiceMigrationId,
+        tableName,
+        columnName,
+        columnType,
+        nullable,
+        accountSelfServiceExistingTableElement
+    )
+);
+
+const accountSelfServiceTables = ["user_email_change_requests"].map((name) =>
+    table(accountSelfServiceMigrationId, name)
+);
+
+const accountSelfServiceColumns = [
+    ["user_email_change_requests", "id", "int", false],
+    ["user_email_change_requests", "public_id", "char(36)", false],
+    ["user_email_change_requests", "user_id", "int", false],
+    ["user_email_change_requests", "new_email_normalized", "varchar(254)", false],
+    ["user_email_change_requests", "token_hash", "binary(32)", false],
+    ["user_email_change_requests", "status", "varchar(16)", false],
+    ["user_email_change_requests", "expires_at", "timestamp(3)", false],
+    ["user_email_change_requests", "created_at", "timestamp(3)", false],
+    ["user_email_change_requests", "confirmed_at", "timestamp(3)", true],
+    ["user_email_change_requests", "revoked_at", "timestamp(3)", true]
+].map(([tableName, columnName, columnType, nullable]) =>
+    column(
+        accountSelfServiceMigrationId,
+        tableName,
+        columnName,
+        columnType,
+        nullable,
+        accountSelfServiceExistingTableElement
+    )
+);
+
+const accountSelfServiceIndexes = [
+    ["user_email_change_requests", "PRIMARY", ["id"], true],
+    ["user_email_change_requests", "uq_user_email_change_requests_public_id", ["public_id"], true],
+    ["user_email_change_requests", "uq_user_email_change_requests_token_hash", ["token_hash"], true],
+    [
+        "user_email_change_requests",
+        "idx_user_email_change_requests_user_status",
+        ["user_id", "status"],
+        false
+    ]
+].map(([tableName, indexName, columns, unique]) =>
+    index(
+        accountSelfServiceMigrationId,
+        tableName,
+        indexName,
+        columns,
+        unique,
+        accountSelfServiceExistingTableElement
+    )
+);
+
+const accountSelfServiceForeignKeys = [
+    ["user_email_change_requests", "fk_user_email_change_requests_user", ["user_id"], "users", ["id"], "CASCADE"]
+].map(([
+    tableName,
+    constraintName,
+    columns,
+    referencedTable,
+    referencedColumns,
+    deleteRule
+]) =>
+    foreignKey(
+        accountSelfServiceMigrationId,
+        tableName,
+        constraintName,
+        columns,
+        referencedTable,
+        referencedColumns,
+        deleteRule,
+        accountSelfServiceExistingTableElement
+    )
+);
+
+const accountSelfServiceChecks = [
+    ["user_email_change_requests", "chk_user_email_change_requests_status"]
+].map(([tableName, constraintName]) =>
+    checkConstraint(
+        accountSelfServiceMigrationId,
+        tableName,
+        constraintName,
+        accountSelfServiceExistingTableElement
+    )
+);
+
 const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
     {
         migrationId: "001_initial_schema",
@@ -1237,6 +1335,17 @@ const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
             ...feedbackIndexes,
             ...feedbackForeignKeys,
             ...feedbackChecks
+        ]
+    },
+    {
+        migrationId: accountSelfServiceMigrationId,
+        checks: [
+            ...accountSelfServiceUserColumns,
+            ...accountSelfServiceTables,
+            ...accountSelfServiceColumns,
+            ...accountSelfServiceIndexes,
+            ...accountSelfServiceForeignKeys,
+            ...accountSelfServiceChecks
         ]
     }
 ]);

@@ -126,7 +126,8 @@ test(
                     "005_studio_tenancy_and_rbac",
                     "006_coach_member_training",
                     "007_studio_workout_execution",
-                    "008_studio_workout_session_feedback"
+                    "008_studio_workout_session_feedback",
+                    "009_account_self_service"
                 ]
             );
 
@@ -147,7 +148,8 @@ test(
                 "005_studio_tenancy_and_rbac",
                 "006_coach_member_training",
                 "007_studio_workout_execution",
-                "008_studio_workout_session_feedback"
+                "008_studio_workout_session_feedback",
+                "009_account_self_service"
             ]);
 
             const [tables] = await pool.promise().query(
@@ -177,6 +179,7 @@ test(
                     "studio_workout_session_sets",
                     "studio_workout_sessions",
                     "studios",
+                    "user_email_change_requests",
                     "users",
                     "workout_exercises",
                     "workouts"
@@ -212,7 +215,7 @@ test(
                  FROM schema_migrations
                  ORDER BY migration_id`
             );
-            assert.equal(ledgerSnapshot.length, 8);
+            assert.equal(ledgerSnapshot.length, 9);
             assert.ok(ledgerSnapshot.every((row) => row.status === "applied"));
 
             const secondRun = await runner.migrate();
@@ -389,7 +392,8 @@ test(
                 "005_studio_tenancy_and_rbac",
                 "006_coach_member_training",
                 "007_studio_workout_execution",
-                "008_studio_workout_session_feedback"
+                "008_studio_workout_session_feedback",
+                "009_account_self_service"
             ]);
             const afterStudioMigration = await personalDataSnapshot(sql);
             assert.deepEqual(
