@@ -1,5 +1,27 @@
 # Empfehlung für die nächste Entwicklungsphase
 
+> **Nachtrag (2026-07-22, Stage 3A Local Pilot Readiness Audit, Commit `dc12b10`):**
+> Ein vollständiges, evidenzbasiertes Audit des lokalen Produktzustands wurde
+> durchgeführt — siehe `STAGE_3A_LOCAL_PILOT_READINESS_AUDIT.md`. Ergebnis:
+> **keine P0-Befunde**, Gesamtklassifikation **lokal pilotfähig**. Die dort
+> identifizierten P1-Befunde ergänzen und verfeinern die operativen Punkte
+> dieses Dokuments um konkrete produktseitige Lücken: kein Passwort-/
+> E-Mail-Selbstverwaltungs-UI, kein Einladungs-Resend, kein JWT-Refresh/
+> Logout-Revocation, uneinheitliche Audit-Log-Übersetzung, Rate-Limiting
+> weiterhin nur auf Login/Registrierung. Die dort vorgeschlagene, feiner
+> geschnittene Blockreihenfolge (Stage 3B1 Konto-Selbstverwaltung, Stage 3B2
+> Sitzungs-Härtung, Stage 3C UX-Politur, Stage 3D Rate-Limiting/CORS) ist als
+> Ergänzung zur „Backup-/DB-Härtung"-Fortsetzung unten zu verstehen, nicht als
+> Ersatz — beide Empfehlungen bestehen nebeneinander, bis der Auftraggeber
+> explizit priorisiert. **Ausdrücklich bestätigt: Stage 2B2B (echter
+> externer Off-host-Bucket) ist zurückgestellt, bis ein erster zahlender
+> Kunde oder eine konkrete Produktions-Hosting-Entscheidung vorliegt — sie
+> ist kein lokaler Pilot-Blocker und wurde in Stage 3A entsprechend nicht als
+> P0/P1-Produktlücke, sondern als „Deferred until hosting" eingestuft.**
+> Diese Empfehlung wurde durch Stage 3A **nicht** rückwirkend umgeschrieben.
+>
+> ---
+
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-
 Ergebnisansicht/Feedback/Footer-Entfernung), Stage 2A (produktionsfähiger
@@ -44,7 +66,10 @@ Punkte sind inzwischen erfüllt:
 **Die verbleibenden operativen Pilot-Blocker, in dieser Reihenfolge:**
 
 1. **Stage 2B2B: echten Off-host-Bucket einrichten und verifizieren.**
-   Stage 2B2A liefert die vollständige, automatisiert getestete
+   **Status: Deferred until first customer / production deployment** (siehe
+   Nachtrag oben und `STAGE_3A_LOCAL_PILOT_READINESS_AUDIT.md` Abschnitt 19) —
+   kein lokaler Pilot-Blocker, da eine kontrollierte lokale Pilotierung keinen
+   echten externen Bucket voraussetzt. Stage 2B2A liefert die vollständige, automatisiert getestete
    S3-kompatible Upload-/Download-/Verifikations-/Retention-Mechanik
    inklusive einer seit einer Release-Gate-Härtung nachweislich atomaren,
    race-sicheren Veröffentlichung (`IfNoneMatch`-bedingter `PutObject`,
