@@ -105,7 +105,7 @@ router.post("/login", loginRateLimiter, async (req, res) => {
     }
 
     const token = jwt.sign(
-        { id: user.id },
+        { id: user.id, authVersion: user.auth_version },
         JWT_SECRET,
         { algorithm: "HS256", expiresIn: "8h" }
     );

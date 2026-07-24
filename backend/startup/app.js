@@ -14,6 +14,14 @@ const { createInvitationDelivery, resolveDefaultProvider } = require("../deliver
 const { createStudioV1Router } = require("../routes/studioV1");
 const { createTrainingProgramV1Router } = require("../routes/trainingProgramV1");
 const { createWorkoutSessionV1Router } = require("../routes/workoutSessionV1");
+const { createAccountService } = require("../services/accountService");
+const { createAccountRouter } = require("../routes/accountRouter");
+const {
+    createAccountEmailDelivery,
+    resolveDefaultAccountProvider
+} = require("../delivery/accountEmailDelivery");
+const { createAuthRateLimiters } = require("../middleware/rateLimiter");
+const { readSmtpConfig } = require("../config/smtpConfig");
 
 function allowedOrigins() {
     return (process.env.CORS_ORIGIN || "")
@@ -106,6 +114,35 @@ function createReadyHandler(readiness, logger) {
     };
 }
 
+// Both the invitation provider and the Stage 3B1 account-email provider
+// speak to the exact same SMTP server (same INVITATION_EMAIL_PROVIDER=smtp
+// opt-in switch, same SMTP_* env vars) - see delivery/accountEmailDelivery.js.
+// Without this, defaultRouters() would independently resolve two SMTP
+// providers, each constructing its own pooled Nodemailer transport to the
+// same server, which invitationDeliveryComposition.test.js already treats as
+// exactly the "one transport per router module" regression the composition
+// root exists to prevent (see that file's own history/comment). Resolved
+// once here, above both createDefaultStudioService/createDefaultAccountService,
+// and threaded into both as an explicit transportFactory override -
+// `transportFactory` from a caller (always a test) still wins outright, so
+// the existing test-injection seam on both composition functions is
+// unchanged. The transport itself is only ever built lazily, on whichever
+// of the two providers is constructed first; the other reuses it.
+function resolveSharedSmtpTransportFactory(env, { transportFactory } = {}) {
+    if (transportFactory) return transportFactory;
+    const config = readSmtpConfig(env);
+    if (!config) return undefined;
+    let cachedTransport;
+    return (transportOptions) => {
+        if (!cachedTransport) {
+            // eslint-disable-next-line global-require -- lazy require keeps nodemailer out of any code path that never enables SMTP delivery
+            const nodemailer = require("nodemailer");
+            cachedTransport = nodemailer.createTransport(transportOptions);
+        }
+        return cachedTransport;
+    };
+}
+
 // Explicit composition root for studio-tenant invitation delivery. Resolves
 // the SMTP configuration/provider from environment exactly once, builds
 // exactly one delivery/outbox/service chain from it, and every caller
@@ -122,8 +159,24 @@ function createDefaultStudioService({ env = process.env, database = db.promise()
     return createStudioService({ database, outbox });
 }
 
+// Sibling composition root for Stage 3B1 account self-service e-mail
+// (password change has no delivery dependency at all; only the e-mail
+// change confirmation/notification path needs one). Deliberately its own
+// function rather than folded into createDefaultStudioService: the two
+// features share the same SMTP server configuration and opt-in switch
+// (INVITATION_EMAIL_PROVIDER=smtp) but are otherwise independent delivery
+// chains with different templates and base-URL contracts - see
+// delivery/accountEmailDelivery.js.
+function createDefaultAccountService({ env = process.env, database = db.promise(), transportFactory } = {}) {
+    const provider = resolveDefaultAccountProvider(env, { transportFactory });
+    const delivery = createAccountEmailDelivery({ env, provider });
+    return createAccountService({ database, delivery });
+}
+
 function defaultRouters({ env, database, transportFactory } = {}) {
-    const studioService = createDefaultStudioService({ env, database, transportFactory });
+    const sharedTransportFactory = resolveSharedSmtpTransportFactory(env || process.env, { transportFactory });
+    const studioService = createDefaultStudioService({ env, database, transportFactory: sharedTransportFactory });
+    const accountService = createDefaultAccountService({ env, database, transportFactory: sharedTransportFactory });
     return {
         users: require("../routes/users"),
         exercises: require("../routes/exercises"),
@@ -131,7 +184,11 @@ function defaultRouters({ env, database, transportFactory } = {}) {
         progress: require("../routes/progress"),
         studioV1: createStudioV1Router({ service: studioService }),
         trainingProgramV1: createTrainingProgramV1Router({ studioService }),
-        workoutSessionV1: createWorkoutSessionV1Router({ studioService })
+        workoutSessionV1: createWorkoutSessionV1Router({ studioService }),
+        account: createAccountRouter({
+            service: accountService,
+            rateLimiters: createAuthRateLimiters({ env })
+        })
     };
 }
 
@@ -186,6 +243,9 @@ function createApp({
         if (routeSet.workoutSessionV1) {
             app.use("/api/v1", routeSet.workoutSessionV1);
         }
+        if (routeSet.account) {
+            app.use("/api/account", routeSet.account);
+        }
     }
 
     app.use(
@@ -203,6 +263,7 @@ module.exports = {
     allowedOrigins,
     createApp,
     createCorsOptions,
+    createDefaultAccountService,
     createDefaultStudioService,
     createReadyHandler,
     defaultRouters,

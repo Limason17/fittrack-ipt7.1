@@ -11,7 +11,7 @@ const route = useRoute()
 const sensitiveRoute = computed(() => {
   if (route.meta.sensitiveHistory === true) return true
   const redirect = safeInternalRedirect(route.query.redirect, '')
-  return redirect.startsWith('/invitations/')
+  return redirect.startsWith('/invitations/') || redirect.startsWith('/account/email-change/')
 })
 
 const sidebarOpen = ref(false)

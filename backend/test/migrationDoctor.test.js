@@ -564,6 +564,63 @@ test("Stage 1B.2B2B schema contract covers every workout session feedback table,
     );
 });
 
+test("Stage 3B1 schema contract covers every account self-service column, table, index, FK and constraint", () => {
+    const contract = MIGRATION_SCHEMA_CONTRACT.find(
+        (item) => item.migrationId === "009_account_self_service"
+    );
+    assert.ok(contract);
+
+    const keys = new Set(
+        contract.checks.map((check) => {
+            if (check.kind === "table") return `table:${check.table}`;
+            if (check.kind === "column") return `column:${check.table}.${check.column}`;
+            if (check.kind === "index") return `index:${check.table}.${check.index}`;
+            return `${check.kind}:${check.table}.${check.constraint}`;
+        })
+    );
+    const expected = [
+        "column:users.auth_version",
+        "column:users.email_changed_at",
+        "column:users.password_changed_at",
+        "table:user_email_change_requests",
+        "column:user_email_change_requests.token_hash",
+        "column:user_email_change_requests.new_email_normalized",
+        "index:user_email_change_requests.uq_user_email_change_requests_token_hash",
+        "index:user_email_change_requests.uq_user_email_change_requests_public_id",
+        "foreign_key:user_email_change_requests.fk_user_email_change_requests_user",
+        "check_constraint:user_email_change_requests.chk_user_email_change_requests_status"
+    ];
+    for (const key of expected) assert.ok(keys.has(key), `missing schema check ${key}`);
+
+    assert.equal(
+        contract.checks.filter((check) => check.kind === "column" && check.table === "users").length,
+        3
+    );
+    assert.equal(contract.checks.filter((check) => check.kind === "table").length, 1);
+    assert.equal(
+        contract.checks.filter((check) => check.kind === "column" && check.table === "user_email_change_requests").length,
+        10
+    );
+    assert.equal(contract.checks.filter((check) => check.kind === "index").length, 4);
+    assert.equal(contract.checks.filter((check) => check.kind === "foreign_key").length, 1);
+    assert.equal(contract.checks.filter((check) => check.kind === "check_constraint").length, 1);
+    assert.equal(contract.checks.length, 20);
+
+    const deleteRules = Object.fromEntries(
+        contract.checks
+            .filter((check) => check.kind === "foreign_key")
+            .map((check) => [check.constraint, check.deleteRule])
+    );
+    assert.equal(deleteRules.fk_user_email_change_requests_user, "CASCADE");
+
+    assert.ok(
+        contract.checks
+            .filter((check) => check.kind !== "table")
+            .every((check) => check.pendingMissingAllowed === false),
+        "an already-applied Stage 3B1 column, index, FK or constraint must never be treated as optionally missing"
+    );
+});
+
 test("CLI emits a safe JSON target without user or password and preserves exit 0", async () => {
     const lines = [];
     const logger = createStructuredLogger({

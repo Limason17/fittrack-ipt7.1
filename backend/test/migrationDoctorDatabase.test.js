@@ -155,7 +155,7 @@ test(
 
             assert.equal(pending.exitCode, DOCTOR_EXIT_CODES.PENDING);
             assert.equal(pending.recoveryRequired, false);
-            assert.equal(pending.summary.pending, 8);
+            assert.equal(pending.summary.pending, 9);
             assert.equal(emptyBefore.hasLedger, false);
             assert.deepEqual(emptyAfter, emptyBefore, "doctor must not create the ledger");
 
@@ -494,6 +494,88 @@ test(
                         item.migrationId === "008_studio_workout_session_feedback"
                 ),
                 "the one feedback table that did get created, but with missing columns/FKs, must be reported as a partial application"
+            );
+            assert.deepEqual(afterDoctor, beforeDoctor);
+        } finally {
+            await db.closePool(pool);
+        }
+    }
+);
+
+test(
+    "migration doctor detects a partially applied Stage 3B1 account self-service schema without mutating it",
+    { skip: !RUN_INTEGRATION },
+    async () => {
+        const database = await createDisposableDatabase();
+        const pool = createTestPool(database);
+        const migrations = loadMigrations();
+        const runner = createMigrationRunner({
+            pool,
+            migrations: migrations.slice(0, 8),
+            logger: silentLogger()
+        });
+
+        try {
+            await runner.migrate();
+
+            // Simulate the ALTER TABLE users half of migration 009 having
+            // succeeded, but the CREATE TABLE half only partially applying
+            // (missing the token_hash column/unique index and the FK to
+            // users) - the same "table exists but underspecified" shape as
+            // the Stage 1B.2B2B test above, just for the newer migration.
+            await pool.promise().query(`
+                ALTER TABLE users
+                    ADD COLUMN auth_version INT NOT NULL DEFAULT 1,
+                    ADD COLUMN email_changed_at TIMESTAMP(3) NULL,
+                    ADD COLUMN password_changed_at TIMESTAMP(3) NULL
+            `);
+            await pool.promise().query(`
+                CREATE TABLE user_email_change_requests (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    public_id CHAR(36) NOT NULL,
+                    new_email_normalized VARCHAR(254) NOT NULL,
+                    status VARCHAR(16) NOT NULL DEFAULT 'pending',
+                    expires_at TIMESTAMP(3) NOT NULL,
+                    created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+                    UNIQUE INDEX uq_user_email_change_requests_public_id (public_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            `);
+            const accountSelfServiceMigration = migrations[8];
+            await pool.promise().query(
+                `INSERT INTO schema_migrations (
+                    migration_id, description, checksum, status,
+                    started_at, applied_at, execution_ms, failure_code
+                 ) VALUES (?, ?, ?, 'failed', ?, NULL, 40, 'INTENTIONAL_FAILURE')`,
+                [
+                    accountSelfServiceMigration.id,
+                    accountSelfServiceMigration.description,
+                    accountSelfServiceMigration.checksum,
+                    new Date("2026-07-22T12:00:00.000Z")
+                ]
+            );
+
+            const beforeDoctor = await databaseSnapshot(pool, database);
+            const report = await createMigrationDoctor({ pool }).diagnose();
+            const afterDoctor = await databaseSnapshot(pool, database);
+
+            assert.equal(report.exitCode, DOCTOR_EXIT_CODES.RECOVERY_REQUIRED);
+            assert.equal(report.recoveryRequired, true);
+            assert.deepEqual(report.migrationStatus.dirty, [
+                {
+                    migrationId: "009_account_self_service",
+                    status: "failed",
+                    startedAt: "2026-07-22T12:00:00.000Z",
+                    appliedAt: null,
+                    failureCode: "INTENTIONAL_FAILURE"
+                }
+            ]);
+            assert.ok(
+                report.issues.some(
+                    (item) =>
+                        item.code === "MIGRATION_SCHEMA_PARTIAL" &&
+                        item.migrationId === "009_account_self_service"
+                ),
+                "the table that did get created, but with missing columns/FK, must be reported as a partial application"
             );
             assert.deepEqual(afterDoctor, beforeDoctor);
         } finally {
