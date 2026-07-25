@@ -106,6 +106,13 @@ export function revokeInvitation(studioId, invitationId, options) {
     )
 }
 
+export function resendInvitation(studioId, invitationId, options) {
+    return apiRequest(
+        `/v1/studios/${publicId(studioId, 'Studio id')}/invitations/${publicId(invitationId, 'Invitation id')}/resend`,
+        authenticated({ ...options, method: 'POST' })
+    )
+}
+
 export function acceptInvitation(token, options) {
     return apiRequest(
         `/v1/invitations/${publicId(token, 'Invitation token')}/accept`,

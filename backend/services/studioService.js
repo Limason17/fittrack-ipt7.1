@@ -169,7 +169,12 @@ function publicInvitation(row, now = new Date()) {
         acceptedAt: row.accepted_at,
         createdAt: row.created_at,
         revokedAt: row.revoked_at,
-        ...(status === "pending" ? { email: row.email_normalized } : {})
+        invitedBy: row.invited_by_username ? { username: row.invited_by_username } : null,
+        // Still shown for 'expired', not just 'pending': an expired invitation
+        // remains resend-actionable (see resendInvitation), so the admin
+        // needs to see who it is for. Only truly terminal states (accepted,
+        // revoked) redact the e-mail from here on.
+        ...(status === "pending" || status === "expired" ? { email: row.email_normalized } : {})
     };
 }
 
@@ -418,6 +423,74 @@ function createStudioService({
         }
         connection.release();
         return recovered;
+    }
+
+    // Resend's own delivery-failure compensation, deliberately NOT the same
+    // as createInvitation's: a temporary mail-provider outage must not turn
+    // an existing, previously-working invitation into a dead end. Setting
+    // status='expired' (with expires_at pushed into the past) rather than
+    // 'revoked' keeps the invitation on the exact same "renew in place" path
+    // resendInvitation already takes for a lazily-expired row - the next
+    // resend attempt (by the same or a different admin) finds status
+    // 'expired', rotates the token again, and succeeds normally. 'revoked'
+    // is reserved for an explicit, deliberate admin action and must stay
+    // permanent - this path never sets it. Guarded on token_hash matching
+    // the specific token this failed attempt itself just wrote: if another
+    // resend has already rotated the token again in the meantime (a later,
+    // independent call - not a race on this same attempt), this compensation
+    // must not clobber that newer, unrelated state.
+    // A losing concurrent resend's own CAS UPDATE still has to locate the
+    // invitation row (even though its stale token_hash then makes it match
+    // zero rows) and briefly locks it while doing so - if that overlaps with
+    // this compensation's own UPDATE against the same row from a separate
+    // connection, InnoDB can legitimately report ER_LOCK_DEADLOCK and abort
+    // one side. That aborted side is always safe to simply retry: the other
+    // transaction has already been rolled back or committed by the time the
+    // deadlock is reported, so a fresh attempt starts from a clean, current
+    // row state. This is the standard, recommended handling for occasional
+    // InnoDB deadlocks, not a sign the CAS logic itself is wrong (see the
+    // concurrency test just below this function, which proves the CAS is
+    // otherwise exactly one-winner correct).
+    async function compensateResendDeliveryFailure({
+        studioInternalId,
+        actorUserId,
+        invitationPublicId,
+        tokenHash,
+        role
+    }) {
+        const maxAttempts = 3;
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+            const connection = await begin();
+            let recovered = false;
+            try {
+                const expiredAt = new Date(now().getTime() - 1000);
+                const [updated] = await connection.query(
+                    `UPDATE studio_invitations
+                     SET status = 'expired', expires_at = ?
+                     WHERE studio_id = ? AND public_id = ? AND token_hash = ? AND status = 'pending'`,
+                    [expiredAt, studioInternalId, invitationPublicId, tokenHash]
+                );
+                if (updated.affectedRows === 1) {
+                    await insertAudit(connection, {
+                        studioId: studioInternalId,
+                        actorUserId,
+                        eventType: "invitation.delivery_failed",
+                        targetType: "invitation",
+                        targetPublicId: invitationPublicId,
+                        details: { role }
+                    });
+                    recovered = true;
+                }
+                await connection.commit();
+                connection.release();
+                return recovered;
+            } catch (error) {
+                await rollbackAndRelease(connection);
+                if (error.code === "ER_LOCK_DEADLOCK" && attempt < maxAttempts) continue;
+                throw error;
+            }
+        }
+        return false;
     }
 
     async function createStudio(actorUserId, input) {
@@ -881,17 +954,18 @@ function createStudioService({
                     [studio.internalId]
                 );
                 const [rows] = await connection.query(
-                    `SELECT public_id,
+                    `SELECT si.public_id,
                             CASE
-                                WHEN status = 'pending'
-                                 AND expires_at > CURRENT_TIMESTAMP(3)
-                                THEN email_normalized ELSE NULL
+                                WHEN si.status IN ('pending', 'expired')
+                                THEN si.email_normalized ELSE NULL
                             END AS email_normalized,
-                            role, status, expires_at,
-                            accepted_at, created_at, revoked_at
-                     FROM studio_invitations
-                     WHERE studio_id = ?
-                     ORDER BY created_at DESC, id DESC
+                            si.role, si.status, si.expires_at,
+                            si.accepted_at, si.created_at, si.revoked_at,
+                            inviter.username AS invited_by_username
+                     FROM studio_invitations si
+                     LEFT JOIN users inviter ON inviter.id = si.invited_by_user_id
+                     WHERE si.studio_id = ?
+                     ORDER BY si.created_at DESC, si.id DESC
                      LIMIT ? OFFSET ?`,
                     [studio.internalId, pagination.limit, pagination.offset]
                 );
@@ -967,6 +1041,188 @@ function createStudioService({
         connection.release();
         if (postCommitError) throw postCommitError;
         return publicInvitation(revoked, now());
+    }
+
+    // Resend always rotates the token and grants a fresh expiry window, for
+    // both a still-valid pending invitation and one that has lazily lapsed
+    // (status still 'pending' with a past expires_at, or already flipped to
+    // 'expired' by an earlier read/write elsewhere) - both cases are treated
+    // as "renew this same request in place" rather than minting a second,
+    // competing invitation row.
+    //
+    // Concurrency: expectedTokenHash is read from the pool *before* this
+    // request acquires any lock, so a burst of concurrently-started resend
+    // calls all capture the same pre-race baseline - even same-actor calls,
+    // which are otherwise fully serialized by lockActorMembership's row
+    // lock and would each see a legitimately "current" state in turn if the
+    // baseline were captured any later. The rotation itself is a
+    // compare-and-swap UPDATE guarded on that baseline: only the request
+    // whose expected old token is still the row's current token may rotate
+    // it (affectedRows must be exactly 1); every other concurrently-started
+    // request's CAS reports affectedRows 0 and gets a stable 409 conflict
+    // instead of also rotating and also sending its own mail. Because the
+    // status/role/membership checks just above run against the row's
+    // *current* FOR UPDATE state (not the pre-race baseline), a genuine
+    // status change (revoked, accepted) is still reported with its own more
+    // specific code - the generic conflict code is reserved for the pure
+    // "someone else already resent this" case.
+    //
+    // Delivery failure: the old token is invalidated unconditionally the
+    // moment this transaction commits, regardless of whether the new
+    // token's e-mail delivery afterwards succeeds - so there is never an
+    // "old token still works" state to fall back to. But unlike
+    // createInvitation (which has no prior valid state at all),
+    // compensateResendDeliveryFailure does not revoke - it marks the
+    // invitation 'expired' (guarded on this call's own new token hash, so
+    // it can never clobber a different, later resend), which keeps it on
+    // the same "renew in place" path a lazily-expired invitation already
+    // takes. A resend that fails to deliver is safely retryable, not
+    // permanently dead.
+    async function resendInvitation(actorUserId, context, invitationPublicId, { requestId } = {}) {
+        outbox.assertAvailable();
+        const [baselineRows] = await sql.query(
+            `SELECT token_hash FROM studio_invitations WHERE studio_id = ? AND public_id = ?`,
+            [context.studio.internalId, invitationPublicId]
+        );
+        if (baselineRows.length === 0) throw invitationNotFound();
+        const expectedTokenHash = baselineRows[0].token_hash;
+
+        const { token, tokenHash } = generateInvitationToken();
+        const expiresAt = new Date(now().getTime() + INVITATION_LIFETIME_MS);
+        const connection = await begin();
+        let studio;
+        let invitation;
+        try {
+            studio = await lockStudio(connection, context.studio.internalId);
+            const actor = await lockActorMembership(connection, studio, actorUserId);
+            assertPermission(actor, PERMISSIONS.INVITATION_RESEND);
+
+            const [rows] = await connection.query(
+                `SELECT public_id, email_normalized, role, status, expires_at,
+                        accepted_at, created_at, revoked_at
+                 FROM studio_invitations
+                 WHERE studio_id = ? AND public_id = ?
+                 FOR UPDATE`,
+                [studio.internalId, invitationPublicId]
+            );
+            if (rows.length === 0) throw invitationNotFound();
+            invitation = rows[0];
+            if (!invitationRoleDecision(actor.role, invitation.role).allowed) {
+                throw new InsufficientStudioRoleError();
+            }
+
+            if (invitation.status === "accepted") {
+                throw applicationError(
+                    409,
+                    "INVITATION_ALREADY_ACCEPTED",
+                    "Invitation has already been accepted."
+                );
+            }
+            if (invitation.status === "revoked") {
+                throw applicationError(409, "INVITATION_REVOKED", "Invitation has been revoked.");
+            }
+            if (invitation.status !== "pending" && invitation.status !== "expired") {
+                throw applicationError(409, "INVITATION_NOT_RESENDABLE", "Invitation cannot be resent.");
+            }
+
+            const [existingMemberships] = await connection.query(
+                `SELECT sm.status
+                 FROM users u
+                 INNER JOIN studio_memberships sm ON sm.user_id = u.id
+                 WHERE sm.studio_id = ? AND LOWER(u.email) = ?
+                 LIMIT 1
+                 FOR UPDATE`,
+                [studio.internalId, invitation.email_normalized]
+            );
+            if (existingMemberships[0]?.status === "active") {
+                throw new ConflictError(
+                    "The invited e-mail address already has an active studio membership.",
+                    "INVITATION_EMAIL_ALREADY_MEMBER"
+                );
+            }
+
+            const [updated] = await connection.query(
+                `UPDATE studio_invitations
+                 SET token_hash = ?, status = 'pending', expires_at = ?
+                 WHERE studio_id = ? AND public_id = ? AND token_hash = ?`,
+                [tokenHash, expiresAt, studio.internalId, invitationPublicId, expectedTokenHash]
+            );
+            if (updated.affectedRows !== 1) {
+                throw new ConflictError(
+                    "Another resend for this invitation was already in progress.",
+                    "INVITATION_RESEND_CONFLICT"
+                );
+            }
+            // invitation.resent is deliberately NOT written here: writing it
+            // as part of the rotation itself would record a "resent" event
+            // even for an attempt whose delivery then fails, which is
+            // exactly the misleading-success audit trail this hardening
+            // pass removes. It is written once, below, only after outbox.
+            // publish has actually succeeded.
+            await connection.commit();
+        } catch (error) {
+            await rollbackAndRelease(connection);
+            throw error;
+        }
+        connection.release();
+
+        let delivery;
+        try {
+            delivery = await outbox.publish({
+                token,
+                email: invitation.email_normalized,
+                studioName: studio.name,
+                role: invitation.role,
+                expiresAt,
+                locale: studio.default_locale,
+                requestId
+            });
+        } catch {
+            try {
+                const recovered = await compensateResendDeliveryFailure({
+                    studioInternalId: studio.internalId,
+                    actorUserId,
+                    invitationPublicId,
+                    tokenHash,
+                    role: invitation.role
+                });
+                if (!recovered) {
+                    throw new Error("Invitation was no longer in the expected state during delivery recovery.");
+                }
+            } catch (compensationError) {
+                throw new AppError({
+                    status: 503,
+                    code: "INVITATION_DELIVERY_RECOVERY_FAILED",
+                    message: "Invitation delivery failed and requires operator review.",
+                    cause: compensationError
+                });
+            }
+            throw new AppError({
+                status: 502,
+                code: "INVITATION_DELIVERY_FAILED",
+                message: "Invitation delivery failed; the invitation is marked expired and can be resent."
+            });
+        }
+
+        await insertAudit(sql, {
+            studioId: studio.internalId,
+            actorUserId,
+            eventType: "invitation.resent",
+            targetType: "invitation",
+            targetPublicId: invitationPublicId,
+            details: { role: invitation.role, expiresAt }
+        });
+
+        return {
+            invitation: {
+                id: invitationPublicId,
+                email: invitation.email_normalized,
+                role: invitation.role,
+                status: "pending",
+                expiresAt
+            },
+            delivery
+        };
     }
 
     async function acceptInvitation(actorUserId, token) {
@@ -1204,6 +1460,7 @@ function createStudioService({
         listMemberships,
         listStudios,
         loadStudioContext,
+        resendInvitation,
         revokeInvitation,
         updateMembership,
         updateStudio

@@ -90,4 +90,58 @@ describe('StudioAuditView', () => {
 
     expect(wrapper.get('[role="alert"]').text()).toContain('Rolle')
   })
+
+  it('translates every Stage 3C pilot event type instead of showing the raw event code', async () => {
+    const eventTypes = [
+      'invitation.resent',
+      'coaching_relationship.created',
+      'coaching_relationship.ended',
+      'training_program.created',
+      'training_program.updated',
+      'training_program.archived',
+      'training_program_version.created',
+      'training_program_version.published',
+      'training_program_assignment.created',
+      'training_program_assignment.completed',
+      'training_program_assignment.cancelled',
+      'workout_session.started',
+      'workout_session.completed',
+      'workout_session.aborted',
+      'workout_feedback.created',
+    ]
+    api.listAuditEvents.mockResolvedValue({
+      auditEvents: eventTypes.map((eventType, index) => ({
+        id: `event-${index}`,
+        eventType,
+        targetType: 'studio',
+        targetId: `target-${index}`,
+        actor: { username: 'Owner' },
+        createdAt: '2026-07-18T10:00:00.000Z',
+      })),
+      pagination: { total: eventTypes.length, page: 1, totalPages: 1 },
+    })
+    await mountView('owner')
+
+    for (const eventType of eventTypes) {
+      expect(wrapper.text()).not.toContain(eventType)
+    }
+  })
+
+  it('shows a safe generic fallback for an unknown future event type instead of a raw code or a crash', async () => {
+    api.listAuditEvents.mockResolvedValue({
+      auditEvents: [{
+        id: 'event-unknown',
+        eventType: 'stage_4x.something_not_yet_translated',
+        targetType: 'studio',
+        targetId: 'target-1',
+        actor: { username: 'Owner' },
+        createdAt: '2026-07-18T10:00:00.000Z',
+      }],
+      pagination: { total: 1, page: 1, totalPages: 1 },
+    })
+    await mountView('owner')
+
+    expect(wrapper.text()).toContain('Weiteres Ereignis')
+    expect(wrapper.text()).toContain('stage_4x.something_not_yet_translated')
+  })
 })

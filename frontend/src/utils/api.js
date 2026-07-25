@@ -75,71 +75,55 @@ export function refreshAccessToken() {
 // /auth/refresh calls against the same not-yet-rotated cookie - the losing
 // tab's call is indistinguishable, server-side, from a real stolen-token
 // replay (see rotateRefreshToken's reuse-detection) and gets its session
-// compromised for a completely legitimate reason. This is a best-effort
-// mutex, not a formally atomic distributed lock: it never carries a token
-// value (see REFRESH_LOCK_KEY below - just an opaque per-attempt id), and a
-// residual race on the exact same millisecond is possible but no worse than
-// having no coordination at all. Deliberately simple - see
-// docs/STAGE_3B2_SESSION_HARDENING.md for why a heavier scheme was not
-// warranted here.
-const REFRESH_LOCK_KEY = 'fittrack_refresh_lock'
-const REFRESH_LOCK_STALE_MS = 5000
-const REFRESH_LOCK_WAIT_TIMEOUT_MS = 4000
+// compromised for a completely legitimate reason.
+//
+// A prior version of this file used only a localStorage "check existing key,
+// then write" pattern as the mutex. That is NOT an atomic exclusivity
+// guarantee across separate tab processes: two tabs can both read "no lock"
+// before either has written, both then write (the second silently
+// overwrites the first), and both then believe - via their own read-back -
+// that they, personally, are holding a fresh lock they just wrote. That let
+// two real /auth/refresh requests race the same not-yet-rotated cookie,
+// which is exactly the legitimate-reuse-detection false positive this
+// module exists to prevent. See docs/STAGE_3C_PILOT_UX_POLISH.md for the
+// full root-cause writeup and docs/STAGE_3B2_SESSION_HARDENING.md for the
+// original (superseded) design rationale.
+//
+// Primary mechanism: the Web Locks API (navigator.locks), a browser-native
+// exclusive lock shared across every tab/worker of the same origin. Unlike
+// the old localStorage pattern, the browser itself queues callers and only
+// ever runs one lock holder's callback at a time - there is no read-then-
+// write window to race. The lock is also released automatically if the
+// holding tab is closed or navigates away mid-request, so an aborted tab
+// can never leave the others permanently blocked.
+const REFRESH_LOCK_NAME = 'fittrack-refresh-lock'
 
+// Fallback-only signaling for browsers without navigator.locks: never
+// carries a token, cookie, or any other secret - only an opaque "something
+// changed, worth re-checking" nudge. The exclusivity guarantee itself comes
+// from the lock (Web Locks, or the fallback algorithm below); this channel
+// is purely a latency optimization so a waiting tab does not have to sit
+// out its full backoff window once the holder has actually finished.
 const refreshCoordinationChannel = typeof BroadcastChannel === 'function'
     ? new BroadcastChannel('fittrack-refresh-coordination')
     : null
 
-function readRefreshLock() {
-    if (typeof localStorage === 'undefined') return null
-    try {
-        const raw = localStorage.getItem(REFRESH_LOCK_KEY)
-        return raw ? JSON.parse(raw) : null
-    } catch {
-        return null
-    }
+function supportsWebLocks() {
+    return typeof navigator !== 'undefined' &&
+        navigator.locks &&
+        typeof navigator.locks.request === 'function'
 }
 
-function isLockStale(lock) {
-    return !lock || typeof lock.ts !== 'number' || Date.now() - lock.ts > REFRESH_LOCK_STALE_MS
+function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-// Compare-after-write: write our own id, then read it back. If a different
-// tab wrote in between, we lose and see their id instead of ours. Not
-// atomic, but sufficient for coordinating tabs of the same legitimate user
-// rather than adversarial processes.
-function tryAcquireRefreshLock() {
-    if (typeof localStorage === 'undefined') return null
-    const existing = readRefreshLock()
-    if (existing && !isLockStale(existing)) return null
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-    try {
-        localStorage.setItem(REFRESH_LOCK_KEY, JSON.stringify({ id, ts: Date.now() }))
-    } catch {
-        return null
-    }
-    return readRefreshLock()?.id === id ? id : null
+function jitter(minMs, maxMs) {
+    return minMs + Math.random() * (maxMs - minMs)
 }
 
-function releaseRefreshLock(id) {
-    if (typeof localStorage !== 'undefined') {
-        const current = readRefreshLock()
-        if (current?.id === id) {
-            try {
-                localStorage.removeItem(REFRESH_LOCK_KEY)
-            } catch {
-                // Storage may be unavailable - the staleness check on the
-                // next attempt is the fallback safety net either way.
-            }
-        }
-    }
-    refreshCoordinationChannel?.postMessage({ type: 'refresh-settled' })
-}
-
-function waitForRefreshSettled(timeoutMs) {
-    if (!refreshCoordinationChannel) {
-        return new Promise((resolve) => setTimeout(resolve, timeoutMs))
-    }
+function waitForLockReleaseSignal(timeoutMs) {
+    if (!refreshCoordinationChannel) return delay(timeoutMs)
     return new Promise((resolve) => {
         let settled = false
         const finish = () => {
@@ -150,41 +134,205 @@ function waitForRefreshSettled(timeoutMs) {
             resolve()
         }
         const onMessage = (event) => {
-            if (event.data?.type === 'refresh-settled') finish()
+            if (event.data?.type === 'refresh-lock-released') finish()
         }
         refreshCoordinationChannel.addEventListener('message', onMessage)
         const timer = setTimeout(finish, timeoutMs)
     })
 }
 
-async function coordinatedRefresh() {
-    const lockId = tryAcquireRefreshLock()
-    if (!lockId) {
-        // Another tab is already refreshing this shared session - wait for
-        // it to settle (or time out) instead of racing it with our own call
-        // against the same cookie. By the time we retry, the browser's
-        // cookie jar already reflects whatever that other tab's refresh
-        // left behind, so our own call rotates it again legitimately.
-        await waitForRefreshSettled(REFRESH_LOCK_WAIT_TIMEOUT_MS)
-        return performRefresh()
-    }
+// ---- Fallback lock (only used when navigator.locks is unavailable) ----
+//
+// localStorage has no compare-and-swap primitive, so this can never be as
+// airtight as a real browser lock - it is a defensive fallback, not a
+// second primary mechanism. Every property the fallback needs was named
+// explicitly: a unique owner id, a lease expiry (so a crashed/closed tab's
+// stale entry cannot block forever), a generation/fencing counter, a
+// candidate write followed by a short randomized settle delay and a
+// read-back to catch a same-tick double-write, jittered retry with backoff
+// instead of a tight spin loop, and - the most important guard - ownership
+// is verified *again*, immediately before the caller is allowed to run its
+// network request. A lock this code "acquired" a few milliseconds ago is
+// never, by itself, treated as sufficient permission to proceed.
+const FALLBACK_LOCK_KEY = 'fittrack_refresh_lock'
+const FALLBACK_LOCK_LEASE_MS = 5000
+const FALLBACK_MAX_ATTEMPTS = 8
+const FALLBACK_SETTLE_DELAY_MS = [8, 20]
+const FALLBACK_RETRY_BACKOFF_MS = [25, 90]
+const FALLBACK_WAIT_FOR_HOLDER_MS = 250
+
+function readFallbackLock() {
+    if (typeof localStorage === 'undefined') return null
     try {
-        return await performRefresh()
-    } finally {
-        releaseRefreshLock(lockId)
+        const raw = localStorage.getItem(FALLBACK_LOCK_KEY)
+        return raw ? JSON.parse(raw) : null
+    } catch {
+        return null
     }
 }
 
+function writeFallbackLock(record) {
+    if (typeof localStorage === 'undefined') return false
+    try {
+        localStorage.setItem(FALLBACK_LOCK_KEY, JSON.stringify(record))
+        return true
+    } catch {
+        return false
+    }
+}
+
+function clearFallbackLockIfOwner(ownerId) {
+    if (typeof localStorage === 'undefined') return
+    const current = readFallbackLock()
+    if (current?.owner === ownerId) {
+        try {
+            localStorage.removeItem(FALLBACK_LOCK_KEY)
+        } catch {
+            // Storage may be unavailable - the lease-expiry check on the
+            // next attempt is the safety net either way.
+        }
+    }
+}
+
+function isFallbackLockLive(record) {
+    return Boolean(record) &&
+        typeof record.ts === 'number' &&
+        Date.now() - record.ts < FALLBACK_LOCK_LEASE_MS
+}
+
+function randomLockOwnerId() {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`
+}
+
+// Best-effort acquisition: write a candidate, then re-read after a short
+// random delay to see whether a concurrent writer clobbered it. Returns the
+// held { ownerId, generation } or null if every attempt in this call lost
+// the race or found a live lease the whole time.
+async function acquireFallbackLock() {
+    for (let attempt = 0; attempt < FALLBACK_MAX_ATTEMPTS; attempt += 1) {
+        const existing = readFallbackLock()
+        if (isFallbackLockLive(existing)) {
+            await Promise.race([
+                waitForLockReleaseSignal(FALLBACK_WAIT_FOR_HOLDER_MS),
+                delay(FALLBACK_WAIT_FOR_HOLDER_MS),
+            ])
+            continue
+        }
+        const ownerId = randomLockOwnerId()
+        const generation = (existing?.generation ?? 0) + 1
+        if (!writeFallbackLock({ owner: ownerId, ts: Date.now(), generation })) return null
+        await delay(jitter(...FALLBACK_SETTLE_DELAY_MS))
+        const confirmed = readFallbackLock()
+        if (confirmed?.owner === ownerId && confirmed?.generation === generation) {
+            return { ownerId, generation }
+        }
+        await delay(jitter(...FALLBACK_RETRY_BACKOFF_MS) * (attempt + 1))
+    }
+    return null
+}
+
+function verifyFallbackOwnership(ownerId, generation) {
+    const current = readFallbackLock()
+    return current?.owner === ownerId && current?.generation === generation
+}
+
+async function withFallbackRefreshLock(fn) {
+    // No storage to coordinate through at all (not even the localStorage
+    // pattern's best-effort guard is available - e.g. a strict privacy mode
+    // that throws on every access, or a non-browser runtime). There is no
+    // possible cross-tab signal in that case, coordinated or not, so the
+    // only sound behaviour is to proceed directly rather than spin through
+    // acquisition attempts that can never succeed.
+    if (typeof localStorage === 'undefined') {
+        return fn()
+    }
+    for (let cycle = 0; cycle < FALLBACK_MAX_ATTEMPTS; cycle += 1) {
+        const held = await acquireFallbackLock()
+        if (!held) continue
+        const { ownerId, generation } = held
+        // Re-verify immediately before the network request - the acquire
+        // step above is best-effort, not a guarantee, so nothing may run
+        // against the network on its authority alone.
+        if (!verifyFallbackOwnership(ownerId, generation)) {
+            await delay(jitter(...FALLBACK_RETRY_BACKOFF_MS))
+            continue
+        }
+        try {
+            return await fn()
+        } finally {
+            clearFallbackLockIfOwner(ownerId)
+            refreshCoordinationChannel?.postMessage({ type: 'refresh-lock-released' })
+        }
+    }
+    throw new Error('Unable to acquire the refresh coordination lock.')
+}
+
+// Exposed only for direct, deterministic testing of the fallback lock's
+// individual guarantees (owner id, lease expiry, generation/fencing, the
+// re-verify-before-network-request check) in isolation from real timing -
+// see api.test.js. Not part of the module's normal public surface.
+export const __testing__ = {
+    FALLBACK_LOCK_KEY,
+    FALLBACK_LOCK_LEASE_MS,
+    acquireFallbackLock,
+    verifyFallbackOwnership,
+    readFallbackLock,
+    clearFallbackLockIfOwner,
+    withFallbackRefreshLock,
+    supportsWebLocks,
+}
+
+// Exported primarily so the cross-tab locking semantics themselves (not
+// just the end-to-end apiRequest/refreshAccessToken surface) are directly
+// unit-testable - see api.test.js. Every tab that calls this - whichever
+// one ends up running fn() first, and every one that was waiting - runs fn
+// in turn, never overlapping: the "loser" of the initial race is not
+// skipped, it is queued, and gets its turn (with whatever the lock state
+// looks like *then*, e.g. an already-rotated cookie) once the current
+// holder's fn() has fully settled.
+export async function withCrossTabRefreshLock(fn) {
+    if (supportsWebLocks()) {
+        // The browser itself queues concurrent requests for the same lock
+        // name and runs exactly one callback at a time, releasing it only
+        // once that callback's returned promise settles - i.e. only after
+        // performRefresh() below has already awaited the full response
+        // (including the browser having applied any Set-Cookie header).
+        // There is deliberately no separate "notify other tabs" step here:
+        // the lock's own release *is* that signal, atomically.
+        return navigator.locks.request(REFRESH_LOCK_NAME, fn)
+    }
+    return withFallbackRefreshLock(fn)
+}
+
+async function coordinatedRefresh() {
+    return withCrossTabRefreshLock(performRefresh)
+}
+
+// AbortController timeout bounds how long a single refresh attempt can hold
+// the cross-tab lock: navigator.locks already releases automatically if the
+// holding tab closes, but a merely-hung request (server unreachable, network
+// stalled) would otherwise never resolve fn() and could block every other
+// waiting tab indefinitely. 8s comfortably exceeds a normal round trip.
+const REFRESH_REQUEST_TIMEOUT_MS = 8000
+
 async function performRefresh() {
     const csrf = readCookie(CSRF_COOKIE_NAME)
-    const response = await fetch(joinApiUrl(API_BASE_URL, '/auth/refresh'), {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-            Accept: 'application/json',
-            ...(csrf ? { [CSRF_HEADER_NAME]: csrf } : {}),
-        },
-    })
+    const controller = typeof AbortController === 'function' ? new AbortController() : null
+    const timer = controller ? setTimeout(() => controller.abort(), REFRESH_REQUEST_TIMEOUT_MS) : null
+    let response
+    try {
+        response = await fetch(joinApiUrl(API_BASE_URL, '/auth/refresh'), {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                Accept: 'application/json',
+                ...(csrf ? { [CSRF_HEADER_NAME]: csrf } : {}),
+            },
+            signal: controller?.signal,
+        })
+    } finally {
+        if (timer) clearTimeout(timer)
+    }
 
     if (!response.ok) {
         const error = new Error('Session refresh failed.')

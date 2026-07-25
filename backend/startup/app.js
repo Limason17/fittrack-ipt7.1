@@ -21,7 +21,7 @@ const {
     createAccountEmailDelivery,
     resolveDefaultAccountProvider
 } = require("../delivery/accountEmailDelivery");
-const { createAuthRateLimiters } = require("../middleware/rateLimiter");
+const { createAuthRateLimiters, createInvitationRateLimiters } = require("../middleware/rateLimiter");
 const { readSmtpConfig } = require("../config/smtpConfig");
 const { allowedOrigins } = require("../config/corsOrigins");
 const { createSessionService } = require("../services/sessionService");
@@ -181,7 +181,10 @@ function defaultRouters({ env, database = db.promise(), transportFactory } = {})
         exercises: require("../routes/exercises"),
         workouts: require("../routes/workouts"),
         progress: require("../routes/progress"),
-        studioV1: createStudioV1Router({ service: studioService }),
+        studioV1: createStudioV1Router({
+            service: studioService,
+            rateLimiters: createInvitationRateLimiters({ env })
+        }),
         trainingProgramV1: createTrainingProgramV1Router({ studioService }),
         workoutSessionV1: createWorkoutSessionV1Router({ studioService }),
         account: createAccountRouter({

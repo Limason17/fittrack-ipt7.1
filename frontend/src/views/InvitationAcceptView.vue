@@ -7,6 +7,13 @@ import { t } from '../utils/i18n'
 import { acceptInvitation } from '../utils/studioApi'
 import { addAndSelectStudio } from '../utils/studioContext'
 
+const ACCEPT_ERROR_KEYS = {
+  INVITATION_INVALID: 'studios.invitationAccept.invalid',
+  INVITATION_EXPIRED: 'studios.invitationAccept.expired',
+  INVITATION_REVOKED: 'studios.invitationAccept.revoked',
+  INVITATION_ALREADY_USED: 'studios.invitationAccept.alreadyUsed',
+}
+
 const route = useRoute()
 const router = useRouter()
 const isAccepting = ref(false)
@@ -40,9 +47,10 @@ async function accept() {
     await router.replace({ name: 'studio-dashboard', params: { studioId: selected.id } })
   } catch (error) {
     if (current === generation && token === String(route.params.token || '')) {
+      const code = error.data?.error?.code
       errorMessage.value = error.status === 403
         ? t('studios.invitationAccept.forbidden')
-        : t('studios.invitationAccept.error')
+        : t(ACCEPT_ERROR_KEYS[code] || 'studios.invitationAccept.error')
     }
   } finally {
     if (current === generation && token === String(route.params.token || '')) {

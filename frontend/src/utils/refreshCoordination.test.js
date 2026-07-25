@@ -49,14 +49,20 @@ describe('Stage 3B2: cross-tab refresh coordination', () => {
     })
 
     const tabAPromise = tabA.refreshAccessToken()
-    // Let tabA's coordinatedRefresh() acquire the lock and reach fetch().
-    await Promise.resolve()
-    await Promise.resolve()
+    // Unlike the old synchronous check-then-write mutex, the hardened
+    // fallback lock's acquisition involves a real settle delay and a
+    // read-back before it is trusted (see acquireFallbackLock in api.js) -
+    // give tabA's acquisition a real window to actually complete and reach
+    // fetch(), not just a couple of microtask ticks.
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(fetchCalls.length).toBe(1)
 
     let tabBSettled = false
     const tabBPromise = tabB.refreshAccessToken().then((value) => { tabBSettled = true; return value })
-    await Promise.resolve()
-    await Promise.resolve()
+    // Give tabB's own acquisition attempt(s) a real window to run - it must
+    // keep observing tabA's still-live lock and back off, never reaching
+    // its own fetch call while tabA is still the holder.
+    await new Promise((resolve) => setTimeout(resolve, 150))
 
     // TabB must not have issued its own fetch yet - it is waiting on tabA.
     expect(fetchCalls.length).toBe(1)
@@ -84,7 +90,7 @@ describe('Stage 3B2: cross-tab refresh coordination', () => {
   })
 
   it('a stale lock (e.g. from a crashed/closed tab) is not honored forever - a later tab can still refresh', async () => {
-    localStorage.setItem('fittrack_refresh_lock', JSON.stringify({ id: 'stale-attempt', ts: Date.now() - 60_000 }))
+    localStorage.setItem('fittrack_refresh_lock', JSON.stringify({ owner: 'stale-attempt', ts: Date.now() - 60_000, generation: 1 }))
 
     const tab = await freshApiModule()
     const token = await tab.refreshAccessToken()
@@ -99,13 +105,14 @@ describe('Stage 3B2: cross-tab refresh coordination', () => {
     global.fetch = vi.fn(() => new Promise((resolve) => { resolveFetch = resolve }))
 
     const promise = tab.refreshAccessToken()
-    await Promise.resolve()
-    await Promise.resolve()
+    // Give the fallback lock's write + settle delay + read-back time to
+    // actually land before inspecting localStorage.
+    await new Promise((resolve) => setTimeout(resolve, 40))
 
     const rawLock = localStorage.getItem('fittrack_refresh_lock')
     expect(rawLock).toBeTruthy()
     const parsed = JSON.parse(rawLock)
-    expect(Object.keys(parsed).sort()).toEqual(['id', 'ts'])
+    expect(Object.keys(parsed).sort()).toEqual(['generation', 'owner', 'ts'])
     expect(/[A-Za-z0-9_-]{43}/.test(rawLock)).toBe(false)
 
     resolveFetch(new Response(JSON.stringify({ accessToken: 'irrelevant' }), {

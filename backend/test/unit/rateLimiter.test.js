@@ -3,7 +3,8 @@ const assert = require("node:assert/strict");
 
 const {
     createAuthRateLimiters,
-    createFixedWindowRateLimiter
+    createFixedWindowRateLimiter,
+    createInvitationRateLimiters
 } = require("../../middleware/rateLimiter");
 const {
     errorHandler,
@@ -106,6 +107,35 @@ test("Stage 3B1: account rate limiter env var overrides are honoured with sane d
     assert.equal(outcomes[0], null);
     assert.equal(outcomes[1], null);
     assert.equal(outcomes[2].status, 429);
+});
+
+test("invitation resend limiter is keyed per actor+invitation and reports a dedicated error code", () => {
+    const { resend } = createInvitationRateLimiters({
+        now: () => 1000,
+        resendMax: 2,
+        resendWindowMs: 60_000
+    });
+    const res = { setHeader() {} };
+    const outcomes = [];
+    const reqFor = (userId, invitationId) => ({
+        ip: "127.0.0.1",
+        socket: { remoteAddress: "127.0.0.1" },
+        user: { id: userId },
+        params: { invitationId }
+    });
+
+    resend(reqFor(1, "inv-a"), res, (error) => outcomes.push(error || null));
+    resend(reqFor(1, "inv-a"), res, (error) => outcomes.push(error || null));
+    resend(reqFor(1, "inv-a"), res, (error) => outcomes.push(error || null));
+    resend(reqFor(1, "inv-b"), res, (error) => outcomes.push(error || null));
+    resend(reqFor(2, "inv-a"), res, (error) => outcomes.push(error || null));
+
+    assert.equal(outcomes[0], null);
+    assert.equal(outcomes[1], null);
+    assert.equal(outcomes[2].status, 429);
+    assert.equal(outcomes[2].code, "INVITATION_RESEND_RATE_LIMITED");
+    assert.equal(outcomes[3], null, "a different invitation must have its own budget");
+    assert.equal(outcomes[4], null, "a different actor must have its own budget");
 });
 
 test("429 responses retain request ID and retry metadata", () => {

@@ -28,6 +28,7 @@ const SAFE_DETAIL_KEYS = Object.freeze({
     "invitation.delivery_failed": new Set(["role"]),
     "invitation.expired": new Set(["role"]),
     "invitation.revoked": new Set(["role"]),
+    "invitation.resent": new Set(["role", "expiresAt"]),
     "invitation.accepted": new Set(["membershipId", "role"]),
     "coaching_relationship.created": new Set(["coachMembershipId", "memberMembershipId"]),
     "coaching_relationship.ended": new Set(["coachMembershipId", "memberMembershipId"]),

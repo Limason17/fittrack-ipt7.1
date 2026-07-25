@@ -59,6 +59,15 @@ test("audit events accept only bounded event-specific details", () => {
         role: "member",
         email: "private@example.test"
     }), /not allowlisted/);
+    const resent = allowlistedAuditDetails("invitation.resent", {
+        role: "trainer",
+        expiresAt: "2030-01-01T00:00:00.000Z"
+    });
+    assert.deepEqual(resent, { role: "trainer", expiresAt: "2030-01-01T00:00:00.000Z" });
+    assert.throws(() => allowlistedAuditDetails("invitation.resent", {
+        role: "trainer",
+        email: "private@example.test"
+    }), /not allowlisted/);
     assert.throws(() => allowlistedAuditDetails("studio.updated", {
         fields: ["request_body"]
     }), /invalid/);
