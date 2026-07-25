@@ -621,6 +621,74 @@ test("Stage 3B1 schema contract covers every account self-service column, table,
     );
 });
 
+test("Stage 3B2 schema contract covers every auth-session column, table, index, FK and constraint", () => {
+    const contract = MIGRATION_SCHEMA_CONTRACT.find(
+        (item) => item.migrationId === "010_auth_sessions"
+    );
+    assert.ok(contract);
+
+    const keys = new Set(
+        contract.checks.map((check) => {
+            if (check.kind === "table") return `table:${check.table}`;
+            if (check.kind === "column") return `column:${check.table}.${check.column}`;
+            if (check.kind === "index") return `index:${check.table}.${check.index}`;
+            return `${check.kind}:${check.table}.${check.constraint}`;
+        })
+    );
+    const expected = [
+        "table:user_auth_sessions",
+        "table:user_refresh_tokens",
+        "column:user_auth_sessions.public_id",
+        "column:user_auth_sessions.auth_version",
+        "column:user_auth_sessions.status",
+        "column:user_refresh_tokens.token_hash",
+        "column:user_refresh_tokens.csrf_token_hash",
+        "column:user_refresh_tokens.replaced_by_token_id",
+        "index:user_auth_sessions.uq_user_auth_sessions_public_id",
+        "index:user_refresh_tokens.uq_user_refresh_tokens_token_hash",
+        "foreign_key:user_auth_sessions.fk_user_auth_sessions_user",
+        "foreign_key:user_refresh_tokens.fk_user_refresh_tokens_session",
+        "foreign_key:user_refresh_tokens.fk_user_refresh_tokens_replaced_by",
+        "check_constraint:user_auth_sessions.chk_user_auth_sessions_status",
+        "check_constraint:user_refresh_tokens.chk_user_refresh_tokens_status"
+    ];
+    for (const key of expected) assert.ok(keys.has(key), `missing schema check ${key}`);
+
+    assert.equal(contract.checks.filter((check) => check.kind === "table").length, 2);
+    assert.equal(
+        contract.checks.filter((check) => check.kind === "column" && check.table === "user_auth_sessions").length,
+        10
+    );
+    assert.equal(
+        contract.checks.filter((check) => check.kind === "column" && check.table === "user_refresh_tokens").length,
+        11
+    );
+    assert.equal(contract.checks.filter((check) => check.kind === "index").length, 8);
+    assert.equal(contract.checks.filter((check) => check.kind === "foreign_key").length, 3);
+    assert.equal(contract.checks.filter((check) => check.kind === "check_constraint").length, 2);
+    assert.equal(contract.checks.length, 36);
+
+    const deleteRules = Object.fromEntries(
+        contract.checks
+            .filter((check) => check.kind === "foreign_key")
+            .map((check) => [check.constraint, check.deleteRule])
+    );
+    assert.equal(deleteRules.fk_user_auth_sessions_user, "CASCADE");
+    assert.equal(deleteRules.fk_user_refresh_tokens_session, "CASCADE");
+    assert.equal(
+        deleteRules.fk_user_refresh_tokens_replaced_by,
+        "SET NULL",
+        "a rotated token's successor row being deleted must not cascade-delete the token that pointed to it"
+    );
+
+    assert.ok(
+        contract.checks
+            .filter((check) => check.kind !== "table")
+            .every((check) => check.pendingMissingAllowed === false),
+        "an already-applied Stage 3B2 column, index, FK or constraint must never be treated as optionally missing"
+    );
+});
+
 test("CLI emits a safe JSON target without user or password and preserves exit 0", async () => {
     const lines = [];
     const logger = createStructuredLogger({
