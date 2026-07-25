@@ -15,6 +15,7 @@ const {
 const { createPublicId } = require("../domain/studioDomain");
 const { createEmailChangeToken, hashEmailChangeToken } = require("../security/accountTokens");
 const { createAccountEmailDelivery } = require("../delivery/accountEmailDelivery");
+const { createSessionService } = require("./sessionService");
 
 // Not env-configurable, matching studioService.js's own INVITATION_LIFETIME_MS
 // (also a hardcoded module constant, not read from the environment).
@@ -58,7 +59,16 @@ function createAccountService({
     now = () => new Date(),
     generatePublicId = createPublicId,
     generateEmailChangeToken = createEmailChangeToken,
-    hashToken = hashEmailChangeToken
+    hashToken = hashEmailChangeToken,
+    // Stage 3B2: password change and confirmed e-mail change must leave no
+    // session anywhere still valid on the OLD credentials/address (see
+    // revokeAllSessionsInTransaction's own comment for why this reuses the
+    // caller's transaction instead of opening its own). Defaults to a real
+    // session service over the same database rather than a no-op, since
+    // this has no external I/O to fake in tests the way `delivery` does -
+    // any test exercising changePassword/confirmEmailChange against a real
+    // pool gets working, verifiable revocation for free.
+    sessionService = createSessionService({ database })
 } = {}) {
     if (!database) {
         throw new TypeError("Account service requires a database.");
@@ -154,6 +164,15 @@ function createAccountService({
                     "The account changed concurrently. Please try again."
                 );
             }
+
+            // Every existing session/refresh token becomes worthless the
+            // moment auth_version is bumped above (authMiddleware.js and
+            // sessionService.rotateRefreshToken both reject a stale
+            // snapshot), but revoking the rows explicitly too keeps the
+            // session table itself an accurate audit trail instead of
+            // leaving "active"-looking rows that only an auth_version
+            // cross-reference reveals are actually dead.
+            await sessionService.revokeAllSessionsInTransaction(connection, actorUserId, "password_change");
 
             await connection.commit();
         } catch (error) {
@@ -440,6 +459,11 @@ function createAccountService({
                     [request.id]
                 );
                 if (confirmed.affectedRows !== 1) throw emailChangeRequestStateError("confirmed");
+
+                // See changePassword's identical call for why this runs
+                // in the same transaction as the auth_version bump above,
+                // rather than as a separate best-effort step afterward.
+                await sessionService.revokeAllSessionsInTransaction(connection, user.id, "email_change");
 
                 await connection.commit();
             }
