@@ -9,9 +9,20 @@ import PageHeader from '../components/ui/PageHeader.vue'
 import Pagination from '../components/ui/Pagination.vue'
 import { formatDate, t } from '../utils/i18n'
 import { invitationStatusTone, roleTone } from '../utils/studioBadges'
-import { createInvitation, listInvitations, revokeInvitation } from '../utils/studioApi'
+import { createInvitation, listInvitations, resendInvitation, revokeInvitation } from '../utils/studioApi'
 import { MANAGEMENT_ROLES, activeStudio, refreshSelectedStudio } from '../utils/studioContext'
 import { toastError, toastSuccess } from '../utils/toast'
+
+const RESENDABLE_STATUSES = ['pending', 'expired']
+const RESEND_ERROR_KEYS = {
+  INVITATION_ALREADY_ACCEPTED: 'studios.invitations.resendAlreadyAccepted',
+  INVITATION_REVOKED: 'studios.invitations.resendRevoked',
+  INVITATION_NOT_RESENDABLE: 'studios.invitations.resendNotResendable',
+  INVITATION_EMAIL_ALREADY_MEMBER: 'studios.invitations.resendEmailAlreadyMember',
+  INVITATION_RESEND_RATE_LIMITED: 'studios.invitations.resendRateLimited',
+  INVITATION_DELIVERY_FAILED: 'studios.invitations.resendDeliveryFailed',
+  INVITATION_DELIVERY_RECOVERY_FAILED: 'studios.invitations.resendDeliveryFailed',
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -25,14 +36,16 @@ const deliveryLink = ref('')
 const isLoading = ref(true)
 const isSaving = ref(false)
 const revokingId = ref(null)
+const resendingId = ref(null)
 const errorMessage = ref('')
 const successMessage = ref('')
 const pendingRevoke = ref(null)
+const pendingResend = ref(null)
 let generation = 0
 const isOwner = computed(() => activeStudio.value?.membership?.role === 'owner')
 
 function displayEmail(invitation) {
-  return invitation.status === 'pending' && invitation.email
+  return RESENDABLE_STATUSES.includes(invitation.status) && invitation.email
     ? invitation.email
     : t('studios.invitations.identityRedacted')
 }
@@ -80,6 +93,7 @@ async function load({ preserveTransient = false } = {}) {
     isSaving.value = false
   }
   revokingId.value = null
+  resendingId.value = null
   isLoading.value = true
   errorMessage.value = ''
   try {
@@ -189,6 +203,53 @@ async function revoke(invitation) {
   }
 }
 
+function requestResend(invitation) {
+  pendingResend.value = invitation
+}
+
+function cancelResend() {
+  pendingResend.value = null
+}
+
+async function confirmResendAction() {
+  const invitation = pendingResend.value
+  pendingResend.value = null
+  if (invitation) await resend(invitation)
+}
+
+async function resend(invitation) {
+  const current = generation
+  const currentStudioId = studioId.value
+  resendingId.value = invitation.id
+  errorMessage.value = ''
+  successMessage.value = ''
+  deliveryLink.value = ''
+  try {
+    const result = await resendInvitation(currentStudioId, invitation.id)
+    if (current !== generation || currentStudioId !== studioId.value) return
+    invitations.value = invitations.value.map((item) => item.id === invitation.id
+      ? { ...item, ...result.invitation }
+      : item)
+    const link = safeDeliveryLink(result.delivery)
+    if (link) deliveryLink.value = link
+    const confirmation = t('studios.invitations.resent')
+    successMessage.value = confirmation
+    toastSuccess(confirmation)
+  } catch (error) {
+    if (current === generation && currentStudioId === studioId.value) {
+      if ([403, 404].includes(error.status) && !await reconcileStudioAccess(current, currentStudioId)) return
+      const code = error.data?.error?.code
+      const message = error.status === 403
+        ? t('studios.permissionDenied')
+        : t(RESEND_ERROR_KEYS[code] || 'studios.invitations.resendError')
+      errorMessage.value = message
+      toastError(message)
+    }
+  } finally {
+    if (current === generation && currentStudioId === studioId.value) resendingId.value = null
+  }
+}
+
 watch(studioId, () => {
   page.value = 1
   load()
@@ -248,6 +309,8 @@ onBeforeUnmount(() => { deliveryLink.value = '' })
                 <th>{{ t('studios.invitations.email') }}</th>
                 <th>{{ t('studios.invitations.role') }}</th>
                 <th>{{ t('studios.members.columnStatus') }}</th>
+                <th>{{ t('studios.invitations.columns.createdAt') }}</th>
+                <th>{{ t('studios.invitations.columns.expiresAt') }}</th>
                 <th>{{ t('studios.members.columnActions') }}</th>
               </tr>
             </thead>
@@ -255,8 +318,10 @@ onBeforeUnmount(() => { deliveryLink.value = '' })
               <tr v-for="invitation in invitations" :key="invitation.id">
                 <td :data-label="t('studios.invitations.email')">
                   <div class="studio-identity">
-                    <strong>{{ displayEmail(invitation) }}</strong>
-                    <span v-if="invitation.expiresAt">{{ t('studios.invitations.expires') }} {{ formatDate(invitation.expiresAt) }}</span>
+                    <strong class="studio-truncate" :title="displayEmail(invitation)">{{ displayEmail(invitation) }}</strong>
+                    <span v-if="invitation.invitedBy?.username" class="studio-truncate" :title="invitation.invitedBy.username">
+                      {{ t('studios.invitations.columns.invitedBy') }} {{ invitation.invitedBy.username }}
+                    </span>
                   </div>
                 </td>
                 <td :data-label="t('studios.invitations.role')">
@@ -267,18 +332,32 @@ onBeforeUnmount(() => { deliveryLink.value = '' })
                     {{ t(`studios.invitationStatuses.${invitation.status}`) }}
                   </Badge>
                 </td>
+                <td :data-label="t('studios.invitations.columns.createdAt')">{{ invitation.createdAt ? formatDate(invitation.createdAt) : '—' }}</td>
+                <td :data-label="t('studios.invitations.columns.expiresAt')">{{ invitation.expiresAt ? formatDate(invitation.expiresAt) : '—' }}</td>
                 <td :data-label="t('studios.members.columnActions')">
-                  <div class="table-actions">
+                  <div v-if="RESENDABLE_STATUSES.includes(invitation.status)" class="table-actions">
                     <button
+                      class="btn btn-secondary btn-sm"
+                      type="button"
+                      :disabled="resendingId === invitation.id || revokingId === invitation.id"
+                      :aria-label="t('studios.invitations.resendFor', { email: displayEmail(invitation) })"
+                      @click="requestResend(invitation)"
+                    >
+                      <span v-if="resendingId === invitation.id" class="spinner" aria-hidden="true"></span>
+                      {{ t('studios.invitations.resend') }}
+                    </button>
+                    <button
+                      v-if="invitation.status === 'pending'"
                       class="btn btn-danger btn-sm"
                       type="button"
-                      :disabled="invitation.status !== 'pending' || revokingId === invitation.id"
+                      :disabled="revokingId === invitation.id || resendingId === invitation.id"
                       @click="requestRevoke(invitation)"
                     >
                       <span v-if="revokingId === invitation.id" class="spinner" aria-hidden="true"></span>
                       {{ t('studios.invitations.revoke') }}
                     </button>
                   </div>
+                  <span v-else class="studio-help">{{ t('studios.invitations.noActions') }}</span>
                 </td>
               </tr>
             </tbody>
@@ -303,6 +382,17 @@ onBeforeUnmount(() => { deliveryLink.value = '' })
         :busy="!!revokingId"
         @confirm="confirmRevoke"
         @cancel="cancelRevoke"
+      />
+
+      <ConfirmDialog
+        :open="!!pendingResend"
+        :title="t('studios.confirmResend.title')"
+        :description="pendingResend ? t('studios.confirmResend.description', { email: displayEmail(pendingResend) }) : ''"
+        :confirm-label="t('studios.invitations.resend')"
+        tone="primary"
+        :busy="!!resendingId"
+        @confirm="confirmResendAction"
+        @cancel="cancelResend"
       />
     </div>
   </section>

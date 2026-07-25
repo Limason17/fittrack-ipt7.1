@@ -21,7 +21,8 @@ let generation = 0
 
 function eventLabel(eventType) {
   const labels = t('audit.events')
-  return (typeof labels === 'object' && labels?.[eventType]) || eventType
+  if (typeof labels === 'object' && labels?.[eventType]) return labels[eventType]
+  return t('audit.unknownEvent', { type: eventType })
 }
 
 async function reconcileStudioAccess(expectedGeneration, expectedStudioId) {
@@ -105,8 +106,12 @@ watch(studioId, () => {
             </thead>
             <tbody>
               <tr v-for="event in events" :key="event.id">
-                <td :data-label="t('audit.columns.event')">{{ eventLabel(event.eventType) }}</td>
-                <td :data-label="t('audit.columns.actor')">{{ event.actor?.username || t('audit.system') }}</td>
+                <td :data-label="t('audit.columns.event')">
+                  <span class="studio-truncate" :title="eventLabel(event.eventType)">{{ eventLabel(event.eventType) }}</span>
+                </td>
+                <td :data-label="t('audit.columns.actor')">
+                  <span class="studio-truncate" :title="event.actor?.username || t('audit.system')">{{ event.actor?.username || t('audit.system') }}</span>
+                </td>
                 <td :data-label="t('audit.columns.target')">{{ event.targetType || '—' }}</td>
                 <td :data-label="t('audit.columns.when')">{{ formatDate(event.createdAt, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) }}</td>
               </tr>
