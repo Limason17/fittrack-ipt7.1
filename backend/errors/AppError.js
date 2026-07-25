@@ -46,8 +46,8 @@ class ServiceUnavailableError extends AppError {
 }
 
 class RateLimitError extends AppError {
-    constructor(message = "Too many requests. Please try again later.") {
-        super({ status: 429, code: "RATE_LIMIT_EXCEEDED", message });
+    constructor(message = "Too many requests. Please try again later.", code = "RATE_LIMIT_EXCEEDED") {
+        super({ status: 429, code, message });
     }
 }
 

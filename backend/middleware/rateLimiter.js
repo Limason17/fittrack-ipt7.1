@@ -4,7 +4,8 @@ function createFixedWindowRateLimiter({
     windowMs,
     max,
     now = Date.now,
-    keyGenerator = (req) => req.ip || req.socket?.remoteAddress || "unknown"
+    keyGenerator = (req) => req.ip || req.socket?.remoteAddress || "unknown",
+    code
 }) {
     if (!Number.isSafeInteger(windowMs) || windowMs <= 0 || !Number.isSafeInteger(max) || max <= 0) {
         throw new TypeError("windowMs and max must be positive integers");
@@ -41,7 +42,7 @@ function createFixedWindowRateLimiter({
 
         if (state.count > max) {
             res.setHeader("Retry-After", String(Math.ceil((state.resetAt - currentTime) / 1000)));
-            next(new RateLimitError());
+            next(code ? new RateLimitError(undefined, code) : new RateLimitError());
             return;
         }
 
@@ -139,8 +140,37 @@ function createAuthRateLimiters(options = {}) {
     };
 }
 
+function createInvitationRateLimiters(options = {}) {
+    const env = options.env || process.env;
+    const now = options.now || Date.now;
+    const resendWindowMs = options.resendWindowMs ?? positiveInteger(
+        env.INVITATION_RESEND_RATE_LIMIT_WINDOW_MS,
+        15 * 60 * 1000,
+        "INVITATION_RESEND_RATE_LIMIT_WINDOW_MS"
+    );
+    const resendMax = options.resendMax ?? positiveInteger(
+        env.INVITATION_RESEND_RATE_LIMIT_MAX,
+        5,
+        "INVITATION_RESEND_RATE_LIMIT_MAX"
+    );
+
+    return {
+        resend: createFixedWindowRateLimiter({
+            windowMs: resendWindowMs,
+            max: resendMax,
+            now,
+            // Keyed by actor + target invitation: caps how often any one
+            // admin can hammer a single invitation, without letting a hot
+            // invitation exhaust a budget shared across unrelated ones.
+            keyGenerator: (req) => `${req.user?.id ?? "anon"}:${req.params?.invitationId ?? ""}`,
+            code: "INVITATION_RESEND_RATE_LIMITED"
+        })
+    };
+}
+
 module.exports = {
     createAuthRateLimiters,
     createFixedWindowRateLimiter,
+    createInvitationRateLimiters,
     positiveInteger
 };

@@ -169,7 +169,12 @@ function publicInvitation(row, now = new Date()) {
         acceptedAt: row.accepted_at,
         createdAt: row.created_at,
         revokedAt: row.revoked_at,
-        ...(status === "pending" ? { email: row.email_normalized } : {})
+        invitedBy: row.invited_by_username ? { username: row.invited_by_username } : null,
+        // Still shown for 'expired', not just 'pending': an expired invitation
+        // remains resend-actionable (see resendInvitation), so the admin
+        // needs to see who it is for. Only truly terminal states (accepted,
+        // revoked) redact the e-mail from here on.
+        ...(status === "pending" || status === "expired" ? { email: row.email_normalized } : {})
     };
 }
 
@@ -881,17 +886,18 @@ function createStudioService({
                     [studio.internalId]
                 );
                 const [rows] = await connection.query(
-                    `SELECT public_id,
+                    `SELECT si.public_id,
                             CASE
-                                WHEN status = 'pending'
-                                 AND expires_at > CURRENT_TIMESTAMP(3)
-                                THEN email_normalized ELSE NULL
+                                WHEN si.status IN ('pending', 'expired')
+                                THEN si.email_normalized ELSE NULL
                             END AS email_normalized,
-                            role, status, expires_at,
-                            accepted_at, created_at, revoked_at
-                     FROM studio_invitations
-                     WHERE studio_id = ?
-                     ORDER BY created_at DESC, id DESC
+                            si.role, si.status, si.expires_at,
+                            si.accepted_at, si.created_at, si.revoked_at,
+                            inviter.username AS invited_by_username
+                     FROM studio_invitations si
+                     LEFT JOIN users inviter ON inviter.id = si.invited_by_user_id
+                     WHERE si.studio_id = ?
+                     ORDER BY si.created_at DESC, si.id DESC
                      LIMIT ? OFFSET ?`,
                     [studio.internalId, pagination.limit, pagination.offset]
                 );
@@ -967,6 +973,147 @@ function createStudioService({
         connection.release();
         if (postCommitError) throw postCommitError;
         return publicInvitation(revoked, now());
+    }
+
+    // Resend always rotates the token and grants a fresh expiry window, for
+    // both a still-valid pending invitation and one that has lazily lapsed
+    // (status still 'pending' with a past expires_at, or already flipped to
+    // 'expired' by an earlier read/write elsewhere) - both cases are treated
+    // as "renew this same request in place" rather than minting a second,
+    // competing invitation row. The old token is invalidated unconditionally
+    // the moment this transaction commits, regardless of whether the new
+    // token's e-mail delivery afterwards succeeds - so on delivery failure
+    // there is no "old token still works" state to preserve, and the only
+    // safe compensation is the same one createInvitation already uses:
+    // revoke the (now undeliverable) invitation via
+    // compensateInvitationDeliveryFailure, which requires the caller to
+    // resend or invite again rather than silently leaving a pending
+    // invitation nobody can act on.
+    async function resendInvitation(actorUserId, context, invitationPublicId, { requestId } = {}) {
+        outbox.assertAvailable();
+        const { token, tokenHash } = generateInvitationToken();
+        const expiresAt = new Date(now().getTime() + INVITATION_LIFETIME_MS);
+        const connection = await begin();
+        let studio;
+        let invitation;
+        try {
+            studio = await lockStudio(connection, context.studio.internalId);
+            const actor = await lockActorMembership(connection, studio, actorUserId);
+            assertPermission(actor, PERMISSIONS.INVITATION_RESEND);
+
+            const [rows] = await connection.query(
+                `SELECT public_id, email_normalized, role, status, expires_at,
+                        accepted_at, created_at, revoked_at
+                 FROM studio_invitations
+                 WHERE studio_id = ? AND public_id = ?
+                 FOR UPDATE`,
+                [studio.internalId, invitationPublicId]
+            );
+            if (rows.length === 0) throw invitationNotFound();
+            invitation = rows[0];
+            if (!invitationRoleDecision(actor.role, invitation.role).allowed) {
+                throw new InsufficientStudioRoleError();
+            }
+
+            if (invitation.status === "accepted") {
+                throw applicationError(
+                    409,
+                    "INVITATION_ALREADY_ACCEPTED",
+                    "Invitation has already been accepted."
+                );
+            }
+            if (invitation.status === "revoked") {
+                throw applicationError(409, "INVITATION_REVOKED", "Invitation has been revoked.");
+            }
+            if (invitation.status !== "pending" && invitation.status !== "expired") {
+                throw applicationError(409, "INVITATION_NOT_RESENDABLE", "Invitation cannot be resent.");
+            }
+
+            const [existingMemberships] = await connection.query(
+                `SELECT sm.status
+                 FROM users u
+                 INNER JOIN studio_memberships sm ON sm.user_id = u.id
+                 WHERE sm.studio_id = ? AND LOWER(u.email) = ?
+                 LIMIT 1
+                 FOR UPDATE`,
+                [studio.internalId, invitation.email_normalized]
+            );
+            if (existingMemberships[0]?.status === "active") {
+                throw new ConflictError(
+                    "The invited e-mail address already has an active studio membership.",
+                    "INVITATION_EMAIL_ALREADY_MEMBER"
+                );
+            }
+
+            const [updated] = await connection.query(
+                `UPDATE studio_invitations
+                 SET token_hash = ?, status = 'pending', expires_at = ?
+                 WHERE studio_id = ? AND public_id = ?`,
+                [tokenHash, expiresAt, studio.internalId, invitationPublicId]
+            );
+            if (updated.affectedRows !== 1) throw invitationNotFound();
+
+            await insertAudit(connection, {
+                studioId: studio.internalId,
+                actorUserId,
+                eventType: "invitation.resent",
+                targetType: "invitation",
+                targetPublicId: invitationPublicId,
+                details: { role: invitation.role, expiresAt }
+            });
+            await connection.commit();
+        } catch (error) {
+            await rollbackAndRelease(connection);
+            throw error;
+        }
+        connection.release();
+
+        let delivery;
+        try {
+            delivery = await outbox.publish({
+                token,
+                email: invitation.email_normalized,
+                studioName: studio.name,
+                role: invitation.role,
+                expiresAt,
+                locale: studio.default_locale,
+                requestId
+            });
+        } catch {
+            try {
+                const recovered = await compensateInvitationDeliveryFailure({
+                    studioInternalId: studio.internalId,
+                    actorUserId,
+                    invitationPublicId,
+                    role: invitation.role
+                });
+                if (!recovered) {
+                    throw new Error("Invitation was no longer pending during delivery recovery.");
+                }
+            } catch (compensationError) {
+                throw new AppError({
+                    status: 503,
+                    code: "INVITATION_DELIVERY_RECOVERY_FAILED",
+                    message: "Invitation delivery failed and requires operator review.",
+                    cause: compensationError
+                });
+            }
+            throw new AppError({
+                status: 502,
+                code: "INVITATION_DELIVERY_FAILED",
+                message: "Invitation delivery failed; the invitation was revoked safely."
+            });
+        }
+        return {
+            invitation: {
+                id: invitationPublicId,
+                email: invitation.email_normalized,
+                role: invitation.role,
+                status: "pending",
+                expiresAt
+            },
+            delivery
+        };
     }
 
     async function acceptInvitation(actorUserId, token) {
@@ -1204,6 +1351,7 @@ function createStudioService({
         listMemberships,
         listStudios,
         loadStudioContext,
+        resendInvitation,
         revokeInvitation,
         updateMembership,
         updateStudio
