@@ -7,6 +7,7 @@ const api = vi.hoisted(() => ({
   listStudios: vi.fn(),
   listInvitations: vi.fn(),
   revokeInvitation: vi.fn(),
+  resendInvitation: vi.fn(),
 }))
 vi.mock('../utils/studioApi', () => api)
 
@@ -54,6 +55,7 @@ describe('StudioInvitationsView', () => {
     api.listStudios.mockReset()
     api.createInvitation.mockReset()
     api.revokeInvitation.mockReset()
+    api.resendInvitation.mockReset()
     api.listInvitations.mockResolvedValue({ invitations: [], pagination: { total: 0 } })
     api.listStudios.mockResolvedValue({ studios: [studio('owner')] })
   })
@@ -220,6 +222,144 @@ describe('StudioInvitationsView', () => {
     })
     const wrapper = await mountView('owner')
     expect(wrapper.text()).toContain('existing@example.test')
+    wrapper.unmount()
+  })
+
+  it('offers resend for pending and expired invitations, and no actions for accepted/revoked ones', async () => {
+    api.listInvitations.mockResolvedValue({
+      invitations: [
+        { id: 'inv-pending', email: 'pending@example.test', role: 'member', status: 'pending', expiresAt: '2026-08-01T00:00:00.000Z', createdAt: '2026-07-01T00:00:00.000Z' },
+        { id: 'inv-expired', email: 'expired@example.test', role: 'trainer', status: 'expired', expiresAt: '2026-01-01T00:00:00.000Z', createdAt: '2025-12-01T00:00:00.000Z' },
+        { id: 'inv-accepted', email: null, role: 'member', status: 'accepted', createdAt: '2025-11-01T00:00:00.000Z' },
+        { id: 'inv-revoked', email: null, role: 'member', status: 'revoked', createdAt: '2025-10-01T00:00:00.000Z' },
+      ],
+      pagination: { total: 4 },
+    })
+    const wrapper = await mountView('owner')
+    const rows = wrapper.findAll('tbody tr')
+    expect(rows).toHaveLength(4)
+
+    const [pendingRow, expiredRow, acceptedRow, revokedRow] = rows
+    expect(pendingRow.findAll('button').some((btn) => btn.text().includes('Erneut senden'))).toBe(true)
+    expect(pendingRow.findAll('button').some((btn) => btn.text().includes('Widerrufen'))).toBe(true)
+    expect(expiredRow.findAll('button').some((btn) => btn.text().includes('Erneut senden'))).toBe(true)
+    expect(expiredRow.findAll('button').some((btn) => btn.text().includes('Widerrufen'))).toBe(false)
+    expect(acceptedRow.find('button').exists()).toBe(false)
+    expect(acceptedRow.text()).toContain('Keine Aktion verfügbar')
+    expect(revokedRow.find('button').exists()).toBe(false)
+    expect(revokedRow.text()).toContain('Keine Aktion verfügbar')
+    wrapper.unmount()
+  })
+
+  it('asks for confirmation before resending, disables the button while in flight, and updates the row on success', async () => {
+    api.listInvitations.mockResolvedValue({
+      invitations: [{ id: 'inv-pending', email: 'pending@example.test', role: 'member', status: 'pending', expiresAt: '2026-08-01T00:00:00.000Z' }],
+      pagination: { total: 1 },
+    })
+    const wrapper = await mountView('owner')
+    const resendButton = wrapper.findAll('button').find((btn) => btn.text().includes('Erneut senden'))
+    await resendButton.trigger('click')
+    await flushPromises()
+
+    const dialog = document.body.querySelector('[role="dialog"]')
+    expect(dialog).not.toBeNull()
+    expect(dialog.textContent).toContain('Einladung erneut senden?')
+    expect(dialog.textContent).toContain('pending@example.test')
+    expect(api.resendInvitation).not.toHaveBeenCalled()
+
+    let resolveResend
+    api.resendInvitation.mockReturnValue(new Promise((resolve) => { resolveResend = resolve }))
+    const confirmButton = [...dialog.querySelectorAll('button')].find((button) => button.textContent.includes('Erneut senden'))
+    confirmButton.click()
+    await flushPromises()
+
+    expect(api.resendInvitation).toHaveBeenCalledWith('studio-a', 'inv-pending')
+    // A second click while the request is in flight must not fire a second call.
+    await resendButton.trigger('click')
+    expect(api.resendInvitation).toHaveBeenCalledTimes(1)
+
+    resolveResend({
+      invitation: { id: 'inv-pending', email: 'pending@example.test', role: 'member', status: 'pending', expiresAt: '2026-09-01T00:00:00.000Z' },
+      delivery: { acceptUrl: 'http://127.0.0.1:4173/invitations/fresh-token-after-resend' },
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[role="status"]').text()).toContain('erneut gesendet')
+    expect(wrapper.get('.studio-delivery').text()).toContain('fresh-token-after-resend')
+    wrapper.unmount()
+  })
+
+  it('shows a specific, understandable message for each resend failure code', async () => {
+    const cases = [
+      ['INVITATION_ALREADY_ACCEPTED', 'bereits angenommen'],
+      ['INVITATION_REVOKED', 'widerrufen und kann nicht'],
+      ['INVITATION_EMAIL_ALREADY_MEMBER', 'bereits aktives Mitglied'],
+      ['INVITATION_RESEND_RATE_LIMITED', 'Zu viele Versuche'],
+    ]
+    for (const [code, expectedText] of cases) {
+      api.listInvitations.mockResolvedValue({
+        invitations: [{ id: 'inv-pending', email: 'pending@example.test', role: 'member', status: 'pending', expiresAt: '2026-08-01T00:00:00.000Z' }],
+        pagination: { total: 1 },
+      })
+      api.resendInvitation.mockReset()
+      api.resendInvitation.mockRejectedValue(
+        Object.assign(new Error('failed'), { status: 409, data: { error: { code, message: 'failed' } } })
+      )
+      const wrapper = await mountView('owner')
+      const resendButton = wrapper.findAll('button').find((btn) => btn.text().includes('Erneut senden'))
+      await resendButton.trigger('click')
+      await flushPromises()
+      const dialog = document.body.querySelector('[role="dialog"]')
+      const confirmButton = [...dialog.querySelectorAll('button')].find((button) => button.textContent.includes('Erneut senden'))
+      confirmButton.click()
+      await flushPromises()
+
+      expect(wrapper.get('[role="alert"]').text()).toContain(expectedText)
+      expect(wrapper.text()).not.toContain(code)
+      wrapper.unmount()
+    }
+  })
+
+  it('keeps a long e-mail address and inviter name fully accessible via title even when visually truncated', async () => {
+    const longEmail = 'a-very-long-invitee-address-that-would-overflow-a-narrow-column@example.test'
+    api.listInvitations.mockResolvedValue({
+      invitations: [{
+        id: 'inv-long',
+        email: longEmail,
+        role: 'member',
+        status: 'pending',
+        expiresAt: '2026-08-01T00:00:00.000Z',
+        invitedBy: { username: 'a-very-long-owner-username-that-would-also-overflow' },
+      }],
+      pagination: { total: 1 },
+    })
+    const wrapper = await mountView('owner')
+    const emailCell = wrapper.find('.studio-truncate')
+    expect(emailCell.attributes('title')).toBe(longEmail)
+    expect(wrapper.text()).toContain('a-very-long-owner-username-that-would-also-overflow')
+    wrapper.unmount()
+  })
+
+  it('returns focus to the resend trigger button after the confirm dialog is cancelled', async () => {
+    api.listInvitations.mockResolvedValue({
+      invitations: [{ id: 'inv-pending', email: 'pending@example.test', role: 'member', status: 'pending', expiresAt: '2026-08-01T00:00:00.000Z' }],
+      pagination: { total: 1 },
+    })
+    const wrapper = await mountView('owner')
+    const resendButton = wrapper.findAll('button').find((btn) => btn.text().includes('Erneut senden'))
+    resendButton.element.focus()
+    await resendButton.trigger('click')
+    await flushPromises()
+
+    const dialog = document.body.querySelector('[role="dialog"]')
+    expect(dialog).not.toBeNull()
+    const cancelButton = [...dialog.querySelectorAll('button')].find((button) => button.textContent.includes('Abbrechen'))
+    cancelButton.click()
+    await flushPromises()
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+    expect(document.activeElement).toBe(resendButton.element)
+    expect(api.resendInvitation).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

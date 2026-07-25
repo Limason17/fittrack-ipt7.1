@@ -93,6 +93,13 @@ function invitationToken(result) {
     return decodeURIComponent(new URL(url).pathname.split("/").pop());
 }
 
+function resendToken(result) {
+    assert.equal(result.response.status, 200, JSON.stringify(result.data));
+    const url = result.data.delivery?.acceptUrl;
+    assert.equal(typeof url, "string");
+    return decodeURIComponent(new URL(url).pathname.split("/").pop());
+}
+
 async function invite(inviter, studioId, invitee, role) {
     return api(`/api/v1/studios/${studioId}/invitations`, {
         method: "POST",
@@ -144,7 +151,15 @@ before(async () => {
         "delivery",
         "failedDelivery",
         "concurrentAccept",
-        "acceptVsRevoke"
+        "acceptVsRevoke",
+        "resendPending",
+        "resendExpired",
+        "resendAccepted",
+        "resendRevoked",
+        "resendAlreadyMember",
+        "resendConcurrent",
+        "resendRateLimited",
+        "resendRateLimitedOther"
     ]) {
         accounts[name] = await registerAndLogin(name);
     }
@@ -695,7 +710,11 @@ test("invitation mismatch, revocation, expiration, and list privacy are safe", a
     });
     assert.equal(invitations.response.status, 200);
     for (const invitation of invitations.data.invitations) {
-        if (invitation.status === "pending") {
+        // Stage 3C: email stays visible for 'expired' too, not just
+        // 'pending' - an expired invitation is still resend-actionable, so
+        // the admin needs to see who it is for. Only the truly terminal
+        // states (accepted/revoked) redact it.
+        if (["pending", "expired"].includes(invitation.status)) {
             assert.equal(typeof invitation.email, "string");
         } else {
             assert.equal(Object.hasOwn(invitation, "email"), false);
@@ -898,6 +917,268 @@ test("delivery failure is visible, compensates pending state, and audit is sanit
     });
     assert.equal(trainerAudit.response.status, 403);
     assert.equal(trainerAudit.data.error.code, "INSUFFICIENT_STUDIO_ROLE");
+});
+
+test("resend rotates the token, invalidates the old link, and is gated to owner/admin only", async () => {
+    const created = await invite(accounts.owner, studioA.id, accounts.resendPending, "member");
+    const oldToken = invitationToken(created);
+    const invitationId = created.data.invitation.id;
+
+    const trainerAttempt = await api(
+        `/api/v1/studios/${studioA.id}/invitations/${invitationId}/resend`,
+        { method: "POST", token: accounts.trainer.token }
+    );
+    assert.equal(trainerAttempt.response.status, 403);
+    assert.equal(trainerAttempt.data.error.code, "INSUFFICIENT_STUDIO_ROLE");
+
+    const memberAttempt = await api(
+        `/api/v1/studios/${studioA.id}/invitations/${invitationId}/resend`,
+        { method: "POST", token: accounts.member.token }
+    );
+    assert.equal(memberAttempt.response.status, 403);
+    assert.equal(memberAttempt.data.error.code, "INSUFFICIENT_STUDIO_ROLE");
+
+    const foreignStudioAttempt = await api(
+        `/api/v1/studios/${studioA.id}/invitations/${studioBInvitation.id}/resend`,
+        { method: "POST", token: accounts.owner.token }
+    );
+    assert.equal(foreignStudioAttempt.response.status, 404);
+    assert.equal(foreignStudioAttempt.data.error.code, "INVITATION_INVALID");
+
+    const resent = await api(
+        `/api/v1/studios/${studioA.id}/invitations/${invitationId}/resend`,
+        { method: "POST", token: accounts.admin.token }
+    );
+    assert.equal(resent.response.status, 200, JSON.stringify(resent.data));
+    assert.equal(resent.data.invitation.id, invitationId);
+    assert.equal(resent.data.invitation.status, "pending");
+    assert.equal(resent.data.invitation.role, "member");
+    assert.deepEqual(
+        Object.keys(resent.data.invitation).sort(),
+        ["email", "expiresAt", "id", "role", "status"]
+    );
+    assert.equal(JSON.stringify(resent.data).includes(oldToken), false);
+    const newToken = resendToken(resent);
+    assert.notEqual(newToken, oldToken);
+
+    const oldTokenAccept = await api(`/api/v1/invitations/${oldToken}/accept`, {
+        method: "POST",
+        token: accounts.resendPending.token
+    });
+    assert.equal(oldTokenAccept.response.status, 404);
+    assert.equal(oldTokenAccept.data.error.code, "INVITATION_INVALID");
+
+    const newTokenAccept = await api(`/api/v1/invitations/${newToken}/accept`, {
+        method: "POST",
+        token: accounts.resendPending.token
+    });
+    assert.equal(newTokenAccept.response.status, 200, JSON.stringify(newTokenAccept.data));
+    assert.equal(newTokenAccept.data.membership.role, "member");
+
+    const [[auditRow]] = await pool.query(
+        `SELECT details_json FROM studio_audit_events
+         WHERE event_type = 'invitation.resent' AND target_public_id = ?`,
+        [invitationId]
+    );
+    assert.equal(auditRow.details_json.role, "member");
+    assert.doesNotMatch(JSON.stringify(auditRow.details_json), new RegExp(oldToken));
+    assert.doesNotMatch(JSON.stringify(auditRow.details_json), /example\.test/);
+});
+
+test("resend renews an expired invitation in place instead of creating a duplicate row", async () => {
+    const created = await invite(accounts.owner, studioA.id, accounts.resendExpired, "trainer");
+    const invitationId = created.data.invitation.id;
+    await pool.query(
+        "UPDATE studio_invitations SET expires_at = '2020-01-01 00:00:00' WHERE public_id = ?",
+        [invitationId]
+    );
+
+    const listedBeforeResend = await api(`/api/v1/studios/${studioA.id}/invitations?limit=100`, {
+        token: accounts.owner.token
+    });
+    const expiredListing = listedBeforeResend.data.invitations.find((item) => item.id === invitationId);
+    assert.equal(expiredListing.status, "expired");
+    assert.equal(
+        expiredListing.email,
+        accounts.resendExpired.email.toLowerCase(),
+        "an expired-but-resendable invitation must still show its e-mail so the admin knows who they are resending to"
+    );
+
+    const resent = await api(
+        `/api/v1/studios/${studioA.id}/invitations/${invitationId}/resend`,
+        { method: "POST", token: accounts.owner.token }
+    );
+    assert.equal(resent.response.status, 200, JSON.stringify(resent.data));
+    assert.equal(resent.data.invitation.status, "pending");
+    assert.ok(new Date(resent.data.invitation.expiresAt).getTime() > Date.now());
+
+    const [rows] = await pool.query(
+        "SELECT id, status FROM studio_invitations WHERE public_id = ?",
+        [invitationId]
+    );
+    assert.equal(rows.length, 1, "resend must not create a second, competing invitation row");
+    assert.equal(rows[0].status, "pending");
+
+    const newToken = resendToken(resent);
+    const accepted = await api(`/api/v1/invitations/${newToken}/accept`, {
+        method: "POST",
+        token: accounts.resendExpired.token
+    });
+    assert.equal(accepted.response.status, 200, JSON.stringify(accepted.data));
+    assert.equal(accepted.data.membership.role, "trainer");
+});
+
+test("resend refuses accepted/revoked invitations without reactivating them, and refuses already-active members", async () => {
+    const acceptedInvitation = await inviteAndAccept(
+        accounts.owner,
+        studioA.id,
+        accounts.resendAccepted,
+        "member"
+    );
+    const resendAccepted = await api(
+        `/api/v1/studios/${studioA.id}/invitations/${acceptedInvitation.invitation.id}/resend`,
+        { method: "POST", token: accounts.owner.token }
+    );
+    assert.equal(resendAccepted.response.status, 409);
+    assert.equal(resendAccepted.data.error.code, "INVITATION_ALREADY_ACCEPTED");
+    const [[stillAccepted]] = await pool.query(
+        "SELECT status FROM studio_invitations WHERE public_id = ?",
+        [acceptedInvitation.invitation.id]
+    );
+    assert.equal(stillAccepted.status, "accepted");
+
+    const revokedCreated = await invite(accounts.owner, studioA.id, accounts.resendRevoked, "member");
+    const revokedInvitationId = revokedCreated.data.invitation.id;
+    const revokeResult = await api(
+        `/api/v1/studios/${studioA.id}/invitations/${revokedInvitationId}`,
+        { method: "DELETE", token: accounts.owner.token }
+    );
+    assert.equal(revokeResult.response.status, 200);
+    const resendRevoked = await api(
+        `/api/v1/studios/${studioA.id}/invitations/${revokedInvitationId}/resend`,
+        { method: "POST", token: accounts.owner.token }
+    );
+    assert.equal(resendRevoked.response.status, 409);
+    assert.equal(resendRevoked.data.error.code, "INVITATION_REVOKED");
+    const [[stillRevoked]] = await pool.query(
+        "SELECT status FROM studio_invitations WHERE public_id = ?",
+        [revokedInvitationId]
+    );
+    assert.equal(stillRevoked.status, "revoked", "a revoked invitation must never be silently reactivated");
+
+    const alreadyMemberCreated = await invite(
+        accounts.owner,
+        studioA.id,
+        accounts.resendAlreadyMember,
+        "member"
+    );
+    const alreadyMemberInvitationId = alreadyMemberCreated.data.invitation.id;
+    const [[tokenHashBefore]] = await pool.query(
+        "SELECT token_hash FROM studio_invitations WHERE public_id = ?",
+        [alreadyMemberInvitationId]
+    );
+    const [[{ id: studioAInternalId }]] = await pool.query(
+        "SELECT id FROM studios WHERE public_id = ?",
+        [studioA.id]
+    );
+    await pool.query(
+        `INSERT INTO studio_memberships (
+            public_id, studio_id, user_id, role, status, invited_by_user_id, joined_at
+         ) VALUES (?, ?, ?, 'member', 'active', NULL, CURRENT_TIMESTAMP(6))`,
+        [crypto.randomUUID(), studioAInternalId, accounts.resendAlreadyMember.id]
+    );
+    const resendAlreadyMember = await api(
+        `/api/v1/studios/${studioA.id}/invitations/${alreadyMemberInvitationId}/resend`,
+        { method: "POST", token: accounts.owner.token }
+    );
+    assert.equal(resendAlreadyMember.response.status, 409);
+    assert.equal(resendAlreadyMember.data.error.code, "INVITATION_EMAIL_ALREADY_MEMBER");
+    const [[tokenHashAfter]] = await pool.query(
+        "SELECT token_hash FROM studio_invitations WHERE public_id = ?",
+        [alreadyMemberInvitationId]
+    );
+    assert.deepEqual(
+        tokenHashAfter.token_hash,
+        tokenHashBefore.token_hash,
+        "a rejected resend must not rotate the token"
+    );
+});
+
+test("concurrent resend calls on the same invitation converge on exactly one valid token", async () => {
+    const created = await invite(accounts.owner, studioA.id, accounts.resendConcurrent, "member");
+    const invitationId = created.data.invitation.id;
+
+    const results = await Promise.all([
+        api(`/api/v1/studios/${studioA.id}/invitations/${invitationId}/resend`, {
+            method: "POST",
+            token: accounts.owner.token
+        }),
+        api(`/api/v1/studios/${studioA.id}/invitations/${invitationId}/resend`, {
+            method: "POST",
+            token: accounts.owner.token
+        }),
+        api(`/api/v1/studios/${studioA.id}/invitations/${invitationId}/resend`, {
+            method: "POST",
+            token: accounts.owner.token
+        })
+    ]);
+    assert.ok(results.every(({ response }) => response.status === 200), JSON.stringify(results.map((r) => r.data)));
+
+    const tokens = results.map((result) => resendToken(result));
+    // Each concurrent call fully overwrites token_hash under the same row
+    // lock, so only the token belonging to whichever call committed last can
+    // still match the persisted row - compare hashes directly instead of
+    // racing accept attempts against each other, since accepting once would
+    // turn every subsequent attempt into an unrelated INVITATION_ALREADY_USED
+    // result and mask which of the three tokens were already dead beforehand.
+    const [[finalRow]] = await pool.query(
+        "SELECT token_hash FROM studio_invitations WHERE public_id = ?",
+        [invitationId]
+    );
+    const { hashInvitationToken } = require("../../security/invitationTokens");
+    const validCount = tokens.filter(
+        (candidate) => Buffer.compare(hashInvitationToken(candidate), finalRow.token_hash) === 0
+    ).length;
+    assert.equal(validCount, 1, "exactly one of the three issued tokens must match the final row state");
+
+    const [[auditCount]] = await pool.query(
+        `SELECT COUNT(*) AS total FROM studio_audit_events
+         WHERE event_type = 'invitation.resent' AND target_public_id = ?`,
+        [invitationId]
+    );
+    assert.equal(Number(auditCount.total), 3, "every successful resend call writes its own audit event");
+});
+
+test("resend rate limiting is scoped per actor and invitation", async () => {
+    const created = await invite(accounts.owner, studioA.id, accounts.resendRateLimited, "member");
+    const invitationId = created.data.invitation.id;
+
+    const attempts = [];
+    for (let index = 0; index < 6; index += 1) {
+        attempts.push(await api(
+            `/api/v1/studios/${studioA.id}/invitations/${invitationId}/resend`,
+            { method: "POST", token: accounts.owner.token }
+        ));
+    }
+    assert.equal(attempts.slice(0, 5).every(({ response }) => response.status === 200), true);
+    assert.equal(attempts[5].response.status, 429);
+    assert.equal(attempts[5].data.error.code, "INVITATION_RESEND_RATE_LIMITED");
+
+    const otherInvitation = await invite(
+        accounts.owner,
+        studioA.id,
+        accounts.resendRateLimitedOther,
+        "member"
+    );
+    const otherResend = await api(
+        `/api/v1/studios/${studioA.id}/invitations/${otherInvitation.data.invitation.id}/resend`,
+        { method: "POST", token: accounts.owner.token }
+    );
+    assert.equal(
+        otherResend.response.status,
+        200,
+        "a rate-limited invitation must not exhaust another invitation's budget"
+    );
 });
 
 function smtpEnv(overrides = {}) {

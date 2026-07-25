@@ -65,6 +65,32 @@
 > wurde keine Cloud-Infrastruktur eingerichtet.
 >
 > ---
+>
+> **Nachtrag (2026-07-25, Stage 3C Pilot-UX-Politur):** Stage 3C (siehe
+> `STAGE_3C_PILOT_UX_POLISH.md`) ist abgeschlossen: sicherer
+> Einladungs-Resend (Owner/Admin, Tokenrotation, In-Place-Erneuerung
+> abgelaufener Einladungen, sichere Kompensation bei Zustellfehlern,
+> eigener Rate-Limiter), vollständige Audit-Log-Übersetzung (15 zuvor rohe
+> Event-Typen ergänzt, sicherer Fallback für unbekannte künftige Typen),
+> Behebung des im Stage-3A-Audit konkret benannten
+> Dropdown-Textabschneidungs-Fehlers (`StudioSwitcher.vue`), erweiterte
+> Einladungsliste (erstellt am/gültig bis/eingeladen durch), sowie ein
+> vollständiger, real gegen den lokalen Stack ausgeführter Admin-
+> Live-Durchlauf (vorher nur per Code-Audit verifiziert). Die in Stage 3A
+> vorgeschlagene Blockreihenfolge (3B1 → 3B2 → 3C UX-Politur → 3D
+> Rate-Limiting/CORS) ist damit vollständig abgearbeitet; **Stage 3D wurde
+> nicht begonnen.** Weiterhin offen und explizit außerhalb des Scopes
+> dieser Phase: Rate-Limiting weiterhin pro Prozess und weiterhin nur auf
+> Login/Registrierung/Account-Aktionen/Invitation-Resend beschränkt (keine
+> generelle Ausweitung auf alle mutierenden Endpunkte), CORS-Same-Host-Regel
+> weiterhin ungetestet gegen ein reales Ziel-Deployment, toter Policy-Code
+> (`coachActionEligibility`) weiterhin unbereinigt, 2FA, Passkeys, Social
+> Login, Passwort-vergessen/Reset, Kontolöschung, vollständige
+> Geräteverwaltung. Stage 2B2B bleibt weiterhin **Deferred until first
+> customer / production deployment** — unverändert durch diese Phase; es
+> wurde keine Cloud-Infrastruktur eingerichtet.
+>
+> ---
 
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-

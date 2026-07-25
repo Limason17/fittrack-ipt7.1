@@ -78,6 +78,12 @@ const service = {
     async revokeInvitation() {
         return { id: STUDIO_B, role: "member", status: "revoked" };
     },
+    async resendInvitation() {
+        return {
+            invitation: { id: STUDIO_B, email: "resend@example.test", role: "member", status: "pending", expiresAt: "2030-01-01T00:00:00.000Z" },
+            delivery: { delivered: true }
+        };
+    },
     async acceptInvitation() {
         return { studio: studio("member"), membership: studio("member").membership };
     },
@@ -170,6 +176,35 @@ test("studio create enforces exact payload and returns active owner context", as
     assert.equal(created.data.studio.membership.role, "owner");
     assert.equal(created.data.studio.membership.status, "active");
     assert.equal(created.data.studio.defaultTimezone, "Europe/Zurich");
+});
+
+test("invitation resend is gated to owner/admin, validates the invitation id, and reaches the service", async () => {
+    const memberAttempt = await request(`/api/v1/studios/${STUDIO_A}/invitations/${MEMBERSHIP}/resend`, {
+        method: "POST",
+        headers: { "x-test-user": "2" }
+    });
+    assert.equal(memberAttempt.response.status, 403);
+    assert.equal(memberAttempt.data.error.code, "INSUFFICIENT_STUDIO_ROLE");
+
+    const trainerAttempt = await request(`/api/v1/studios/${STUDIO_A}/invitations/${MEMBERSHIP}/resend`, {
+        method: "POST",
+        headers: { "x-test-user": "3" }
+    });
+    assert.equal(trainerAttempt.response.status, 403);
+    assert.equal(trainerAttempt.data.error.code, "INSUFFICIENT_STUDIO_ROLE");
+
+    const malformedId = await request(`/api/v1/studios/${STUDIO_A}/invitations/not-a-uuid/resend`, {
+        method: "POST"
+    });
+    assert.equal(malformedId.response.status, 400);
+    assert.equal(malformedId.data.error.code, "VALIDATION_ERROR");
+
+    const ownerAttempt = await request(`/api/v1/studios/${STUDIO_A}/invitations/${MEMBERSHIP}/resend`, {
+        method: "POST"
+    });
+    assert.equal(ownerAttempt.response.status, 200, JSON.stringify(ownerAttempt.data));
+    assert.equal(ownerAttempt.data.invitation.status, "pending");
+    assert.equal(ownerAttempt.data.delivery.delivered, true);
 });
 
 test("personal API mount remains unchanged beside versioned studio routes", async () => {
