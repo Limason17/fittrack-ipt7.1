@@ -1,5 +1,14 @@
 .studio-page {
     display: grid;
+    /* Without an explicit column track, the implicit single column sizes
+       itself via `auto`, which can grow to fit a child's max-content
+       contribution (e.g. a page header with a long, wrappable subtitle)
+       rather than being capped to the available width - overflowing the
+       viewport at narrow widths. minmax(0, 1fr) makes the track fill the
+       container while still allowing it to shrink to 0, so children with
+       normal text wrapping/min-width:0 (see PageHeader.vue) can actually
+       use that space instead of forcing the track wider. */
+    grid-template-columns: minmax(0, 1fr);
     gap: 1.25rem;
 }
 

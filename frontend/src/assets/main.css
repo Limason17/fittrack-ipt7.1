@@ -205,6 +205,10 @@ main {
     font-weight: 800;
     letter-spacing: -0.01em;
     line-height: 1.15;
+    /* A long, unbreakable single word (e.g. a German compound title like
+       "Programmzuweisungen") has no space to wrap at and otherwise forces
+       the whole page-header row wider than the viewport at narrow widths. */
+    overflow-wrap: break-word;
 }
 
 .page-subtitle {

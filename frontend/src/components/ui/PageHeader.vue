@@ -33,6 +33,13 @@ defineProps({
   justify-content: space-between;
   gap: 1.25rem;
   flex-wrap: wrap;
+  /* This component is normally used as a direct child of a CSS Grid
+     container (.studio-page, display:grid with no explicit column sizing).
+     A grid item's default min-width is `auto` (its content's min-content
+     size), not 0 - without this override, .page-header refuses to shrink
+     below whatever its widest unbreakable content needs, overflowing the
+     grid track (and the viewport) at narrow widths instead of wrapping. */
+  min-width: 0;
 }
 
 .page-header-text {

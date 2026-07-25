@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { safeInternalRedirect, saveAuth } from '../utils/auth'
+import { notifyLoggedIn, safeInternalRedirect, saveAuth } from '../utils/auth'
 import { apiRequest } from '../utils/api'
 import { applyLanguageForUser, t } from '../utils/i18n'
 import { applyDistanceUnitForUser, applyWeightUnitForUser } from '../utils/units'
@@ -39,6 +39,7 @@ async function handleLogin() {
     })
 
     saveAuth(data.token, data.user)
+    notifyLoggedIn()
     await Promise.all([
       applyLanguageForUser(data.user),
       applyWeightUnitForUser(data.user),

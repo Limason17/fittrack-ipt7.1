@@ -1,7 +1,7 @@
 import { nextTick } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
-import { isLoggedIn, safeInternalRedirect } from '../utils/auth'
+import { ensureAuthBootstrap, isLoggedIn, safeInternalRedirect } from '../utils/auth'
 import { t } from '../utils/i18n'
 import { hydrateStudioContext, selectStudio } from '../utils/studioContext'
 
@@ -252,6 +252,13 @@ const router = createRouter({
 })
 
 export async function navigationGuard(to, { studioLoader } = {}) {
+    // The access token is memory-only (see utils/auth.js) - a hard reload
+    // always starts with authToken.value === null, so the very first
+    // navigation decision must wait for the one-time silent-refresh attempt
+    // before treating a real returning session as logged out. Subsequent
+    // navigations resolve this instantly since ensureAuthBootstrap() is
+    // memoized and already settled.
+    await ensureAuthBootstrap()
     const loggedIn = isLoggedIn()
 
     if (to.meta.requiresAuth && !loggedIn) {
