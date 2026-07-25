@@ -216,16 +216,29 @@ test('Member-Workout-Ausführung: Session starten, Sätze protokollieren, abschl
 
   // ---- 9: A concurrent 409 conflict on the same set (two tabs of the same member, both on the
   // still-in-progress session B) is surfaced understandably, never silently overwritten, and
-  // resolved via an explicit reload - all before session B is aborted below. ----
-  const tabAContext = await browser.newContext({ baseURL: 'http://127.0.0.1:4173', locale: 'de-CH' })
-  const tabBContext = await browser.newContext({ baseURL: 'http://127.0.0.1:4173', locale: 'de-CH' })
+  // resolved via an explicit reload - all before session B is aborted below.
+  //
+  // Stage 3B2: this is genuinely "two tabs of the same browser session", not
+  // two independent devices - so it is modeled as two pages inside `page`'s
+  // OWN browser context, not two separate contexts with independently
+  // re-injected credentials. A real browser's tabs share one cookie jar;
+  // opening tabB via page.context().newPage() gives it that same, always-
+  // current jar for free. The earlier version of this test instead created
+  // two brand-new contexts and re-attached a `memberAuth` object captured at
+  // login (long before this point) - but every one of `page`'s own hard
+  // reloads since then (steps 1, 3, 8 above) had already rotated the actual
+  // refresh cookie via its own bootstrap, so `memberAuth.cookies` no longer
+  // matched what the server considered active. Injecting that stale cookie
+  // into two fresh contexts made the very first bootstrap in either of them
+  // look like a replay of an already-rotated token - AUTH_REFRESH_REUSE_DETECTED,
+  // an artifact of the fixture, not a real product bug (see
+  // docs/STAGE_3B2_SESSION_HARDENING.md's "multi-tab" section for the
+  // distinction and for the real same-context-concurrent-refresh behavior,
+  // which is covered separately in authSession.spec.js).
+  const tabA = page
+  const tabB = await page.context().newPage()
   try {
-    const tabA = await tabAContext.newPage()
-    const tabB = await tabBContext.newPage()
-    await attachAuth(tabA, memberAuth)
-    await attachAuth(tabB, memberAuth)
-    await tabA.goto(sessionBUrl)
-    await tabB.goto(sessionBUrl)
+    await tabB.goto(sessionBUrl, { waitUntil: 'networkidle' })
 
     const tabASet = tabA.locator('.set-row').nth(1)
     await tabASet.getByLabel('Wdh.').fill('9')
@@ -242,8 +255,7 @@ test('Member-Workout-Ausführung: Session starten, Sätze protokollieren, abschl
     await tabB.getByRole('button', { name: 'Aktuellen Stand laden' }).first().click()
     await expect(tabB.locator('.set-row').nth(1).getByLabel('Wdh.')).toHaveValue('9')
   } finally {
-    await tabAContext.close()
-    await tabBContext.close()
+    await tabB.close()
   }
 
   // ---- 10: Aborting session B keeps already-saved values while making the session read-only. ----

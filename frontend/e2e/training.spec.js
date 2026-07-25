@@ -123,14 +123,13 @@ test('Zwei Browserkontexte sehen nur eigene Daten und fremde IDs bleiben verborg
     expect(invalidSession.status()).toBe(401)
     expect((await invalidSession.json()).error.code).toBe('AUTHENTICATION_REQUIRED')
 
-    await contextA.addInitScript(({ token, user }) => {
-      localStorage.setItem('fittrack_token', token)
-      localStorage.setItem('fittrack_user', JSON.stringify(user))
-    }, { token: authA.token, user: authA.user })
-    await contextB.addInitScript(({ token, user }) => {
-      localStorage.setItem('fittrack_token', token)
-      localStorage.setItem('fittrack_user', JSON.stringify(user))
-    }, { token: authB.token, user: authB.user })
+    // Stage 3B2: the session lives in cookies (HttpOnly refresh + readable
+    // CSRF), not localStorage - loginApi() already parsed authA/authB's
+    // Set-Cookie headers (see helpers.js), so attach them directly to each
+    // context. The app's own bootstrap (silent refresh + GET /users/me)
+    // then resolves each page into its own logged-in session on first load.
+    await contextA.addCookies(authA.cookies)
+    await contextB.addCookies(authB.cookies)
     const pageA = await contextA.newPage()
     const pageB = await contextB.newPage()
     await Promise.all([pageA.goto('/workouts'), pageB.goto('/workouts')])

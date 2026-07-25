@@ -64,7 +64,18 @@ test('Kernseiten haben keine schweren oder kritischen Axe-Verstöße', async ({ 
     `/studios/${studio.id}/access-denied`,
     `/invitations/${'a'.repeat(43)}`,
   ]) {
-    await page.goto(route)
+    // Stage 3B2: the access token is memory-only, so every one of these
+    // hard reloads triggers its own silent-refresh bootstrap. The default
+    // 'load' wait resolves before that bootstrap's own fetch necessarily
+    // completes, which - across this many back-to-back reloads - can race
+    // the previous reload's still-in-flight refresh (single-use rotation,
+    // see services/sessionService.js) and spuriously invalidate the
+    // session. Waiting for network idle keeps each reload's bootstrap fully
+    // settled before the next one starts, so this loop exercises real
+    // sequential page loads rather than an artificial rapid-fire-reload
+    // race no normal user would trigger.
+    await page.goto(route, { waitUntil: 'networkidle' })
+    await expect(page).not.toHaveURL(/\/login/)
     await expectNoSeriousAxeViolations(page)
   }
 })
@@ -111,7 +122,7 @@ test('Übungsauswahl bindet Fokus, schließt mit Escape und gibt Fokus zurück',
 test('Mobile Navigation meldet Zustand und schließt per Escape', async ({ page, request }) => {
   await authenticateExisting(page, request)
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto('/workouts')
+  await page.goto('/workouts', { waitUntil: 'networkidle' })
   const menu = page.locator('.app-header-burger')
   await expect(menu).toHaveAccessibleName('Menü öffnen')
   await expect(menu).toHaveAttribute('aria-expanded', 'false')
@@ -136,7 +147,10 @@ test('Pilot-Viewports haben auf Kernseiten keinen horizontalen Overflow', async 
   for (const viewport of viewports) {
     await page.setViewportSize(viewport)
     for (const route of ['/workouts', '/progress']) {
-      await page.goto(route)
+      // See the networkidle comment on the axe-scan loop above - same
+      // rapid-fire-reload/bootstrap-refresh race applies to this loop.
+      await page.goto(route, { waitUntil: 'networkidle' })
+      await expect(page).not.toHaveURL(/\/login/)
       const dimensions = await page.evaluate(() => ({
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: document.documentElement.clientWidth,
@@ -206,7 +220,10 @@ test('Stage-1B.2A-Seiten haben bei 1440/1024/768/390 keinen horizontalen Overflo
   for (const viewport of viewports) {
     await page.setViewportSize(viewport)
     for (const route of routes) {
-      await page.goto(route)
+      // See the networkidle comment on the axe-scan loop above - same
+      // rapid-fire-reload/bootstrap-refresh race applies to this loop.
+      await page.goto(route, { waitUntil: 'networkidle' })
+      await expect(page).not.toHaveURL(/\/login/)
       const dimensions = await page.evaluate(() => ({
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: document.documentElement.clientWidth,

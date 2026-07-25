@@ -41,6 +41,30 @@
 > customer / production deployment** — unverändert durch diese Phase.
 >
 > ---
+>
+> **Nachtrag (2026-07-25, Stage 3B2 Session Hardening):** Stage 3B2
+> (Sitzungs-Härtung, siehe `STAGE_3B2_SESSION_HARDENING.md`) ist
+> abgeschlossen: serverseitig widerrufbare Authentifizierungssitzungen,
+> rotierende einmalig verwendbare Refresh Tokens, vollständiges
+> Logout/Logout-All, CSRF-/Origin-Schutz für die Cookie-Endpunkte, sowie die
+> Schließung des Login-Timing-Seitenkanals aus Stage 3A sind implementiert
+> und vollständig automatisiert getestet (Backend- und Frontend-Suiten,
+> zwei vollständige, saubere Chromium-E2E-Läufe). Von den in den
+> vorherigen Nachträgen genannten offenen Punkten sind damit **zwei weitere
+> geschlossen** (JWT-Refresh, Timing-Seitenkanal) und einer **teilweise**
+> geschlossen (Geräte-/Sitzungsübersicht — Logout/Logout-All existieren,
+> aber keine vollständige „meine Geräte"-Übersichtsseite). Die in Stage 3A
+> vorgeschlagene Blockreihenfolge (3B1 → 3B2 → 3C UX-Politur → 3D
+> Rate-Limiting/CORS) bleibt unverändert; **Stage 3C wurde nicht
+> begonnen.** Weiterhin offen und explizit außerhalb des Scopes dieser
+> Phase: uneinheitliche Audit-Log-Übersetzung, Rate-Limiting weiterhin
+> pro Prozess (unverändert, kein Redis eingeführt), 2FA, Passkeys, Social
+> Login, Passwort-vergessen/Reset, Kontolöschung, vollständige
+> Geräteverwaltung. Stage 2B2B bleibt weiterhin **Deferred until first
+> customer / production deployment** — unverändert durch diese Phase; es
+> wurde keine Cloud-Infrastruktur eingerichtet.
+>
+> ---
 
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-

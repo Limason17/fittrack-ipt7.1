@@ -916,3 +916,76 @@ Mailserver.
 - [ ] vollständige bestehende Test-/E2E-Suite bleibt grün, insbesondere
       `invitationDeliveryComposition.test.js`s „exactly one SMTP transport"-
       Regressionstest (SMTP-Transport-Sharing darf diesen nicht brechen)
+
+## Ergänzung für Stufe 3B2
+
+Stufe 3B2 ersetzt den reinen zustandslosen Access-JWT-Flow durch
+serverseitig widerrufbare Authentifizierungssitzungen mit rotierenden
+Refresh Tokens (siehe `STAGE_3B2_SESSION_HARDENING.md`). **Neue Migration
+010** — vor dem Start einer neuen Version zwingend anwenden
+(`npm run db:migrate`), sonst schlagen `authMiddleware.js`s neue
+Sitzungsabfrage sowie alle drei neuen `/api/auth/*`-Endpunkte fehl.
+
+**Sitzungsverhalten nach dem Deployment:** Jedes vor Migration 010
+ausgestellte Access Token hat keinen `sessionId`-Claim und wird beim ersten
+nachfolgenden Request einheitlich mit `401 AUTH_SESSION_INVALIDATED`
+abgelehnt. **Alle aktiven Sitzungen müssen sich nach diesem Deployment
+einmalig neu anmelden** — identisches, bereits aus Stufe 3B1 bekanntes
+Verhalten, sollte vor einem Produktions-Rollout an Betroffene kommuniziert
+werden.
+
+**Neue, zwingend zu prüfende Umgebungsvariablen** (siehe
+`backend/.env.example`): `AUTH_ACCESS_TOKEN_TTL_MINUTES` (Default 15, 5–60),
+`AUTH_REFRESH_TOKEN_TTL_DAYS` (Default 7, 1–30), `AUTH_MAX_ACTIVE_SESSIONS`
+(Default 10, 1–100), `AUTH_REFRESH_COOKIE_NAME`/`AUTH_CSRF_COOKIE_NAME`
+(Defaults `fittrack_refresh`/`fittrack_csrf`), `AUTH_COOKIE_SECURE`
+(**Produktion erzwingt `true` — Startfehler bei explizitem `false`, kein
+stiller Fallback**), `AUTH_COOKIE_SAME_SITE` (Default `strict`).
+
+**HTTPS ist ab dieser Stufe zwingend vorausgesetzt**, sobald
+`NODE_ENV=production` gesetzt ist — der Prozess startet nicht, wenn
+`AUTH_COOKIE_SECURE` dabei nicht (implizit oder explizit) `true` ist. TLS-
+Terminierung selbst bleibt weiterhin außerhalb des Repositorys (Reverse-
+Proxy/Ingress), unverändert seit Stufe 0C.
+
+**`CORS_ORIGIN` muss die exakte(n) Produktions-Frontend-Origin(s) enthalten**
+— `Access-Control-Allow-Credentials` wird nur für verifiziert erlaubte
+Origins reflektiert; ohne korrekt gepflegte `CORS_ORIGIN` funktionieren die
+Cookie-Endpunkte (`/api/auth/refresh|logout|logout-all`) im Browser nicht,
+auch wenn Login/API-Bearer-Aufrufe weiterhin funktionieren.
+
+**Keine neue Infrastrukturabhängigkeit:** kein Redis, kein externer
+Sitzungsspeicher — `user_auth_sessions`/`user_refresh_tokens` leben in
+derselben MySQL-Datenbank wie der Rest der Anwendung. Der bestehende,
+prozesslokale Rate Limiter ist unverändert.
+
+### Zusätzliche Release-Checks
+
+- [ ] Migration 010 angewendet (`npm run db:migrate:status` zeigt `applied`,
+      keine `pending`), Migration Doctor meldet `ready` mit
+      `applied: 10`, `schemaIssues: 0`, `ledgerIssues: 0`
+- [ ] alle aktiven Sitzungen wurden vor/nach dem Deployment-Fenster über die
+      erforderliche einmalige Neuanmeldung informiert
+- [ ] `AUTH_COOKIE_SECURE` in Produktion aktiv `true` (Startfehler bei
+      `false` bereits durch `sessionConfig.js` erzwungen — trotzdem vor dem
+      Rollout explizit prüfen, kein Verlass auf den impliziten Default)
+- [ ] `CORS_ORIGIN` enthält die tatsächliche(n) Produktions-Frontend-
+      Origin(s), keine Platzhalter
+- [ ] Login erzeugt eine Sitzung + HttpOnly-Refresh-Cookie + lesbares
+      CSRF-Cookie; Access Token erscheint in keinem persistenten
+      Browser-Speicher
+- [ ] Refresh rotiert den Token; ein wiederverwendeter, bereits rotierter
+      Token wird zuverlässig mit `AUTH_REFRESH_REUSE_DETECTED` abgelehnt und
+      kompromittiert die gesamte Sitzung
+- [ ] zwei echt gleichzeitige Refresh-Aufrufe mit demselben Token: genau
+      einer erfolgreich, kein doppelter aktiver Nachfolger
+      (Integrationstest mit `Promise.all`)
+- [ ] Logout widerruft die aktuelle Sitzung; Logout-All widerruft alle
+      Sitzungen des Nutzers und erhöht `auth_version`; andere Nutzer bleiben
+      unberührt
+- [ ] Passwortänderung und bestätigte E-Mail-Änderung widerrufen zuverlässig
+      alle Sitzungen des betroffenen Kontos
+- [ ] kein Refresh-/CSRF-Token-Wert erscheint in einem geloggten Feld
+- [ ] vollständige bestehende Test-/E2E-Suite bleibt grün, insbesondere zwei
+      unabhängige, vollständig saubere Chromium-E2E-Läufe ohne
+      `AUTH_REFRESH_REUSE_DETECTED` aus einem legitimen Testablauf
