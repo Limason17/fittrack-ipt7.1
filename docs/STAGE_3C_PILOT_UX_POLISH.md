@@ -449,3 +449,171 @@ Stage 3D bleibt separat für: Rate-Limiting-Härtung auf weitere Endpunkte,
 CORS-Gesamtaudit, Bereinigung von totem Policy-Code
 (`coachActionEligibility`). Keine dieser Aufgaben wurde in Stage 3C
 begonnen.
+
+## 18. Nachtrag: Cross-Tab-Refresh-Race-Härtung (2026-07-25)
+
+Der vollständige Chromium-E2E-Lauf zeigte einen echten, reproduzierbaren
+Fehlschlag in `e2e/authSession.spec.js` („two tabs of the same browser
+context refreshing at nearly the same moment never treat a legitimate user
+as token theft"): beide Tabs wurden fälschlich als Token-Diebstahl behandelt
+(`AUTH_REFRESH_REUSE_DETECTED` → `AUTH_SESSION_INVALIDATED`) und nach
+`/login` umgeleitet, obwohl es sich um einen vollständig legitimen Ablauf
+handelte. Dieser Abschnitt dokumentiert Ursache, Fix und Stabilitätsnachweis;
+der ursprüngliche (jetzt überholte) Mechanismus bleibt in
+`STAGE_3B2_SESSION_HARDENING.md` Abschnitt 9 als historischer Stand mit
+Verweis hierher stehen.
+
+### Root Cause
+
+`frontend/src/utils/api.js`s bisheriger Cross-Tab-Mutex
+(`tryAcquireRefreshLock`) folgte dem Muster „lies `localStorage`, prüfe ob
+ein Lock existiert, schreibe wenn nicht, lies zur Bestätigung erneut". Das
+ist **keine atomare Exklusivitätsgarantie über zwei Tab-Prozesse hinweg**:
+
+1. Tab A liest `localStorage` → kein Lock vorhanden.
+2. Tab B liest `localStorage` (bevor A geschrieben hat) → **ebenfalls** kein
+   Lock vorhanden.
+3. Tab A schreibt seinen Lock-Eintrag.
+4. Tab B schreibt seinen Lock-Eintrag — **überschreibt A's Eintrag
+   kommentarlos**.
+5. Tab A's eigener Bestätigungs-Readback lief möglicherweise bereits
+   *vor* Schritt 4 und hatte da noch A's eigenen, damals noch aktuellen
+   Eintrag gesehen → Tab A hält sich fälschlich für den Owner.
+6. Tab B's Bestätigungs-Readback (nach Schritt 4) sieht B's eigenen Eintrag
+   → Tab B hält sich (korrekt für seine eigene Schreibaktion, aber ohne
+   Wissen von A) ebenfalls für den Owner.
+
+Beide Tabs rufen daraufhin **echt gleichzeitig** `POST /api/auth/refresh`
+mit demselben, noch nicht rotierten Refresh-Cookie auf. Der Backend-seitige
+Rotationsmechanismus ist strikt Einmalverwendung (siehe
+`services/sessionService.js#rotateRefreshToken`); der zweite der beiden
+tatsächlich beim Server ankommenden Aufrufe sieht einen bereits rotierten
+Token und wird — korrekt und **unverändert weiterhin so** — als
+Reuse-Versuch behandelt. Das Timing-Fenster ist eng, aber unter echter
+Cross-Prozess-Nebenläufigkeit (zwei Tabs = zwei Renderer-Prozesse) real
+und mit `--repeat-each` zuverlässig reproduzierbar.
+
+**Warum der bisherige Lock nicht ausreichte:** `localStorage` bietet keine
+Compare-and-Swap-Operation. Ein Read-then-Write-Muster kann über zwei
+unabhängige Prozesse hinweg grundsätzlich nicht exklusiv sein, egal wie der
+Bestätigungs-Readback im Detail gestaltet ist — er bestätigt nur „das war
+mein letzter Schreibvorgang", nicht „ich bin seit meinem ersten Lesen
+ununterbrochen der einzige Schreiber gewesen".
+
+### Endgültiger Cross-Tab-Mechanismus
+
+**Primär: `navigator.locks`** (Web Locks API). Der Browser selbst verwaltet
+eine exklusive, Origin-weite Sperre über alle Tabs/Worker hinweg — es gibt
+keinen Read-then-Write-Moment, den zwei Prozesse racen könnten, da die
+Warteschlangen-/Exklusivitätslogik vollständig browserseitig läuft. Ein
+Halter, dessen Tab geschlossen wird oder navigiert, gibt die Sperre
+automatisch frei — kein manueller Stale-Lease-Mechanismus nötig.
+
+**Fallback** (nur für Umgebungen ohne `navigator.locks`, z. B. sehr alte
+Browser) in `frontend/src/utils/api.js#withFallbackRefreshLock`: eindeutige
+Owner-ID, 5-Sekunden-Lease-Ablauf, Generation/Fencing-Zähler,
+Kandidaten-Schreibvorgang gefolgt von einer kurzen randomisierten
+Settle-Verzögerung und einem Readback zur Erkennung eines
+Gleichzeitigkeits-Konflikts, Jitter-Backoff-Retry statt Spin-Loop, und —
+der wichtigste zusätzliche Schutz — eine **erneute** Eigentümer-Prüfung
+unmittelbar bevor der Aufrufer zum Netzwerkrequest zugelassen wird. Ohne
+jegliche Storage-Möglichkeit (z. B. striktem Privacy-Modus) degradiert der
+Fallback bewusst zu „direkt ausführen, keine Koordination möglich" statt
+endlos zu blockieren oder zu werfen.
+
+### Owner-Ablauf
+
+1. `navigator.locks.request('fittrack-refresh-lock', fn)` (oder der
+   Fallback-Erwerb) liefert den Zuschlag.
+2. `performRefresh()` läuft: CSRF-Cookie lesen, `POST /api/auth/refresh`
+   mit `credentials:'include'`, Antwort inklusive `Set-Cookie`-Verarbeitung
+   vollständig abwarten (durch `await fetch(...)` plus `await
+   response.json()` — der Browser wendet `Set-Cookie` als Teil der
+   Response-Verarbeitung an, bevor das `fetch()`-Promise auflöst).
+3. Erst wenn dieses Promise vollständig aufgelöst (oder abgelehnt) ist,
+   gibt `navigator.locks` die Sperre für den nächsten Wartenden frei — es
+   gibt **keinen separaten Broadcast-Schritt** für die Web-Locks-Variante,
+   die Freigabe der Sperre selbst ist bereits das atomare Signal.
+
+### Waiter-Ablauf
+
+1. Sperre nicht sofort erhalten → der Browser reiht die Anfrage ein
+   (Web Locks) bzw. der Fallback erkennt einen lebenden Lease und wartet.
+2. Während der Wartezeit wird **kein** eigener Netzwerkrequest gesendet.
+3. Sobald der Owner fertig ist (Sperre freigegeben), erhält der wartende
+   Aufruf die Sperre neu zugeteilt bzw. gewinnt seinen eigenen
+   Erwerbsversuch.
+4. Er führt **danach** `performRefresh()` selbst aus — mit dem inzwischen
+   im geteilten Cookie-Jar bereits rotierten Cookie, das automatisch
+   browserseitig mitgeschickt wird (`credentials:'include'`) — und erhält
+   dadurch sein eigenes, gültiges In-Memory-Access-Token.
+5. Kein Token- oder Cookiewert wird dabei je zwischen Tabs übertragen —
+   jeder Tab führt seinen eigenen Refresh-Request aus.
+
+### Set-Cookie-/Broadcast-Reihenfolge
+
+Für den `navigator.locks`-Pfad: die Sperre wird ausschließlich vom Browser
+selbst verwaltet, und die Freigabe erfolgt erst, nachdem das `fn()`-Promise
+(inklusive der bereits abgeschlossenen `Set-Cookie`-Verarbeitung) aufgelöst
+ist — Reihenfolge ist dadurch strukturell garantiert, nicht durch eine
+zusätzliche Nachricht erzwungen. Für den Fallback-Pfad postet
+`withFallbackRefreshLock` sein `refresh-lock-released`-Broadcast ebenfalls
+erst im `finally`-Block, nachdem `fn()` (also `performRefresh()` inklusive
+vollständig verarbeiteter Antwort) abgeschlossen ist.
+
+### Abbruch- und Ablaufverhalten
+
+- **Owner-Tab wird während des Refreshs geschlossen**: `navigator.locks`
+  gibt die Sperre browserseitig automatisch frei; kein anderer Tab bleibt
+  blockiert. Für den Fallback: ein `finally`-Block gibt den Lock frei,
+  sobald `fn()` (egal ob erfolgreich oder mit Fehler) abschließt; sollte
+  ein Tab wirklich mitten im Vorgang beendet werden, verfällt sein
+  Lease-Eintrag spätestens nach 5 Sekunden.
+- **Owner-Refresh liefert 401/403/Netzwerkfehler**: `performRefresh()`
+  wirft, die Sperre wird trotzdem freigegeben (Fallback: `finally`;
+  Web Locks: automatisch bei Promise-Ablehnung), der nächste Wartende
+  erhält seine Chance regulär.
+- **Hängender Request**: ein `AbortController`-Timeout (8 s) in
+  `performRefresh()` begrenzt, wie lange ein einzelner Versuch die Sperre
+  maximal halten kann, unabhängig vom Locking-Mechanismus.
+- **Veralteter Lock/veralteter Broadcast**: der Fallback prüft die
+  Eigentümerschaft unmittelbar vor dem Netzwerkrequest erneut; ein
+  verpasster oder verspäteter Broadcast führt höchstens zu einem
+  zusätzlichen Retry-Zyklus mit Backoff, nie zu einem dauerhaften Blockieren
+  (durch die 5-Sekunden-Lease-Obergrenze).
+- **Drei Tabs**: durch Unit-Test verifiziert — alle drei erhalten
+  nacheinander ihre eigene Ausführung, nie mehr als eine gleichzeitig aktiv.
+- **Zwei unabhängige Browser-Kontexte**: unverändert getrennte
+  Cookie-Jars, unverändert unabhängige Sitzungen — kein
+  Koordinationsfall, kein Verhalten geändert.
+
+### Beweis: keine Tokenübertragung zwischen Tabs
+
+Sowohl der Fallback-Lock-Eintrag in `localStorage` (`{owner, ts,
+generation}` — geprüft per Unit-Test auf exakt diese drei Felder, keine
+weiteren) als auch jede `BroadcastChannel`-Nachricht (`{type: '...'}`,
+ebenfalls per Unit-Test auf exakt dieses eine Feld geprüft) enthalten
+nachweislich keinen Token-, Cookie- oder JWT-förmigen Wert. Jeder Tab ruft
+seinen eigenen `/auth/refresh`-Request auf; das einzig „Geteilte" ist der
+vom Browser selbst verwaltete HttpOnly-Cookie-Speicher, nicht JavaScript-
+Zustand.
+
+### Stabilitätsnachweis
+
+- `authSession.spec.js`, gezielter Test, **20/20** Wiederholungen grün,
+  keine `AUTH_REFRESH_REUSE_DETECTED`, kein Login-Bounce, beide Tabs
+  authentifiziert, `refreshResults.length > 0` und jede Antwort `200` in
+  jedem der 20 Läufe.
+- Vollständige Chromium-E2E-/Axe-Suite: **zwei isolierte Läufe, je
+  39/39 grün, 0 fehlgeschlagen, 0 übersprungen.**
+- 17 neue/aktualisierte Frontend-Unit-Tests (`api.test.js`,
+  `refreshCoordination.test.js`) decken exklusiven Erwerb bei zwei/drei
+  gleichzeitigen Anfragen, Warten ohne eigenen Request, sequenziellen
+  Refresh nach Owner-Erfolg, erneute Eigentümerprüfung vor dem
+  Netzwerkrequest, Übernahme eines abgelaufenen Leases, Nicht-Übernahme
+  eines aktiven Leases, Freigabe nach Owner-Abbruch/-Fehler, Delegation an
+  `navigator.locks` und die Token-Freiheit von Storage/Broadcast ab.
+- Backend-Reuse-Detection selbst wurde **nicht verändert** — die Härtung
+  betrifft ausschließlich, wie viele tatsächliche Refresh-Requests ein
+  legitimer Cross-Tab-Ablauf erzeugt, nicht wie das Backend einen
+  wiederverwendeten Token erkennt oder behandelt.
