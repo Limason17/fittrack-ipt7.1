@@ -334,7 +334,11 @@ test('Footer erscheint auf keiner Route und hinterlässt keinen Leerraum oder ho
   for (const viewport of viewports) {
     await page.setViewportSize(viewport)
     for (const route of routes) {
-      await page.goto(route)
+      // Stage 3B2: waiting for network idle keeps each hard reload's own
+      // silent-refresh bootstrap fully settled before the next one starts -
+      // see the identical comment in accessibility.spec.js for why this
+      // matters across this many back-to-back reloads.
+      await page.goto(route, { waitUntil: 'networkidle' })
       await expect(page.locator('footer')).toHaveCount(0)
       const dimensions = await page.evaluate(() => ({
         documentWidth: document.documentElement.scrollWidth,

@@ -1,10 +1,11 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
 const db = require("../config/db");
-const { JWT_SECRET } = require("../config/auth");
 const authenticateToken = require("../middleware/authMiddleware");
 const { createAuthRateLimiters } = require("../middleware/rateLimiter");
+const { createSessionService } = require("../services/sessionService");
+const { setSessionCookies } = require("../security/sessionCookies");
+const { signAccessToken } = require("../security/accessTokens");
 const {
     AuthenticationError,
     ConflictError,
@@ -22,6 +23,22 @@ const {
     login: loginRateLimiter,
     registration: registrationRateLimiter
 } = createAuthRateLimiters();
+
+const sessionService = createSessionService({ database: db.promise() });
+
+// Precomputed once at module load, never regenerated per request: this is
+// what makes the login-timing hardening below actually hold. If the dummy
+// hash were generated fresh on every "user not found" request, bcrypt's own
+// per-hash random salt generation would still cost real (if tiny and
+// non-password-dependent) time, but more importantly the intent here is a
+// fixed comparison target - a stable value bcrypt.compare can be run
+// against on the not-found path with the exact same cost factor as a real
+// user's stored hash, so total request latency does not depend on whether
+// the e-mail address exists.
+const LOGIN_TIMING_DUMMY_HASH = bcrypt.hashSync(
+    "fittrack-login-timing-hardening-dummy-password",
+    10
+);
 
 function normalizeLanguage(value) {
     return value === "en" ? "en" : "de";
@@ -93,26 +110,38 @@ router.post("/login", loginRateLimiter, async (req, res) => {
         [input.email]
     );
 
-    if (users.length === 0) {
-        throw new AuthenticationError("Invalid email or password.");
-    }
-
+    // Both branches always run one bcrypt.compare() at the exact same cost
+    // factor (10) - an unknown e-mail address compares against the fixed
+    // module-load-time dummy hash instead of skipping the check, so total
+    // request latency does not leak whether the account exists. Both
+    // failure paths also throw the exact same error with the exact same
+    // message; only after this point does anything branch on `user` at all.
     const user = users[0];
-    const isMatch = await bcrypt.compare(input.password, user.password_hash);
+    const isMatch = await bcrypt.compare(input.password, user ? user.password_hash : LOGIN_TIMING_DUMMY_HASH);
 
-    if (!isMatch) {
+    if (!user || !isMatch) {
         throw new AuthenticationError("Invalid email or password.");
     }
 
-    const token = jwt.sign(
-        { id: user.id, authVersion: user.auth_version },
-        JWT_SECRET,
-        { algorithm: "HS256", expiresIn: "8h" }
-    );
+    const session = await sessionService.startSession(user.id, { authVersion: user.auth_version });
+    setSessionCookies(res, { refreshToken: session.refreshToken, csrfToken: session.csrfToken });
+    const accessToken = signAccessToken({
+        id: user.id,
+        authVersion: user.auth_version,
+        sessionId: session.sessionId
+    });
 
     res.json({
         message: "Login successful",
-        token,
+        // Deliberately kept as `token`, not `accessToken`, even though this
+        // is now a short-lived Stage 3B2 access token backed by a session -
+        // renaming it would ripple into every existing backend integration
+        // test and frontend caller that reads response.data.token for no
+        // functional benefit. The new /api/auth/refresh endpoint has no
+        // legacy readers, so its response uses the clearer `accessToken`
+        // name instead; the frontend auth store normalizes both to the
+        // same in-memory token on read.
+        token: accessToken,
         user: publicUser(user)
     });
 });

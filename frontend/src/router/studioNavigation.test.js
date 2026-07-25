@@ -95,7 +95,14 @@ describe('studio route boundaries', () => {
       studioLoader: () => new Promise((resolve) => { resolveB = resolve }),
     })
 
-    await Promise.resolve()
+    // Waits out however many microtask hops navigationGuard needs before it
+    // reaches studioLoader (currently: one for ensureAuthBootstrap, one for
+    // hydrateStudioContext's own internal Promise.resolve().then(...)) -
+    // polling for the assignment itself, rather than counting ticks,
+    // keeps this robust against that number changing again later.
+    while (!resolveB) {
+      await Promise.resolve()
+    }
     resolveB({ studios: [studio, studioB] })
     expect(await navigationB).toBeUndefined()
     expect(activeStudioId.value).toBe('studio-b')

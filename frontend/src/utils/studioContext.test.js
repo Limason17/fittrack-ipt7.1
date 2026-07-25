@@ -99,9 +99,9 @@ describe('authoritative studio context', () => {
     expect(activeStudioId.value).toBeNull()
   })
 
-  it('clears studio ids, roles and loaded data on logout', () => {
+  it('clears studio ids, roles and loaded data on logout', async () => {
     addAndSelectStudio(studio('studio-a', 'admin'))
-    logout()
+    await logout()
 
     expect(authorizedStudios.value).toEqual([])
     expect(activeStudioId.value).toBeNull()

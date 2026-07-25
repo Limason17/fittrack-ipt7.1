@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const cookieParser = require("cookie-parser");
 const {
     errorHandler: defaultErrorHandler,
     notFoundHandler: defaultNotFoundHandler,
@@ -22,29 +23,9 @@ const {
 } = require("../delivery/accountEmailDelivery");
 const { createAuthRateLimiters } = require("../middleware/rateLimiter");
 const { readSmtpConfig } = require("../config/smtpConfig");
-
-function allowedOrigins() {
-    return (process.env.CORS_ORIGIN || "")
-        .split(",")
-        .map((origin) => origin.trim())
-        .filter(Boolean)
-        .map((origin) => {
-            let parsed;
-            try {
-                parsed = new URL(origin);
-            } catch (cause) {
-                const error = new Error("CORS_ORIGIN must contain valid absolute URLs.", { cause });
-                error.code = "INVALID_CORS_CONFIG";
-                throw error;
-            }
-            if (!["http:", "https:"].includes(parsed.protocol) || parsed.origin !== origin) {
-                const error = new Error("CORS_ORIGIN entries must be HTTP(S) origins without paths.");
-                error.code = "INVALID_CORS_CONFIG";
-                throw error;
-            }
-            return parsed.origin.toLowerCase();
-        });
-}
+const { allowedOrigins } = require("../config/corsOrigins");
+const { createSessionService } = require("../services/sessionService");
+const { createAuthSessionRouter } = require("../routes/authSessionRouter");
 
 function readTrustProxyHops(env = process.env) {
     const value = env.TRUST_PROXY_HOPS;
@@ -74,10 +55,16 @@ function createCorsOptions(configuredOrigins = allowedOrigins()) {
         try {
             const originHost = new URL(requestOrigin).host;
             const isSameHost = requestHost && originHost === requestHost;
+            const allowed = Boolean(isSameHost || configuredOrigins.includes(requestOrigin));
 
-            callback(null, {
-                origin: Boolean(isSameHost || configuredOrigins.includes(requestOrigin))
-            });
+            // Stage 3B2: cookie-based auth endpoints (/api/auth/*) need the
+            // browser to both send and read Set-Cookie on a cross-port local
+            // dev origin (5173 -> 3001), which requires
+            // Access-Control-Allow-Credentials: true. Only ever reflected
+            // for a request whose Origin actually matched the allowlist/
+            // same-host check above - never alongside a wildcard/unconditional
+            // allow, which would be a real credential-leak vulnerability.
+            callback(null, { origin: allowed, credentials: allowed });
         } catch (error) {
             callback(error);
         }
@@ -167,16 +154,28 @@ function createDefaultStudioService({ env = process.env, database = db.promise()
 // (INVITATION_EMAIL_PROVIDER=smtp) but are otherwise independent delivery
 // chains with different templates and base-URL contracts - see
 // delivery/accountEmailDelivery.js.
-function createDefaultAccountService({ env = process.env, database = db.promise(), transportFactory } = {}) {
+function createDefaultAccountService({
+    env = process.env,
+    database = db.promise(),
+    transportFactory,
+    sessionService = createSessionService({ database })
+} = {}) {
     const provider = resolveDefaultAccountProvider(env, { transportFactory });
     const delivery = createAccountEmailDelivery({ env, provider });
-    return createAccountService({ database, delivery });
+    return createAccountService({ database, delivery, sessionService });
 }
 
-function defaultRouters({ env, database, transportFactory } = {}) {
+function defaultRouters({ env, database = db.promise(), transportFactory } = {}) {
     const sharedTransportFactory = resolveSharedSmtpTransportFactory(env || process.env, { transportFactory });
     const studioService = createDefaultStudioService({ env, database, transportFactory: sharedTransportFactory });
-    const accountService = createDefaultAccountService({ env, database, transportFactory: sharedTransportFactory });
+    // One sessionService instance, shared between the account router
+    // (password/e-mail change revocation, see accountService.js) and the
+    // new /api/auth router (refresh/logout/logout-all) - both are stateless
+    // wrappers around the same connection pool, so sharing costs nothing
+    // and keeps this composition root's "build each dependency once" shape
+    // consistent with sharedTransportFactory above.
+    const sessionService = createSessionService({ database });
+    const accountService = createDefaultAccountService({ env, database, transportFactory: sharedTransportFactory, sessionService });
     return {
         users: require("../routes/users"),
         exercises: require("../routes/exercises"),
@@ -188,7 +187,8 @@ function defaultRouters({ env, database, transportFactory } = {}) {
         account: createAccountRouter({
             service: accountService,
             rateLimiters: createAuthRateLimiters({ env })
-        })
+        }),
+        authSession: createAuthSessionRouter({ sessionService })
     };
 }
 
@@ -221,6 +221,7 @@ function createApp({
     }
 
     app.use(cors(createCorsOptions()));
+    app.use(cookieParser());
     app.use(express.json({ limit: "1mb" }));
 
     const readyHandler = createReadyHandler(readiness, logger);
@@ -245,6 +246,9 @@ function createApp({
         }
         if (routeSet.account) {
             app.use("/api/account", routeSet.account);
+        }
+        if (routeSet.authSession) {
+            app.use("/api/auth", routeSet.authSession);
         }
     }
 

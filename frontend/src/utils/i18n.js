@@ -751,6 +751,13 @@ export const messages = {
                 rateLimited: 'Zu viele Versuche. Bitte versuche es später erneut.',
                 genericError: 'Das hat leider nicht funktioniert. Bitte versuche es erneut.',
 
+                sessionsSectionTitle: 'Aktive Sitzungen',
+                sessionsSectionHint: 'Bei Bedarf kannst du dich sofort von allen Geräten abmelden, auf denen du aktuell angemeldet bist.',
+                logoutAllAction: 'Von allen Geräten abmelden',
+                loggingOutAll: 'Wird abgemeldet...',
+                confirmLogoutAllTitle: 'Von allen Geräten abmelden?',
+                confirmLogoutAllDescription: 'Alle aktiven Sitzungen werden sofort beendet, auch auf anderen Geräten. Du musst dich danach erneut anmelden.',
+
                 emailSectionTitle: 'E-Mail-Adresse ändern',
                 emailSectionHint: 'Deine aktuelle E-Mail-Adresse bleibt gültig, bis du die neue über den Bestätigungslink bestätigst.',
                 currentEmail: 'Aktuelle E-Mail-Adresse',
@@ -1679,6 +1686,13 @@ export const messages = {
                 newPasswordSameAsCurrent: 'The new password must be different from the current one.',
                 rateLimited: 'Too many attempts. Please try again later.',
                 genericError: 'That did not work. Please try again.',
+
+                sessionsSectionTitle: 'Active sessions',
+                sessionsSectionHint: 'If needed, you can immediately sign out of every device you are currently signed in on.',
+                logoutAllAction: 'Sign out of all devices',
+                loggingOutAll: 'Signing out...',
+                confirmLogoutAllTitle: 'Sign out of all devices?',
+                confirmLogoutAllDescription: 'Every active session ends immediately, including on other devices. You will need to sign in again afterward.',
 
                 emailSectionTitle: 'Change e-mail address',
                 emailSectionHint: 'Your current e-mail address stays valid until you confirm the new one via the confirmation link.',

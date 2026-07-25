@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router'
 import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 import Tabs from '../components/ui/Tabs.vue'
-import { authUser, logout } from '../utils/auth'
+import { authUser, logout, logoutAll } from '../utils/auth'
 import {
   changePassword,
   getCurrentEmailChangeRequest,
@@ -39,8 +39,30 @@ async function chooseDistanceUnit(unit) {
   toastSuccess(t('studios.settings.saved'))
 }
 
-function handleLogout() {
-  logout()
+const loggingOutAll = ref(false)
+const pendingLogoutAll = ref(false)
+
+async function handleLogout() {
+  await logout()
+  router.push('/login')
+}
+
+function requestLogoutAll() {
+  pendingLogoutAll.value = true
+}
+
+function cancelLogoutAll() {
+  pendingLogoutAll.value = false
+}
+
+async function confirmLogoutAll() {
+  pendingLogoutAll.value = false
+  loggingOutAll.value = true
+  try {
+    await logoutAll()
+  } finally {
+    loggingOutAll.value = false
+  }
   router.push('/login')
 }
 
@@ -95,7 +117,10 @@ async function submitPasswordChange() {
     })
     resetPasswordForm()
     toastSuccess(t('profile.security.passwordChanged'))
-    logout()
+    // The password change already revoked every session server-side
+    // (see accountService.js) - this is purely a local state clear plus
+    // navigation, not another server round trip.
+    await logout()
     router.push({ name: 'login' })
   } catch (error) {
     passwordError.value = mapPasswordError(error)
@@ -238,6 +263,22 @@ async function confirmRevoke() {
       </article>
 
       <div v-else-if="activeTab === 'security'" class="profile-security">
+        <article class="card profile-section">
+          <h2>{{ t('profile.security.sessionsSectionTitle') }}</h2>
+          <p class="studio-help">{{ t('profile.security.sessionsSectionHint') }}</p>
+          <div class="form-actions">
+            <button
+              type="button"
+              class="btn btn-danger"
+              :disabled="loggingOutAll"
+              @click="requestLogoutAll"
+            >
+              <span v-if="loggingOutAll" class="spinner" aria-hidden="true"></span>
+              {{ loggingOutAll ? t('profile.security.loggingOutAll') : t('profile.security.logoutAllAction') }}
+            </button>
+          </div>
+        </article>
+
         <form class="card profile-section" @submit.prevent="submitPasswordChange">
           <h2>{{ t('profile.security.passwordSectionTitle') }}</h2>
           <p class="studio-help">{{ t('profile.security.passwordSectionHint') }}</p>
@@ -426,6 +467,17 @@ async function confirmRevoke() {
         :busy="revoking"
         @confirm="confirmRevoke"
         @cancel="cancelRevoke"
+      />
+
+      <ConfirmDialog
+        :open="pendingLogoutAll"
+        :title="t('profile.security.confirmLogoutAllTitle')"
+        :description="t('profile.security.confirmLogoutAllDescription')"
+        :confirm-label="t('profile.security.logoutAllAction')"
+        tone="danger"
+        :busy="loggingOutAll"
+        @confirm="confirmLogoutAll"
+        @cancel="cancelLogoutAll"
       />
     </div>
   </section>

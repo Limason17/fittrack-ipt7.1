@@ -53,7 +53,7 @@ async function accept() {
 
 async function switchAccount() {
   const redirect = safeInternalRedirect(route.fullPath)
-  logout()
+  await logout()
   await router.replace({ name: 'login', query: { redirect } })
 }
 

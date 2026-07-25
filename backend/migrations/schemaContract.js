@@ -1275,6 +1275,104 @@ const accountSelfServiceChecks = [
     )
 );
 
+const authSessionsMigrationId = "010_auth_sessions";
+const authSessionsExistingTableElement = { pendingMissingAllowed: false };
+
+const authSessionsTables = ["user_auth_sessions", "user_refresh_tokens"].map((name) =>
+    table(authSessionsMigrationId, name)
+);
+
+const authSessionsColumns = [
+    ["user_auth_sessions", "id", "int", false],
+    ["user_auth_sessions", "public_id", "char(36)", false],
+    ["user_auth_sessions", "user_id", "int", false],
+    ["user_auth_sessions", "auth_version", "int", false],
+    ["user_auth_sessions", "status", "varchar(16)", false],
+    ["user_auth_sessions", "created_at", "timestamp(3)", false],
+    ["user_auth_sessions", "last_seen_at", "timestamp(3)", false],
+    ["user_auth_sessions", "expires_at", "timestamp(3)", false],
+    ["user_auth_sessions", "revoked_at", "timestamp(3)", true],
+    ["user_auth_sessions", "revocation_reason", "varchar(32)", true],
+
+    ["user_refresh_tokens", "id", "int", false],
+    ["user_refresh_tokens", "public_id", "char(36)", false],
+    ["user_refresh_tokens", "session_id", "int", false],
+    ["user_refresh_tokens", "token_hash", "binary(32)", false],
+    ["user_refresh_tokens", "csrf_token_hash", "binary(32)", false],
+    ["user_refresh_tokens", "status", "varchar(16)", false],
+    ["user_refresh_tokens", "created_at", "timestamp(3)", false],
+    ["user_refresh_tokens", "expires_at", "timestamp(3)", false],
+    ["user_refresh_tokens", "consumed_at", "timestamp(3)", true],
+    ["user_refresh_tokens", "replaced_by_token_id", "int", true],
+    ["user_refresh_tokens", "revoked_at", "timestamp(3)", true]
+].map(([tableName, columnName, columnType, nullable]) =>
+    column(
+        authSessionsMigrationId,
+        tableName,
+        columnName,
+        columnType,
+        nullable,
+        authSessionsExistingTableElement
+    )
+);
+
+const authSessionsIndexes = [
+    ["user_auth_sessions", "PRIMARY", ["id"], true],
+    ["user_auth_sessions", "uq_user_auth_sessions_public_id", ["public_id"], true],
+    ["user_auth_sessions", "idx_user_auth_sessions_user_status", ["user_id", "status"], false],
+    ["user_auth_sessions", "idx_user_auth_sessions_expires", ["expires_at"], false],
+
+    ["user_refresh_tokens", "PRIMARY", ["id"], true],
+    ["user_refresh_tokens", "uq_user_refresh_tokens_public_id", ["public_id"], true],
+    ["user_refresh_tokens", "uq_user_refresh_tokens_token_hash", ["token_hash"], true],
+    ["user_refresh_tokens", "idx_user_refresh_tokens_session_status", ["session_id", "status"], false]
+].map(([tableName, indexName, columns, unique]) =>
+    index(
+        authSessionsMigrationId,
+        tableName,
+        indexName,
+        columns,
+        unique,
+        authSessionsExistingTableElement
+    )
+);
+
+const authSessionsForeignKeys = [
+    ["user_auth_sessions", "fk_user_auth_sessions_user", ["user_id"], "users", ["id"], "CASCADE"],
+    ["user_refresh_tokens", "fk_user_refresh_tokens_session", ["session_id"], "user_auth_sessions", ["id"], "CASCADE"],
+    ["user_refresh_tokens", "fk_user_refresh_tokens_replaced_by", ["replaced_by_token_id"], "user_refresh_tokens", ["id"], "SET NULL"]
+].map(([
+    tableName,
+    constraintName,
+    columns,
+    referencedTable,
+    referencedColumns,
+    deleteRule
+]) =>
+    foreignKey(
+        authSessionsMigrationId,
+        tableName,
+        constraintName,
+        columns,
+        referencedTable,
+        referencedColumns,
+        deleteRule,
+        authSessionsExistingTableElement
+    )
+);
+
+const authSessionsChecks = [
+    ["user_auth_sessions", "chk_user_auth_sessions_status"],
+    ["user_refresh_tokens", "chk_user_refresh_tokens_status"]
+].map(([tableName, constraintName]) =>
+    checkConstraint(
+        authSessionsMigrationId,
+        tableName,
+        constraintName,
+        authSessionsExistingTableElement
+    )
+);
+
 const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
     {
         migrationId: "001_initial_schema",
@@ -1346,6 +1444,16 @@ const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
             ...accountSelfServiceIndexes,
             ...accountSelfServiceForeignKeys,
             ...accountSelfServiceChecks
+        ]
+    },
+    {
+        migrationId: authSessionsMigrationId,
+        checks: [
+            ...authSessionsTables,
+            ...authSessionsColumns,
+            ...authSessionsIndexes,
+            ...authSessionsForeignKeys,
+            ...authSessionsChecks
         ]
     }
 ]);
