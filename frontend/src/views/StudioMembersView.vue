@@ -230,8 +230,8 @@ watch(studioId, () => {
               <tr v-for="membership in memberships" :key="membership.id">
                 <td :data-label="t('studios.members.columnPerson')">
                   <div class="studio-identity">
-                    <strong>{{ identity(membership).name }}</strong>
-                    <span v-if="identity(membership).email">{{ identity(membership).email }}</span>
+                    <strong class="studio-truncate" :title="identity(membership).name">{{ identity(membership).name }}</strong>
+                    <span v-if="identity(membership).email" class="studio-truncate" :title="identity(membership).email">{{ identity(membership).email }}</span>
                     <span v-else-if="membership.status === 'left'">{{ t('studios.members.identityRedacted') }}</span>
                     <span v-if="membership.joinedAt">{{ t('studios.members.joined') }} {{ formatDate(membership.joinedAt) }}</span>
                   </div>

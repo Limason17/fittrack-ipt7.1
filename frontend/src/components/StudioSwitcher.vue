@@ -26,6 +26,20 @@ function roleLabel(role) {
   return t(`studios.roles.${role}`)
 }
 
+function optionLabel(studio) {
+  return `${studio.name} — ${roleLabel(studio.membership.role)}`
+}
+
+// Stage 3A audit finding: the closed select clips a long studio name/role
+// combination with no way to read the full value. A native <select> has no
+// CSS ellipsis+tooltip hook of its own, so `title` on the element (for the
+// closed/collapsed state) and on each `option` (for the open list) surface
+// the full text via the browser's own tooltip instead.
+const selectedLabel = computed(() => {
+  const selected = selectableStudios.value.find((studio) => studio.id === selectedValue.value)
+  return selected ? optionLabel(selected) : t('studios.personal')
+})
+
 async function changeContext(event) {
   const studioId = event.target.value
   const selected = selectStudio(studioId)
@@ -53,13 +67,14 @@ onMounted(() => {
       :id="selectId"
       class="studio-switcher-select"
       :aria-label="t('studios.switcherLabel')"
+      :title="selectedLabel"
       :disabled="studioContextStatus === 'loading'"
       :value="selectedValue"
       @change="changeContext"
     >
-      <option value="">{{ t('studios.personal') }}</option>
-      <option v-for="studio in selectableStudios" :key="studio.id" :value="studio.id">
-        {{ studio.name }} — {{ roleLabel(studio.membership.role) }}
+      <option value="" :title="t('studios.personal')">{{ t('studios.personal') }}</option>
+      <option v-for="studio in selectableStudios" :key="studio.id" :value="studio.id" :title="optionLabel(studio)">
+        {{ optionLabel(studio) }}
       </option>
     </select>
   </div>

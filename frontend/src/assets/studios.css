@@ -148,6 +148,33 @@
     min-height: 40px;
 }
 
+/* Shared long-text handling for table cells (invitation e-mails/inviter
+   names, audit actor/event labels, ...): truncate with an ellipsis on wide
+   viewports where the table renders as real columns, so one long value
+   cannot stretch a whole column and push others off-screen - the native
+   `title` attribute set alongside this class on each usage keeps the full
+   value accessible on hover/focus. Below the table->card breakpoint (see
+   .table-stack in main.css) every cell becomes a flexed label/value row
+   with no fixed column width to truncate against, so this falls back to
+   the ordinary wrap-based .studio-identity convention there instead. */
+.studio-truncate {
+    display: block;
+    max-width: min(100%, 260px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+    .studio-truncate {
+        max-width: 100%;
+        overflow: visible;
+        text-overflow: clip;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+}
+
 .studio-details {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
