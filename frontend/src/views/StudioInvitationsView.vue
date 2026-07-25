@@ -20,9 +20,18 @@ const RESEND_ERROR_KEYS = {
   INVITATION_NOT_RESENDABLE: 'studios.invitations.resendNotResendable',
   INVITATION_EMAIL_ALREADY_MEMBER: 'studios.invitations.resendEmailAlreadyMember',
   INVITATION_RESEND_RATE_LIMITED: 'studios.invitations.resendRateLimited',
+  INVITATION_RESEND_CONFLICT: 'studios.invitations.resendConflict',
   INVITATION_DELIVERY_FAILED: 'studios.invitations.resendDeliveryFailed',
   INVITATION_DELIVERY_RECOVERY_FAILED: 'studios.invitations.resendDeliveryFailed',
 }
+// A failed delivery changes server-side state (the invitation is marked
+// expired so it stays resendable, see docs/STAGE_3C_PILOT_UX_POLISH.md) -
+// the row must be reloaded from the server afterwards rather than left
+// showing whatever status it had before the attempt.
+const RESEND_ERRORS_REQUIRING_RELOAD = new Set([
+  'INVITATION_DELIVERY_FAILED',
+  'INVITATION_DELIVERY_RECOVERY_FAILED',
+])
 
 const route = useRoute()
 const router = useRouter()
@@ -242,6 +251,13 @@ async function resend(invitation) {
       const message = error.status === 403
         ? t('studios.permissionDenied')
         : t(RESEND_ERROR_KEYS[code] || 'studios.invitations.resendError')
+      if (RESEND_ERRORS_REQUIRING_RELOAD.has(code)) {
+        // A failed delivery already changed the server-side status (see
+        // compensateResendDeliveryFailure) - reload rather than leave the
+        // row showing its pre-attempt status. load() manages its own
+        // generation/staleness guard internally.
+        await load({ preserveTransient: true })
+      }
       errorMessage.value = message
       toastError(message)
     }

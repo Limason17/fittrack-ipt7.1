@@ -295,6 +295,7 @@ describe('StudioInvitationsView', () => {
       ['INVITATION_REVOKED', 'widerrufen und kann nicht'],
       ['INVITATION_EMAIL_ALREADY_MEMBER', 'bereits aktives Mitglied'],
       ['INVITATION_RESEND_RATE_LIMITED', 'Zu viele Versuche'],
+      ['INVITATION_RESEND_CONFLICT', 'bereits von einer anderen Anfrage'],
     ]
     for (const [code, expectedText] of cases) {
       api.listInvitations.mockResolvedValue({
@@ -318,6 +319,37 @@ describe('StudioInvitationsView', () => {
       expect(wrapper.text()).not.toContain(code)
       wrapper.unmount()
     }
+  })
+
+  it('reloads the server state after a delivery failure so the row reflects the new expired status', async () => {
+    api.listInvitations
+      .mockResolvedValueOnce({
+        invitations: [{ id: 'inv-pending', email: 'pending@example.test', role: 'member', status: 'pending', expiresAt: '2026-08-01T00:00:00.000Z' }],
+        pagination: { total: 1 },
+      })
+      .mockResolvedValueOnce({
+        invitations: [{ id: 'inv-pending', email: 'pending@example.test', role: 'member', status: 'expired', expiresAt: '2020-01-01T00:00:00.000Z' }],
+        pagination: { total: 1 },
+      })
+    api.resendInvitation.mockRejectedValue(
+      Object.assign(new Error('failed'), { status: 502, data: { error: { code: 'INVITATION_DELIVERY_FAILED', message: 'failed' } } })
+    )
+    const wrapper = await mountView('owner')
+    const resendButton = wrapper.findAll('button').find((btn) => btn.text().includes('Erneut senden'))
+    await resendButton.trigger('click')
+    await flushPromises()
+    const dialog = document.body.querySelector('[role="dialog"]')
+    const confirmButton = [...dialog.querySelectorAll('button')].find((button) => button.textContent.includes('Erneut senden'))
+    confirmButton.click()
+    await flushPromises()
+
+    expect(api.listInvitations).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('[role="alert"]').text()).toContain('nicht erneut gesendet')
+    expect(wrapper.text()).not.toContain('INVITATION_DELIVERY_FAILED')
+    // The reloaded row now shows as expired, with resend still offered (not revoke).
+    expect(wrapper.text()).toContain('Abgelaufen')
+    expect(wrapper.findAll('button').some((btn) => btn.text().includes('Erneut senden'))).toBe(true)
+    wrapper.unmount()
   })
 
   it('keeps a long e-mail address and inviter name fully accessible via title even when visually truncated', async () => {

@@ -72,51 +72,153 @@ durch die Route-Middleware.
 | `revoked` | `409 INVITATION_REVOKED`. **Widerrufene Einladungen werden nie still reaktiviert** - dieser Zweig wird vor jeder Mutation geprüft. |
 | E-Mail bereits aktives Mitglied | `409 INVITATION_EMAIL_ALREADY_MEMBER` (gleiche Prüfung wie bei `createInvitation`, gegen Race mit einer parallelen Mitgliedschaft). |
 | Fremdes/unbekanntes Studio oder ID | `404 INVITATION_INVALID` - **ununterscheidbar** vom „existiert nicht"-Fall (kein Enumeration-Signal). |
+| Ein anderer, gleichzeitig gestarteter Resend hat die Zeile bereits rotiert | `409 INVITATION_RESEND_CONFLICT` (neu, siehe Abschnitt 5). |
 
 `INVITATION_NOT_RESENDABLE` bleibt als generischer Default-Zweig für jeden
 Status außerhalb der vier bekannten Werte reserviert (aktuell durch das
 `INVITATION_STATUSES`-Enum unerreichbar, gleiche defensive Konvention wie
 `invitationStateError`s Default-Zweig).
 
-**Bewusst nicht verwendet:** `INVITATION_ALREADY_PENDING`. Der Code bleibt
-für Create reserviert, wo er einen echten Konflikt (zweite Einladung neben
-einer bestehenden pendenten) beschreibt. Bei Resend ist „pending" der
-erwartete Zielzustand, kein Konfliktfall - eine Wiederverwendung des Codes
-wäre semantisch falsch gewesen.
+**`INVITATION_ALREADY_PENDING`:** wird von Resend weiterhin nicht verwendet
+(bei Resend ist „pending" der erwartete Zielzustand, kein Konfliktfall). Der
+Code selbst ist aber **kein toter Code** - er wird von `createInvitation`
+tatsächlich geworfen, wenn für dieselbe E-Mail bereits eine pendente
+Einladung existiert. Diese Session hat dafür einen bisher fehlenden
+Integrationstest ergänzt (`test/integration/studioApi.test.js`, „creating a
+second invitation for an e-mail with an existing pending invitation is
+rejected as INVITATION_ALREADY_PENDING"), damit sein Vertrag nicht nur
+korrekt, sondern auch nachweislich getestet ist.
 
 ## 4. Tokenwechsel
 
 Wiederverwendet: `security/invitationTokens.js#createInvitationToken` (32
 zufällige Bytes, SHA-256-Hash, Base64url, exakt dieselbe Funktion wie bei
-Create). **Der alte Token wird beim Commit der Transaktion unbedingt
-ungültig** - unabhängig vom Ausgang des anschließenden Mailversands, da
-`token_hash` bereits überschrieben ist, sobald die DB-Transaktion committet.
-Kein Token verlässt den Server in Logs oder API-Response (nur
-`role`/`expiresAt` im Audit-Detail, keine Zeile im Servicecode loggt den
-Klartext-Token).
+Create). **Der alte Token wird beim Commit der Rotations-Transaktion
+unbedingt ungültig** - unabhängig vom Ausgang des anschließenden
+Mailversands, da `token_hash` bereits überschrieben ist, sobald die
+DB-Transaktion committet. Kein Token verlässt den Server in Logs, API-Response
+oder Fehlermeldungen (nur `role`/`expiresAt` im Audit-Detail; Konflikt- und
+Fehlermeldungen sind statische Texte ohne Tokenwert - durch Test verifiziert:
+`doesNotMatch(..., /[A-Za-z0-9_-]{43}/)` auf jede Verlierer-Fehlermeldung).
 
-## 5. Parallelitätsverhalten
+Der bei einem fehlgeschlagenen Zustellversuch neu erzeugte Token wird
+ebenfalls nie nutzbar (siehe Abschnitt 6) - `token_hash` bleibt zwar auf der
+Zeile stehen (Kompensation ändert nur `status`/`expires_at`, nicht
+`token_hash`), aber ein Annahmeversuch mit diesem Token liefert konsistent
+`410 INVITATION_EXPIRED`, exakt dieselbe ehrliche Antwort wie bei jeder
+anderen abgelaufenen Einladung - kein irreführendes „ungültiger Token" und
+kein funktionierender Token.
 
-Der `SELECT ... FOR UPDATE` auf die Einladungszeile serialisiert konkurrierende
-Resend-Aufrufe auf derselben Einladung: jeder Aufruf überschreibt
-`token_hash` vollständig, sodass am Ende **genau ein** Token gültig ist -
-egal wie viele Aufrufe parallel starteten (durch Integrationstest
-empirisch verifiziert, drei parallele Resends → genau ein gültiger Token
-und drei Audit-Events). Ein Rate-Limiter (siehe unten) begrenzt zusätzlich,
-wie oft dasselbe Aktor-Einladung-Paar das überhaupt versuchen darf.
+## 5. Parallelitätsverhalten (gehärtet)
 
-## 6. Mailfehlerverhalten
+**Vorherige Fassung (unzureichend):** `SELECT ... FOR UPDATE` allein
+serialisierte zwar den Datenbankzugriff, verhinderte aber nicht, dass
+mehrere gleichzeitig gestartete Resend-Aufrufe nacheinander alle
+erfolgreich rotierten - jeder mit eigenem Mailversand und eigenem
+Audit-Event. Nur der *letzte* Token blieb am Ende gültig, aber der Weg
+dorthin verschickte mehrere E-Mails und erzeugte mehrere Audit-Einträge.
 
-Da der alte Token bereits beim Commit unbedingt invalidiert ist, gibt es bei
-einem anschließenden Zustellfehler keinen sinnvollen „alten Zustand", zu dem
-zurückgekehrt werden könnte. Resend nutzt daher **dieselbe Kompensation wie
-Create** (`compensateInvitationDeliveryFailure`): die (jetzt unzustellbare)
-Einladung wird auf `revoked` gesetzt, ein `invitation.delivery_failed`
-Audit-Event geschrieben, und der Client erhält `502
-INVITATION_DELIVERY_FAILED` bzw. `503
+**Gehärteter Mechanismus - atomares Compare-and-Swap:**
+
+1. Vor jeder Sperre wird der aktuell persistierte `token_hash` der
+   Einladung gelesen (`sql.query`, außerhalb jeder Transaktion, also nicht
+   durch `lockActorMembership` blockiert) - das ist die *Baseline*, die
+   alle zeitgleich gestarteten Aufrufe gemeinsam beobachten, selbst wenn
+   sie anschließend durch dieselbe Aktor-Zeilensperre serialisiert werden.
+2. Die eigentliche Rotation ist eine bedingte `UPDATE ... WHERE studio_id=?
+   AND public_id=? AND token_hash=<Baseline>`-Anweisung. Nur wenn
+   `affectedRows === 1`, hat dieser Aufruf gewonnen.
+3. `affectedRows === 0` bedeutet: ein anderer, zeitgleich gestarteter
+   Aufruf hat die Zeile bereits rotiert, bevor dieser Aufruf seine eigene
+   Sperre erhalten hat → `409 INVITATION_RESEND_CONFLICT`. Ein echter
+   Statuswechsel (z. B. zwischenzeitlicher Widerruf) wird weiterhin *vor*
+   diesem Vergleich anhand des aktuell gesperrten Zustands erkannt und mit
+   seinem eigenen, spezifischeren Code gemeldet (`INVITATION_REVOKED` /
+   `INVITATION_ALREADY_ACCEPTED`) - der Konfliktcode ist ausschließlich für
+   den reinen „ein anderer Resend war schneller"-Fall reserviert.
+4. Der E-Mail-Versand (`outbox.publish`) wird **ausschließlich** vom
+   Gewinner aufgerufen - Verlierer erreichen diesen Code-Pfad nie.
+5. Das `invitation.resent`-Audit-Event wird **nicht** innerhalb der
+   Rotations-Transaktion geschrieben, sondern erst **nach** einem
+   bestätigt erfolgreichen Mailversand (siehe Abschnitt 6) - so entsteht
+   nie ein Audit-Eintrag für einen Versuch, dessen Zustellung fehlschlägt.
+
+**Empirisch bewiesene Garantien** (`test/integration/studioApi.test.js`,
+drei echte parallele Aufrufe über `Promise.allSettled` gegen dieselbe
+Einladung, mit einem Spy-fähigen SMTP-Provider statt des Dev-Preview-Pfads,
+damit tatsächliche Provider-Aufrufe zählbar sind):
+
+- genau 1 von 3 Aufrufen liefert Erfolg, die anderen 2 liefern `409
+  INVITATION_RESEND_CONFLICT`;
+- der Mailprovider wird **exakt einmal** aufgerufen;
+- **genau ein** `invitation.resent`-Audit-Event entsteht für die ganze
+  Gruppe;
+- nur der Token aus der tatsächlich versendeten E-Mail funktioniert
+  (Annahme über die reale Accept-Route verifiziert);
+- kein Tokenwert in einer Verlierer-Fehlermeldung.
+
+**Deadlock-Sonderfall:** wenn der Gewinner-Aufruf *selbst* einen
+Zustellfehler hat, läuft die in Abschnitt 6 beschriebene Kompensation in
+einer eigenen, späteren Transaktion. Da zu diesem Zeitpunkt die
+Verlierer-Transaktionen teils noch ihre eigene (letztlich erfolglose)
+CAS-Anweisung gegen dieselbe Zeile ausführen, kann InnoDB hier einen echten
+`ER_LOCK_DEADLOCK` melden - dies ist kein Zeichen eines fehlerhaften
+CAS-Entwurfs, sondern ein bekanntes, unter genau dieser Verschränkung
+zweier unabhängiger Transaktionen normales InnoDB-Verhalten.
+`compensateResendDeliveryFailure` fängt `ER_LOCK_DEADLOCK` ab und
+wiederholt die Kompensation bis zu dreimal mit einer frischen Transaktion -
+der bei einem Deadlock abgebrochene Vorgang ist immer sicher wiederholbar,
+da die jeweils andere Transaktion zu diesem Zeitpunkt bereits
+committet/zurückgerollt wurde. Durch einen dedizierten Integrationstest
+(„a concurrent resend winner whose own delivery then fails...") verifiziert:
+genau 1 Zustellfehler, genau 2 Konflikte, der Provider genau einmal
+aufgerufen, kein `invitation.resent`-Event, und ein anschließender Retry
+mit funktionierendem Transport gelingt normal.
+
+Ein Rate-Limiter (siehe Abschnitt 7) begrenzt zusätzlich, wie oft dasselbe
+Aktor-Einladung-Paar das überhaupt versuchen darf - er ersetzt die
+CAS-Garantie nicht, sondern ergänzt sie um einen Schutz gegen wiederholten
+Missbrauch außerhalb einer einzelnen Parallelitäts-Gruppe.
+
+## 6. Mailfehlerverhalten (gehärtet)
+
+**Vorherige Fassung (ungeeignet):** ein Zustellfehler beim Resend setzte die
+Einladung auf `revoked` - dauerhaft, nie wieder resendbar. Ein rein
+temporärer Mailausfall hätte damit eine zuvor funktionierende Einladung
+endgültig unbrauchbar gemacht.
+
+**Gehärtetes Verhalten:** `compensateResendDeliveryFailure` (getrennt von
+`compensateInvitationDeliveryFailure`, das weiterhin ausschließlich von
+`createInvitation` genutzt wird) setzt bei einem Zustellfehler:
+
+- `status = 'expired'` (**nie** `revoked`);
+- `expires_at` auf einen bereits abgelaufenen Zeitpunkt;
+- `token_hash` bleibt unverändert (siehe Abschnitt 4 - der beim
+  fehlgeschlagenen Versuch erzeugte Token bleibt auf der Zeile stehen, wird
+  aber durch den Statuswechsel nie akzeptiert);
+- ein `invitation.delivery_failed`-Audit-Event (unverändert gegenüber der
+  bisherigen Konvention);
+- **kein** `invitation.resent`-Event für den fehlgeschlagenen Versuch.
+
+Die Kompensation ist auf `token_hash = <der von diesem Aufruf erzeugte
+neue Hash>` **und** `status = 'pending'` bedingt - so kann sie niemals eine
+inzwischen durch einen anderen, späteren (nicht mit diesem Versuch
+konkurrierenden) Resend bereits erneut rotierte Zeile überschreiben.
+
+Der Client erhält weiterhin `502 INVITATION_DELIVERY_FAILED` bzw. `503
 INVITATION_DELIVERY_RECOVERY_FAILED`, falls sogar die Kompensation
-fehlschlägt. Es entsteht **nie** ein Zustand, der wie ein erfolgreicher
-Resend aussieht, obwohl die Zustellung fehlgeschlagen ist.
+fehlschlägt (nach den in Abschnitt 5 beschriebenen Deadlock-Retries). Da
+die Einladung dabei auf denselben `expired`-Zustand fällt, den eine ganz
+gewöhnlich abgelaufene Einladung auch hätte, ist sie **sofort wieder
+resendbar** - ein zweiter Resend mit funktionierendem Transport rotiert
+den Token erneut und gelingt normal, ohne Sonderbehandlung. Es entsteht
+**nie** ein Zustand, der wie ein erfolgreicher Resend aussieht, obwohl die
+Zustellung fehlgeschlagen ist, und **nie** eine dauerhaft blockierte
+Einladung. Durch einen dedizierten Integrationstest verifiziert (alter
+Token abgelehnt, neu erzeugter Token liefert `410 INVITATION_EXPIRED` statt
+funktionsfähig zu sein, Status `expired` mit `revoked_at IS NULL`, genau
+ein `delivery_failed`- und null `resent`-Events für den fehlgeschlagenen
+Versuch, danach erfolgreicher Retry mit genau einem `resent`-Event).
 
 ## 7. Berechtigungen (Zusammenfassung)
 

@@ -159,7 +159,10 @@ before(async () => {
         "resendAlreadyMember",
         "resendConcurrent",
         "resendRateLimited",
-        "resendRateLimitedOther"
+        "resendRateLimitedOther",
+        "resendMailFailure",
+        "resendConcurrentFailure",
+        "alreadyPending"
     ]) {
         accounts[name] = await registerAndLogin(name);
     }
@@ -722,6 +725,23 @@ test("invitation mismatch, revocation, expiration, and list privacy are safe", a
     }
 });
 
+test("creating a second invitation for an e-mail with an existing pending invitation is rejected as INVITATION_ALREADY_PENDING", async () => {
+    const first = await invite(accounts.owner, studioA.id, accounts.alreadyPending, "member");
+    assert.equal(first.response.status, 201, JSON.stringify(first.data));
+
+    const second = await invite(accounts.owner, studioA.id, accounts.alreadyPending, "trainer");
+    assert.equal(second.response.status, 409);
+    assert.equal(second.data.error.code, "INVITATION_ALREADY_PENDING");
+
+    const [[count]] = await pool.query(
+        `SELECT COUNT(*) AS total FROM studio_invitations si
+         INNER JOIN studios s ON s.id = si.studio_id
+         WHERE s.public_id = ? AND si.email_normalized = ?`,
+        [studioA.id, accounts.alreadyPending.email.toLowerCase()]
+    );
+    assert.equal(Number(count.total), 1, "the rejected second attempt must not create a duplicate row");
+});
+
 test("concurrent invitation acceptance and revoke races have one atomic winner", async () => {
     const concurrentCreated = await invite(
         accounts.owner,
@@ -1104,49 +1124,268 @@ test("resend refuses accepted/revoked invitations without reactivating them, and
     );
 });
 
-test("concurrent resend calls on the same invitation converge on exactly one valid token", async () => {
-    const created = await invite(accounts.owner, studioA.id, accounts.resendConcurrent, "member");
-    const invitationId = created.data.invitation.id;
+test("a resend mail failure marks the invitation expired (never revoked) so it stays resendable, and a later retry succeeds", async () => {
+    const contextService = createStudioService({ database: pool });
+    const context = await contextService.loadStudioContext(accounts.owner.id, studioA.id);
+    const invited = await invite(accounts.owner, studioA.id, accounts.resendMailFailure, "trainer");
+    const invitationId = invited.data.invitation.id;
+    const tokenA = invitationToken(invited);
 
-    const results = await Promise.all([
-        api(`/api/v1/studios/${studioA.id}/invitations/${invitationId}/resend`, {
-            method: "POST",
-            token: accounts.owner.token
-        }),
-        api(`/api/v1/studios/${studioA.id}/invitations/${invitationId}/resend`, {
-            method: "POST",
-            token: accounts.owner.token
-        }),
-        api(`/api/v1/studios/${studioA.id}/invitations/${invitationId}/resend`, {
-            method: "POST",
-            token: accounts.owner.token
+    let leakedTokenB;
+    const failingService = createStudioService({
+        database: pool,
+        outbox: createInvitationOutbox({
+            delivery: createInvitationDelivery({
+                env: smtpEnv(),
+                provider: {
+                    async sendInvitation(message) {
+                        leakedTokenB = new URL(message.acceptanceUrl).pathname.split("/").pop();
+                        throw new Error("simulated transient SMTP outage");
+                    }
+                }
+            })
         })
-    ]);
-    assert.ok(results.every(({ response }) => response.status === 200), JSON.stringify(results.map((r) => r.data)));
+    });
 
-    const tokens = results.map((result) => resendToken(result));
-    // Each concurrent call fully overwrites token_hash under the same row
-    // lock, so only the token belonging to whichever call committed last can
-    // still match the persisted row - compare hashes directly instead of
-    // racing accept attempts against each other, since accepting once would
-    // turn every subsequent attempt into an unrelated INVITATION_ALREADY_USED
-    // result and mask which of the three tokens were already dead beforehand.
-    const [[finalRow]] = await pool.query(
-        "SELECT token_hash FROM studio_invitations WHERE public_id = ?",
+    let surfacedError;
+    await assert.rejects(
+        failingService.resendInvitation(accounts.owner.id, context, invitationId),
+        (error) => {
+            surfacedError = error;
+            return error.code === "INVITATION_DELIVERY_FAILED";
+        }
+    );
+    assert.equal(surfacedError.status, 502);
+    assert.doesNotMatch(`${surfacedError.message} ${surfacedError.stack}`, new RegExp(leakedTokenB));
+
+    // Token A (issued before this resend attempt) is dead, exactly as an
+    // unconditional rotation-on-commit demands.
+    const tokenAAttempt = await api(`/api/v1/invitations/${tokenA}/accept`, {
+        method: "POST",
+        token: accounts.resendMailFailure.token
+    });
+    assert.equal(tokenAAttempt.response.status, 404);
+    assert.equal(tokenAAttempt.data.error.code, "INVITATION_INVALID");
+
+    // Token B (generated by the failed attempt, never actually delivered) is
+    // also rejected - its hash is still on the row (compensation only ever
+    // touches status/expires_at), so the lookup itself succeeds, but the
+    // invitation's status is 'expired' by the time anyone could use it,
+    // which is exactly the same honest, coherent rejection a normal lazily
+    // expired invitation already produces elsewhere - not a fake 404.
+    const tokenBAttempt = await api(`/api/v1/invitations/${leakedTokenB}/accept`, {
+        method: "POST",
+        token: accounts.resendMailFailure.token
+    });
+    assert.equal(tokenBAttempt.response.status, 410);
+    assert.equal(tokenBAttempt.data.error.code, "INVITATION_EXPIRED");
+
+    const [[afterFailure]] = await pool.query(
+        "SELECT status, revoked_at FROM studio_invitations WHERE public_id = ?",
         [invitationId]
     );
-    const { hashInvitationToken } = require("../../security/invitationTokens");
-    const validCount = tokens.filter(
-        (candidate) => Buffer.compare(hashInvitationToken(candidate), finalRow.token_hash) === 0
-    ).length;
-    assert.equal(validCount, 1, "exactly one of the three issued tokens must match the final row state");
+    assert.equal(afterFailure.status, "expired", "a delivery failure must mark the invitation expired, not revoked");
+    assert.equal(afterFailure.revoked_at, null, "a failed resend must never set revoked_at");
+
+    const [[deliveryFailedCount]] = await pool.query(
+        `SELECT COUNT(*) AS total FROM studio_audit_events
+         WHERE event_type = 'invitation.delivery_failed' AND target_public_id = ?`,
+        [invitationId]
+    );
+    assert.equal(Number(deliveryFailedCount.total), 1);
+    const [[resentCountBefore]] = await pool.query(
+        `SELECT COUNT(*) AS total FROM studio_audit_events
+         WHERE event_type = 'invitation.resent' AND target_public_id = ?`,
+        [invitationId]
+    );
+    assert.equal(Number(resentCountBefore.total), 0, "no invitation.resent event for the failed attempt");
+
+    // The invitation is resend-actionable again through the ordinary list API -
+    // shown as expired, e-mail still visible so the admin knows who to resend to.
+    const listedAfterFailure = await api(`/api/v1/studios/${studioA.id}/invitations?limit=100`, {
+        token: accounts.owner.token
+    });
+    const listedInvitation = listedAfterFailure.data.invitations.find((item) => item.id === invitationId);
+    assert.equal(listedInvitation.status, "expired");
+    assert.equal(listedInvitation.email, accounts.resendMailFailure.email.toLowerCase());
+
+    // A second resend, this time with a working transport, succeeds normally.
+    const captured = [];
+    const workingService = createStudioService({
+        database: pool,
+        outbox: createInvitationOutbox({
+            delivery: createInvitationDelivery({
+                env: smtpEnv(),
+                provider: createSmtpInvitationProvider({
+                    config: require("../../config/smtpConfig").readSmtpConfig(smtpEnv()),
+                    transportFactory: fakeSmtpTransportFactory(async (message) => { captured.push(message); }),
+                    logger: { info() {}, warn() {}, error() {} }
+                })
+            })
+        })
+    });
+    const retryResult = await workingService.resendInvitation(accounts.owner.id, context, invitationId);
+    assert.equal(retryResult.invitation.status, "pending");
+    assert.equal(captured.length, 1);
+    const tokenCMatch = captured[0].text.match(/invitations\/([A-Za-z0-9_-]{43})/);
+    assert.ok(tokenCMatch);
+    const tokenC = tokenCMatch[1];
+
+    // Token C works exactly once.
+    const tokenCAccept = await api(`/api/v1/invitations/${tokenC}/accept`, {
+        method: "POST",
+        token: accounts.resendMailFailure.token
+    });
+    assert.equal(tokenCAccept.response.status, 200, JSON.stringify(tokenCAccept.data));
+    const tokenCReplay = await api(`/api/v1/invitations/${tokenC}/accept`, {
+        method: "POST",
+        token: accounts.resendMailFailure.token
+    });
+    assert.equal(tokenCReplay.response.status, 409);
+    assert.equal(tokenCReplay.data.error.code, "INVITATION_ALREADY_USED");
+
+    const [[resentCountAfter]] = await pool.query(
+        `SELECT COUNT(*) AS total FROM studio_audit_events
+         WHERE event_type = 'invitation.resent' AND target_public_id = ?`,
+        [invitationId]
+    );
+    assert.equal(Number(resentCountAfter.total), 1, "exactly one invitation.resent event, for the successful retry");
+});
+
+test("concurrent resend calls converge on exactly one success, one e-mail, and one audit event; losers get a stable conflict code", async () => {
+    const contextService = createStudioService({ database: pool });
+    const context = await contextService.loadStudioContext(accounts.owner.id, studioA.id);
+    const invited = await invite(accounts.owner, studioA.id, accounts.resendConcurrent, "member");
+    const invitationId = invited.data.invitation.id;
+
+    const captured = [];
+    const service = createStudioService({
+        database: pool,
+        outbox: createInvitationOutbox({
+            delivery: createInvitationDelivery({
+                env: smtpEnv(),
+                provider: createSmtpInvitationProvider({
+                    config: require("../../config/smtpConfig").readSmtpConfig(smtpEnv()),
+                    transportFactory: fakeSmtpTransportFactory(async (message) => { captured.push(message); }),
+                    logger: { info() {}, warn() {}, error() {} }
+                })
+            })
+        })
+    });
+
+    const results = await Promise.allSettled([
+        service.resendInvitation(accounts.owner.id, context, invitationId),
+        service.resendInvitation(accounts.owner.id, context, invitationId),
+        service.resendInvitation(accounts.owner.id, context, invitationId)
+    ]);
+
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter((result) => result.status === "rejected");
+    assert.equal(fulfilled.length, 1, "exactly one concurrently-started resend must succeed");
+    assert.equal(rejected.length, 2, "the other two must not also succeed");
+    for (const loser of rejected) {
+        assert.equal(loser.reason.status, 409);
+        assert.equal(loser.reason.code, "INVITATION_RESEND_CONFLICT");
+        assert.doesNotMatch(
+            `${loser.reason.message} ${loser.reason.stack}`,
+            /[A-Za-z0-9_-]{43}/,
+            "a conflict error must never leak a token value"
+        );
+    }
+
+    assert.equal(captured.length, 1, "exactly one e-mail must be sent for a concurrently-started resend group");
 
     const [[auditCount]] = await pool.query(
         `SELECT COUNT(*) AS total FROM studio_audit_events
          WHERE event_type = 'invitation.resent' AND target_public_id = ?`,
         [invitationId]
     );
-    assert.equal(Number(auditCount.total), 3, "every successful resend call writes its own audit event");
+    assert.equal(Number(auditCount.total), 1, "exactly one invitation.resent audit event for the whole group");
+
+    const winnerTokenMatch = captured[0].text.match(/invitations\/([A-Za-z0-9_-]{43})/);
+    assert.ok(winnerTokenMatch, "the sent e-mail must contain the winner's acceptance link");
+    const winnerAccept = await api(`/api/v1/invitations/${winnerTokenMatch[1]}/accept`, {
+        method: "POST",
+        token: accounts.resendConcurrent.token
+    });
+    assert.equal(winnerAccept.response.status, 200, JSON.stringify(winnerAccept.data));
+
+    const [[finalRow]] = await pool.query(
+        "SELECT status FROM studio_invitations WHERE public_id = ?",
+        [invitationId]
+    );
+    assert.equal(finalRow.status, "accepted", "no partially-mutated state - the winner's token fully accepted normally");
+});
+
+test("a concurrent resend winner whose own delivery then fails leaves the invitation expired and safely retryable, without a second success", async () => {
+    const contextService = createStudioService({ database: pool });
+    const context = await contextService.loadStudioContext(accounts.owner.id, studioA.id);
+    const invited = await invite(accounts.owner, studioA.id, accounts.resendConcurrentFailure, "member");
+    const invitationId = invited.data.invitation.id;
+
+    let failingProviderCalls = 0;
+    const failingService = createStudioService({
+        database: pool,
+        outbox: createInvitationOutbox({
+            delivery: createInvitationDelivery({
+                env: smtpEnv(),
+                provider: {
+                    async sendInvitation() {
+                        failingProviderCalls += 1;
+                        throw new Error("simulated transient SMTP outage");
+                    }
+                }
+            })
+        })
+    });
+
+    const results = await Promise.allSettled([
+        failingService.resendInvitation(accounts.owner.id, context, invitationId),
+        failingService.resendInvitation(accounts.owner.id, context, invitationId),
+        failingService.resendInvitation(accounts.owner.id, context, invitationId)
+    ]);
+
+    const deliveryFailures = results.filter(
+        (result) => result.status === "rejected" && result.reason.code === "INVITATION_DELIVERY_FAILED"
+    );
+    const conflicts = results.filter(
+        (result) => result.status === "rejected" && result.reason.code === "INVITATION_RESEND_CONFLICT"
+    );
+    assert.equal(deliveryFailures.length, 1, "exactly one call wins the CAS and reaches (failing) delivery");
+    assert.equal(conflicts.length, 2, "the other two never reach delivery at all");
+    assert.equal(failingProviderCalls, 1, "the provider is only ever invoked by the single winner");
+
+    const [[afterRace]] = await pool.query(
+        "SELECT status, revoked_at FROM studio_invitations WHERE public_id = ?",
+        [invitationId]
+    );
+    assert.equal(afterRace.status, "expired");
+    assert.equal(afterRace.revoked_at, null);
+
+    const [[resentCount]] = await pool.query(
+        `SELECT COUNT(*) AS total FROM studio_audit_events
+         WHERE event_type = 'invitation.resent' AND target_public_id = ?`,
+        [invitationId]
+    );
+    assert.equal(Number(resentCount.total), 0, "no invitation.resent event when every attempt in the group failed to deliver");
+
+    const captured = [];
+    const workingService = createStudioService({
+        database: pool,
+        outbox: createInvitationOutbox({
+            delivery: createInvitationDelivery({
+                env: smtpEnv(),
+                provider: createSmtpInvitationProvider({
+                    config: require("../../config/smtpConfig").readSmtpConfig(smtpEnv()),
+                    transportFactory: fakeSmtpTransportFactory(async (message) => { captured.push(message); }),
+                    logger: { info() {}, warn() {}, error() {} }
+                })
+            })
+        })
+    });
+    const retried = await workingService.resendInvitation(accounts.owner.id, context, invitationId);
+    assert.equal(retried.invitation.status, "pending");
+    assert.equal(captured.length, 1);
 });
 
 test("resend rate limiting is scoped per actor and invitation", async () => {

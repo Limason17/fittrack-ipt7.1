@@ -333,7 +333,8 @@ export const messages = {
                 resendNotResendable: 'Diese Einladung kann derzeit nicht erneut gesendet werden.',
                 resendEmailAlreadyMember: 'Diese E-Mail-Adresse ist bereits aktives Mitglied des Studios.',
                 resendRateLimited: 'Zu viele Versuche. Bitte versuche es in ein paar Minuten erneut.',
-                resendDeliveryFailed: 'Der Versand ist fehlgeschlagen. Die Einladung wurde sicherheitshalber widerrufen; bitte lade die Person erneut ein.',
+                resendConflict: 'Diese Einladung wurde soeben bereits von einer anderen Anfrage erneut gesendet.',
+                resendDeliveryFailed: 'Der Versand ist fehlgeschlagen. Die Einladung wurde nicht erneut gesendet und gilt jetzt als abgelaufen; du kannst es erneut versuchen.',
                 noActions: 'Keine Aktion verfügbar',
                 unknownInviter: '—',
                 columns: {
@@ -1310,7 +1311,8 @@ export const messages = {
                 resendNotResendable: 'This invitation cannot currently be resent.',
                 resendEmailAlreadyMember: 'This e-mail address is already an active studio member.',
                 resendRateLimited: 'Too many attempts. Please try again in a few minutes.',
-                resendDeliveryFailed: 'Delivery failed. The invitation was revoked as a precaution; please invite this person again.',
+                resendConflict: 'This invitation was just resent by another request.',
+                resendDeliveryFailed: 'Delivery failed. The invitation was not resent and now shows as expired; you can try again.',
                 noActions: 'No action available',
                 unknownInviter: '—',
                 columns: {
