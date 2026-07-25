@@ -288,3 +288,25 @@ AUTH_COOKIE_SAME_SITE=strict       # strict | lax | none (none erfordert Secure=
 - **Stage 2B2B bleibt verschoben** bis zum ersten zahlenden Kunden bzw. einer echten Produktionsbereitstellung — durch Stage 3B2 nicht berührt.
 - **Cross-Tab-Koordination wirkt nur innerhalb eines Browser-Kontexts** (Abschnitt 9/12) — mehrere unabhängige Geräte/Profile bleiben unabhängige Sitzungen, wie beabsichtigt.
 - **Keine Cloud-Infrastruktur** wurde für diese Phase eingerichtet oder vorausgesetzt; alle Tests laufen gegen die lokale MySQL-Instanz und den lokalen Playwright-Webserver.
+
+---
+
+## 17. Nachtrag: Dependency-Security-Gates im PR-CI (2026-07-25)
+
+Der PR-CI für PR #17 fand zwei `npm audit --audit-level=high`-Funde, die den
+Backend- und den Frontend-Job jeweils vor den eigentlichen Tests abbrachen
+(Chromium-E2E/Axe waren bereits grün, betroffen war nur der Audit-Schritt).
+
+**Backend:** `brace-expansion <=5.0.7` (High, [GHSA-mh99-v99m-4gvg](https://github.com/advisories/GHSA-mh99-v99m-4gvg)) über die rein transitive Kette `nodemon@3.1.14 → minimatch@10.2.4 → brace-expansion@5.0.7` (Dev-Abhängigkeit, nie im Laufzeit-Codepfad). Zusätzlich `body-parser 2.0.0–2.2.2` (Low, [GHSA-v422-hmwv-36x6](https://github.com/advisories/GHSA-v422-hmwv-36x6)) über `express@^5.2.1 → body-parser@2.2.2`. Beide Advisories wurden erst **nach** dem funktionalen Stage-3B2-Abschluss veröffentlicht/indiziert — zum Zeitpunkt der letzten lokalen Verifikation gab es noch keinen High-Fund. Behoben mit einem einfachen `npm audit fix` (kein `--force`): `body-parser 2.2.2 → 2.3.0`, `brace-expansion 5.0.7 → 5.0.8`, beide innerhalb der bereits von `express`/`nodemon` erlaubten Semver-Bereiche — **`backend/package.json` bleibt dabei unverändert**, nur `package-lock.json` wurde aktualisiert.
+
+**Frontend:** dieselbe `brace-expansion <=5.0.7`-Advisory, aber über eine tiefere, ausschließlich Dev-Test-Abhängigkeitskette: `@vue/test-utils@2.4.11 → js-beautify@1.15.4 → editorconfig@1.0.7`/`glob@10.5.0 → minimatch@9.0.9 → brace-expansion@2.1.2` (die Advisory deckt mehrere Major-Linien von `brace-expansion` bis `5.0.7` ab). `@vue/test-utils@2.4.11` ist bereits die neueste verfügbare Version; `js-beautify`, `editorconfig` und `glob` haben jeweils nur ein Major-Upgrade verfügbar (keine kompatible Patch-/Minor-Version, die die Kette entschärft). `npm audit fix --force` hätte `@vue/test-utils` auf `2.2.7` **heruntergestuft** — ein Breaking-Downgrade, ausdrücklich nicht zulässig. Stattdessen wurde ein gezielter `overrides`-Eintrag in `frontend/package.json` ergänzt:
+
+```json
+"overrides": {
+  "minimatch": "^10.2.4"
+}
+```
+
+`minimatch` ist an dieser Stelle eine rein transitive Abhängigkeit (in keinem eigenen Code importiert), kommt im gesamten Frontend-Baum ausschließlich über genau diese eine Kette vor (`npm ls minimatch --all` bestätigt keine zweite, unabhängige Verwendung), und `minimatch@10.x` erfordert Node `18 || 20 || >=22` — vollständig innerhalb der bereits deklarierten Projekt-Engine (`^20.19.0 || >=22.12.0`). Die Override-Version erzwingt `minimatch@10.2.5`, was intern bereits `brace-expansion@^5.0.2` (aufgelöst zu `5.0.8`) verlangt — dieselbe Ziel-Range wie beim Backend-Fix. Kompatibilität wurde nicht nur angenommen, sondern durch die volle Regressionssuite (Abschnitt unten) empirisch bestätigt.
+
+**Ergebnis:** Backend `npm audit --audit-level=high` vorher 2 Funde (1 low, 1 high) → nachher 0 Funde. Frontend vorher 6 High-Funde → nachher 0 Funde. Beide `npm ci`-reproduzierbar (Lockfiles frisch aus `node_modules`-Neuinstallation regeneriert und verifiziert). Vollständige Regression nach der Änderung: Backend Unit 405/405, Integration **194/194 (inklusive aller MinIO-Off-host-Tests, MinIO-Testcontainer für diese Verifikation aktiv gestartet)**, Migrationen 32/32, Syntax-Check 196/196, Migration Doctor `ready`/`applied:10`, Restore-Drill 15/15; Frontend Unit/Komponenten 305/305, Produktionsbuild erfolgreich; Chromium-E2E/Axe 37/37, keine übersprungenen Tests, keine Refresh-Reuse- oder CSRF-Regression. `.github/workflows/ci.yml` wurde nicht verändert — das Security-Gate (`--audit-level=high`, kein `continue-on-error`, kein `|| true`) bleibt exakt wie zuvor.
