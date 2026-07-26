@@ -321,6 +321,32 @@ describe('StudioInvitationsView', () => {
     }
   })
 
+  it('Stage 3D: a rate-limited resend shows a Retry-After countdown and disables every resend button', async () => {
+    api.listInvitations.mockResolvedValue({
+      invitations: [{ id: 'inv-pending', email: 'pending@example.test', role: 'member', status: 'pending', expiresAt: '2026-08-01T00:00:00.000Z' }],
+      pagination: { total: 1 },
+    })
+    api.resendInvitation.mockRejectedValue(Object.assign(new Error('failed'), {
+      status: 429,
+      data: { error: { code: 'INVITATION_RESEND_RATE_LIMITED', message: 'failed' } },
+      retryAfterSeconds: 45,
+    }))
+    const wrapper = await mountView('owner')
+    const resendButton = wrapper.findAll('button').find((btn) => btn.text().includes('Erneut senden'))
+    await resendButton.trigger('click')
+    await flushPromises()
+    const dialog = document.body.querySelector('[role="dialog"]')
+    const confirmButton = [...dialog.querySelectorAll('button')].find((button) => button.textContent.includes('Erneut senden'))
+    confirmButton.click()
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('Zu viele Versuche')
+    expect(wrapper.get('[role="alert"]').text()).toMatch(/45s/)
+    const rowResendButton = wrapper.findAll('button').find((btn) => btn.text().includes('Erneut senden'))
+    expect(rowResendButton.attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
   it('reloads the server state after a delivery failure so the row reflects the new expired status', async () => {
     api.listInvitations
       .mockResolvedValueOnce({

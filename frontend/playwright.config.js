@@ -18,8 +18,27 @@ const sharedBackendEnvironment = {
   JWT_SECRET: 'fittrack-stage1a-e2e-secret-with-at-least-32-characters',
   CORS_ALLOWED_ORIGINS: 'http://127.0.0.1:4173',
   INVITATION_ACCEPT_BASE_URL: 'http://127.0.0.1:4173',
-  AUTH_LOGIN_RATE_LIMIT_MAX: '100',
+  // Stage 3D: login is keyed by normalized e-mail + client IP (see
+  // rateLimiting/rateLimitPolicies.js), so every OTHER spec file's own
+  // unique per-test fixture e-mails keep their own separate budget
+  // regardless of this value - only e2e/rateLimitSecurity.spec.js
+  // deliberately reuses one fixed e-mail to actually trip this limit and
+  // prove the 429 UX and window rollover, which is why this is small and
+  // short-lived rather than the real default (10 / 15 min). This is a
+  // test-specific policy for the E2E-only backend instance, not a change to
+  // the real default used in development/production.
+  AUTH_LOGIN_RATE_LIMIT_MAX: '6',
+  AUTH_LOGIN_RATE_LIMIT_WINDOW_MS: '8000',
   AUTH_REGISTRATION_RATE_LIMIT_MAX: '100',
+  // Refresh (IP-keyed) and logout-all (user-keyed) had no limiter at all
+  // before Stage 3D; every spec file in this suite shares one loopback IP
+  // and the cross-tab tests alone repeat-each their reload up to 20 times,
+  // so the real default (30/5min) would otherwise be exhausted by this
+  // suite's own legitimate traffic, not abuse.
+  AUTH_REFRESH_RATE_LIMIT_MAX: '1000',
+  AUTH_LOGOUT_ALL_RATE_LIMIT_MAX: '1000',
+  INVITATION_CREATE_RATE_LIMIT_MAX: '1000',
+  INVITATION_ACCEPT_RATE_LIMIT_MAX: '1000',
   ALLOW_TEST_DB_RESET: 'true',
   // Isolate the E2E backend from any real SMTP configuration a developer
   // may have in their own local backend/.env for manual provider testing:

@@ -5,6 +5,7 @@ import { apiRequest } from '../utils/api'
 import { safeInternalRedirect } from '../utils/auth'
 import { locale, t } from '../utils/i18n'
 import { distanceUnit, weightUnit } from '../utils/units'
+import { createRetryCountdown } from '../utils/retryCountdown'
 
 const router = useRouter()
 const route = useRoute()
@@ -19,6 +20,9 @@ const loginRedirect = computed(() => safeInternalRedirect(route.query.redirect, 
 const loginTarget = computed(() => loginRedirect.value
   ? { name: 'login', query: { redirect: loginRedirect.value } }
   : { name: 'login' })
+
+const { secondsRemaining: retrySecondsRemaining, start: startRetryCountdown } = createRetryCountdown()
+const isRateLimited = computed(() => retrySecondsRemaining.value > 0)
 
 async function handleRegister() {
   errorMessage.value = ''
@@ -59,7 +63,12 @@ async function handleRegister() {
       router.replace(loginTarget.value)
     }, 900)
   } catch (error) {
-    errorMessage.value = error.status ? t('auth.registerFailed') : t('common.serverError')
+    if (error.status === 429) {
+      errorMessage.value = t('common.rateLimited')
+      startRetryCountdown(error.retryAfterSeconds)
+    } else {
+      errorMessage.value = error.status ? t('auth.registerFailed') : t('common.serverError')
+    }
   } finally {
     isLoading.value = false
   }
@@ -123,13 +132,14 @@ async function handleRegister() {
 
           <p v-if="errorMessage" id="register-error" class="message message-error" role="alert">
             {{ errorMessage }}
+            <span v-if="isRateLimited"> {{ t('common.retryAfter', { seconds: retrySecondsRemaining }) }}</span>
           </p>
 
           <p v-if="successMessage" class="message message-success" role="status">
             {{ successMessage }}
           </p>
 
-          <button type="submit" class="btn btn-primary auth-btn" :disabled="isLoading">
+          <button type="submit" class="btn btn-primary auth-btn" :disabled="isLoading || isRateLimited">
             <span v-if="isLoading" class="spinner" aria-hidden="true"></span>
             {{ isLoading ? t('auth.registerLoading') : t('auth.registerButton') }}
           </button>

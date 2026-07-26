@@ -6,6 +6,7 @@ import { apiRequest } from '../utils/api'
 import { applyLanguageForUser, t } from '../utils/i18n'
 import { applyDistanceUnitForUser, applyWeightUnitForUser } from '../utils/units'
 import { hydrateStudioContext } from '../utils/studioContext'
+import { createRetryCountdown } from '../utils/retryCountdown'
 
 const router = useRouter()
 const route = useRoute()
@@ -18,6 +19,9 @@ const registrationRedirect = computed(() => safeInternalRedirect(route.query.red
 const registerTarget = computed(() => registrationRedirect.value
   ? { name: 'register', query: { redirect: registrationRedirect.value } }
   : { name: 'register' })
+
+const { secondsRemaining: retrySecondsRemaining, start: startRetryCountdown } = createRetryCountdown()
+const isRateLimited = computed(() => retrySecondsRemaining.value > 0)
 
 async function handleLogin() {
   errorMessage.value = ''
@@ -54,7 +58,12 @@ async function handleLogin() {
     // the redirect query. This keeps the bearer token out of browser history.
     router.replace(safeInternalRedirect(route.query.redirect))
   } catch (error) {
-    errorMessage.value = error.status ? t('auth.loginFailed') : t('common.serverError')
+    if (error.status === 429) {
+      errorMessage.value = t('common.rateLimited')
+      startRetryCountdown(error.retryAfterSeconds)
+    } else {
+      errorMessage.value = error.status ? t('auth.loginFailed') : t('common.serverError')
+    }
   } finally {
     isLoading.value = false
   }
@@ -104,9 +113,10 @@ async function handleLogin() {
 
           <p v-if="errorMessage" id="login-error" class="message message-error" role="alert">
             {{ errorMessage }}
+            <span v-if="isRateLimited"> {{ t('common.retryAfter', { seconds: retrySecondsRemaining }) }}</span>
           </p>
 
-          <button type="submit" class="btn btn-primary auth-btn" :disabled="isLoading">
+          <button type="submit" class="btn btn-primary auth-btn" :disabled="isLoading || isRateLimited">
             <span v-if="isLoading" class="spinner" aria-hidden="true"></span>
             {{ isLoading ? t('auth.loginLoading') : t('auth.loginButton') }}
           </button>

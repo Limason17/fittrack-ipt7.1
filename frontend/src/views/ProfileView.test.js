@@ -136,6 +136,30 @@ describe('ProfileView', () => {
     expect(authToken.value).toBe('token')
   })
 
+  it('Stage 3D: a 429 on password change shows the rate-limit message, a Retry-After countdown, and disables the submit button', async () => {
+    const error = new Error('too many requests')
+    error.status = 429
+    error.data = { error: { code: 'RATE_LIMIT_EXCEEDED' } }
+    error.retryAfterSeconds = 30
+    accountApi.changePassword.mockRejectedValue(error)
+    const { view } = await mountView()
+    wrapper = view
+    await openSecurityTab(wrapper)
+
+    await wrapper.get('#current-password').setValue('current-password-123')
+    await wrapper.get('#new-password').setValue('a-brand-new-password-123')
+    await wrapper.get('#new-password-confirmation').setValue('a-brand-new-password-123')
+    await wrapper.findAll('form')[0].trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('Zu viele Versuche')
+    expect(wrapper.get('[role="alert"]').text()).toMatch(/30s/)
+    const submitButton = wrapper.findAll('form')[0].find('button[type="submit"]')
+    expect(submitButton.attributes('disabled')).toBeDefined()
+    // No raw backend error code ever reaches the DOM.
+    expect(wrapper.text()).not.toContain('RATE_LIMIT_EXCEEDED')
+  })
+
   it('shows the open e-mail change request instead of the request form when one exists', async () => {
     accountApi.getCurrentEmailChangeRequest.mockResolvedValue({
       emailChangeRequest: {

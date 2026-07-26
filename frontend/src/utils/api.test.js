@@ -200,6 +200,36 @@ describe('apiRequest authorization failures', () => {
       status: 400,
     })
   })
+
+  it('Stage 3D: captures Retry-After (seconds) from a 429 response onto the thrown error', async () => {
+    const { apiRequest } = await import('./api')
+    global.fetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests.' } }), {
+        status: 429,
+        headers: { 'Content-Type': 'application/json', 'Retry-After': '42' },
+      })
+    )
+
+    await expect(apiRequest('/users/login', { method: 'POST', body: {} })).rejects.toMatchObject({
+      status: 429,
+      retryAfterSeconds: 42,
+    })
+  })
+
+  it('Stage 3D: retryAfterSeconds is null when the header is absent, not NaN or zero', async () => {
+    const { apiRequest } = await import('./api')
+    global.fetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { code: 'VALIDATION_ERROR', message: 'Invalid.' } }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+
+    await expect(apiRequest('/users/login', { method: 'POST', body: {} })).rejects.toMatchObject({
+      status: 400,
+      retryAfterSeconds: null,
+    })
+  })
 })
 
 // This environment has neither navigator.locks nor a real localStorage, so

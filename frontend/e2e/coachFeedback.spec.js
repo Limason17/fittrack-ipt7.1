@@ -243,7 +243,12 @@ test('Trainer B und Owner ohne eigene Beziehung sehen die Session nicht; Owner m
   try {
     const trainer2Page = await trainer2Context.newPage()
     await attachAuth(trainer2Page, fx.trainer2Auth)
-    await trainer2Page.goto(`/studios/${fx.studio.id}/coach-results`)
+    // Two hard navigations for the same identity, back-to-back: each
+    // triggers its own silent-refresh bootstrap (the access token is
+    // memory-only - see utils/auth.js), and the second must not start until
+    // the first's single-use refresh rotation has actually completed, or it
+    // races that rotation (see accessibility.spec.js's identical note).
+    await trainer2Page.goto(`/studios/${fx.studio.id}/coach-results`, { waitUntil: 'networkidle' })
     await expect(trainer2Page.getByText(fx.member1.username)).toHaveCount(0)
     await trainer2Page.goto(`/studios/${fx.studio.id}/coach-results/${fx.member1MembershipId}/sessions/${fx.completedSession.id}`)
     await expect(trainer2Page.getByText('nicht verfügbar')).toBeVisible()

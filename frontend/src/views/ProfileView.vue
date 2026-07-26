@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
@@ -15,6 +15,7 @@ import {
 import { formatDate, languages, locale, setLanguage, t } from '../utils/i18n'
 import { distanceUnit, setDistanceUnit, setWeightUnit, weightUnit } from '../utils/units'
 import { toastError, toastSuccess } from '../utils/toast'
+import { createRetryCountdown } from '../utils/retryCountdown'
 
 const router = useRouter()
 const activeTab = ref('account')
@@ -73,6 +74,8 @@ const newPasswordConfirmation = ref('')
 const showPasswords = ref(false)
 const passwordSaving = ref(false)
 const passwordError = ref('')
+const { secondsRemaining: passwordRetrySeconds, start: startPasswordRetryCountdown } = createRetryCountdown()
+const passwordRateLimited = computed(() => passwordRetrySeconds.value > 0)
 
 function passwordFieldType() {
   return showPasswords.value ? 'text' : 'password'
@@ -86,7 +89,10 @@ function resetPasswordForm() {
 
 function mapPasswordError(error) {
   const code = error?.data?.error?.code
-  if (error?.status === 429) return t('profile.security.rateLimited')
+  if (error?.status === 429) {
+    startPasswordRetryCountdown(error.retryAfterSeconds)
+    return t('profile.security.rateLimited')
+  }
   if (code === 'CURRENT_PASSWORD_INVALID') return t('profile.security.currentPasswordInvalid')
   if (code === 'NEW_PASSWORD_SAME_AS_CURRENT') return t('profile.security.newPasswordSameAsCurrent')
   if (code === 'PASSWORD_CONFIRMATION_MISMATCH') return t('profile.security.passwordMismatch')
@@ -137,6 +143,8 @@ const emailRequestSuccess = ref('')
 const newEmail = ref('')
 const emailCurrentPassword = ref('')
 const emailSaving = ref(false)
+const { secondsRemaining: emailRetrySeconds, start: startEmailRetryCountdown } = createRetryCountdown()
+const emailRateLimited = computed(() => emailRetrySeconds.value > 0)
 const revoking = ref(false)
 const pendingRevoke = ref(false)
 const deliveryLink = ref('')
@@ -175,7 +183,10 @@ onBeforeUnmount(() => { deliveryLink.value = '' })
 
 function mapEmailError(error) {
   const code = error?.data?.error?.code
-  if (error?.status === 429) return t('profile.security.rateLimited')
+  if (error?.status === 429) {
+    startEmailRetryCountdown(error.retryAfterSeconds)
+    return t('profile.security.rateLimited')
+  }
   if (code === 'CURRENT_PASSWORD_INVALID') return t('profile.security.currentPasswordInvalid')
   if (code === 'EMAIL_UNCHANGED') return t('profile.security.emailUnchanged')
   if (code === 'EMAIL_ALREADY_IN_USE') return t('profile.security.emailAlreadyInUse')
@@ -322,10 +333,13 @@ async function confirmRevoke() {
             {{ showPasswords ? t('profile.security.hidePasswords') : t('profile.security.showPasswords') }}
           </label>
 
-          <p v-if="passwordError" class="message message-error" role="alert">{{ passwordError }}</p>
+          <p v-if="passwordError" class="message message-error" role="alert">
+            {{ passwordError }}
+            <span v-if="passwordRateLimited"> {{ t('common.retryAfter', { seconds: passwordRetrySeconds }) }}</span>
+          </p>
 
           <div class="form-actions">
-            <button class="btn btn-primary" type="submit" :disabled="passwordSaving">
+            <button class="btn btn-primary" type="submit" :disabled="passwordSaving || passwordRateLimited">
               <span v-if="passwordSaving" class="spinner" aria-hidden="true"></span>
               {{ passwordSaving ? t('profile.security.changingPassword') : t('profile.security.changePasswordAction') }}
             </button>
@@ -386,11 +400,14 @@ async function confirmRevoke() {
               />
             </div>
 
-            <p v-if="emailRequestError" class="message message-error" role="alert">{{ emailRequestError }}</p>
+            <p v-if="emailRequestError" class="message message-error" role="alert">
+              {{ emailRequestError }}
+              <span v-if="emailRateLimited"> {{ t('common.retryAfter', { seconds: emailRetrySeconds }) }}</span>
+            </p>
             <p v-if="emailRequestSuccess" class="message message-success" role="status">{{ emailRequestSuccess }}</p>
 
             <div class="form-actions">
-              <button class="btn btn-primary" type="submit" :disabled="emailSaving">
+              <button class="btn btn-primary" type="submit" :disabled="emailSaving || emailRateLimited">
                 <span v-if="emailSaving" class="spinner" aria-hidden="true"></span>
                 {{ emailSaving ? t('profile.security.requestingEmailChange') : t('profile.security.requestEmailChangeAction') }}
               </button>
