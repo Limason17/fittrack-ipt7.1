@@ -15,6 +15,7 @@ const {
 } = require("../errors/WorkoutSessionErrors");
 const { CalendarEntryConflictError } = require("../errors/TrainingCalendarErrors");
 const { createPublicId } = require("../domain/studioDomain");
+const { DEFAULT_PERSONAL_TIMEZONE, todayInTimezone } = require("../domain/trainingCalendarDomain");
 const { hasAnyResultMetric } = require("../domain/workoutSessionDomain");
 const {
     PERMISSIONS,
@@ -299,16 +300,30 @@ function createWorkoutSessionService({ database, generatePublicId = createPublic
                 );
                 const programDay = dayRows[0] || null;
 
-                const [[todayRow]] = await connection.query("SELECT DATE_FORMAT(CURDATE(), '%Y-%m-%d') AS today");
+                // Stage 5A1 calendar integration (Section 13) must agree with
+                // the rest of the calendar domain on what "today" is - the
+                // studio's own default_timezone, via the same
+                // todayInTimezone() every other calendar read/materialize
+                // path uses (see trainingCalendarService.js). A bare
+                // MySQL CURDATE() here previously used the DB server's own
+                // system timezone instead, which silently disagreed with the
+                // studio's timezone for roughly the 1-2 hours around local
+                // midnight each night (whenever the two clocks are on
+                // different calendar days) - during that window a session
+                // start could never find/link "today's" occurrence at all,
+                // permanently stranding it as PLANNED even after the session
+                // was completed. Found via Stage 5A3's own E2E coverage of
+                // this exact start-to-complete path, not something Stage 5A3
+                // otherwise touches - see docs/STAGE_5A3_COACH_SCHEDULING_UI.md.
+                const [[timezoneRow]] = await connection.query(
+                    "SELECT default_timezone FROM studios WHERE id = ?",
+                    [studio.internalId]
+                );
+                const today = todayInTimezone(timezoneRow.default_timezone || DEFAULT_PERSONAL_TIMEZONE);
 
-                // Stage 5A1 calendar integration (Section 13): reuses this
-                // same request's own "today" (the pre-existing, unchanged
-                // server-local CURDATE() above) rather than computing a
-                // second, potentially disagreeing notion of today - see
-                // docs/STAGE_5A1_UNIFIED_CALENDAR_BACKEND.md. Finds (lazily
-                // materializing if needed) the occurrence this exact
-                // assignment+day+today combination belongs to, or null if no
-                // active schedule rule covers it - in which case every
+                // Finds (lazily materializing if needed) the occurrence this
+                // exact assignment+day+today combination belongs to, or null
+                // if no active schedule rule covers it - in which case every
                 // pre-existing behavior below is completely unchanged.
                 async function linkCalendarForSessionStart(linkedSessionInternalId) {
                     const calendarEntry = await findOrMaterializeTodayCalendarEntry(connection, {
@@ -316,7 +331,7 @@ function createWorkoutSessionService({ database, generatePublicId = createPublic
                         studioInternalId: studio.internalId,
                         assignmentInternalId: assignment.id,
                         programDayInternalId: programDay ? programDay.id : null,
-                        today: todayRow.today
+                        today
                     });
                     if (!calendarEntry) return;
                     if (Number(calendarEntry.studio_workout_session_id) === linkedSessionInternalId) {
@@ -356,7 +371,7 @@ function createWorkoutSessionService({ database, generatePublicId = createPublic
                     },
                     coachingRelationship: relationship,
                     programDay: programDay ? { programVersionId: programDay.program_version_id } : null,
-                    today: todayRow.today
+                    today
                 });
                 if (!decision.allowed) {
                     if (decision.reason === "WORKOUT_DAY_NOT_AVAILABLE") throw new WorkoutDayNotAvailableError();
