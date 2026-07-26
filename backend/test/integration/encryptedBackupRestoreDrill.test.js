@@ -99,10 +99,10 @@ test("a real encrypted backup + restore drill against the disposable source data
     assert.ok(report.restore.restoredTables > 0);
 
     assert.equal(report.migrationDoctor.state, "ready");
-    // Stage 3D added migration 011 (011_security_rate_limits), bringing the
-    // total applied-migration count from 10 to 11 - this restore drill
+    // Stage 5A1 added migration 012 (012_unified_training_calendar), bringing
+    // the total applied-migration count from 11 to 12 - this restore drill
     // exercises the real migration ledger, so it must track the current count.
-    assert.equal(report.migrationDoctor.summary.applied, 11);
+    assert.equal(report.migrationDoctor.summary.applied, 12);
     assert.equal(report.migrationDoctor.summary.pending, 0);
     assert.equal(report.migrationDoctor.summary.dirty, 0);
     assert.equal(report.migrationDoctor.summary.drift, 0);

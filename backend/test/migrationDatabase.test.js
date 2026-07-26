@@ -129,7 +129,8 @@ test(
                     "008_studio_workout_session_feedback",
                     "009_account_self_service",
                     "010_auth_sessions",
-                    "011_security_rate_limits"
+                    "011_security_rate_limits",
+                    "012_unified_training_calendar"
                 ]
             );
 
@@ -153,7 +154,8 @@ test(
                 "008_studio_workout_session_feedback",
                 "009_account_self_service",
                 "010_auth_sessions",
-                "011_security_rate_limits"
+                "011_security_rate_limits",
+                "012_unified_training_calendar"
             ]);
 
             const [tables] = await pool.promise().query(
@@ -170,6 +172,7 @@ test(
                     "progress_entries",
                     "schema_migrations",
                     "security_rate_limit_buckets",
+                    "studio_assignment_schedule_rules",
                     "studio_audit_events",
                     "studio_coaching_relationships",
                     "studio_invitations",
@@ -184,6 +187,7 @@ test(
                     "studio_workout_session_sets",
                     "studio_workout_sessions",
                     "studios",
+                    "training_calendar_entries",
                     "user_auth_sessions",
                     "user_email_change_requests",
                     "user_refresh_tokens",
@@ -212,9 +216,11 @@ test(
             );
             assert.equal(
                 historyColumns.length,
-                12,
+                13,
                 "includes the personal-schema snapshot columns plus studio_training_program_exercises.exercise_name_snapshot " +
-                "and studio_workout_session_exercises.exercise_name_snapshot, which both reuse the same snapshot naming pattern"
+                "and studio_workout_session_exercises.exercise_name_snapshot (which both reuse the same snapshot naming " +
+                "pattern) and training_calendar_entries.source_type (Stage 5A1, reuses the same personal/studio " +
+                "discriminator name as progress_entries.source_type but is otherwise unrelated)"
             );
 
             const [ledgerSnapshot] = await pool.promise().query(
@@ -222,7 +228,7 @@ test(
                  FROM schema_migrations
                  ORDER BY migration_id`
             );
-            assert.equal(ledgerSnapshot.length, 11);
+            assert.equal(ledgerSnapshot.length, 12);
             assert.ok(ledgerSnapshot.every((row) => row.status === "applied"));
 
             const secondRun = await runner.migrate();
@@ -402,7 +408,8 @@ test(
                 "008_studio_workout_session_feedback",
                 "009_account_self_service",
                 "010_auth_sessions",
-                "011_security_rate_limits"
+                "011_security_rate_limits",
+                "012_unified_training_calendar"
             ]);
             const afterStudioMigration = await personalDataSnapshot(sql);
             assert.deepEqual(

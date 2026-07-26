@@ -43,7 +43,14 @@ const SAFE_DETAIL_KEYS = Object.freeze({
     "workout_session.started": new Set(["assignmentId", "programDayId", "versionNumber"]),
     "workout_session.completed": new Set([]),
     "workout_session.aborted": new Set([]),
-    "workout_feedback.created": new Set(["feedbackId", "sessionId"])
+    "workout_feedback.created": new Set(["feedbackId", "sessionId"]),
+    "assignment.schedule_rule.created": new Set(["assignmentId", "weekday"]),
+    "assignment.schedule_rule.updated": new Set(["assignmentId"]),
+    "assignment.schedule_rule.disabled": new Set(["assignmentId"]),
+    "calendar.studio_workout.started": new Set([]),
+    "calendar.studio_workout.completed": new Set([]),
+    "calendar.studio_workout.skipped": new Set([]),
+    "calendar.studio_workout.cancelled": new Set([])
 });
 
 function sanitizeAuditDetails(value, seen = new WeakSet()) {
@@ -184,6 +191,12 @@ function allowlistedAuditDetails(eventType, details) {
             throw new TypeError("Audit session public id is invalid.");
         }
         output.sessionId = details.sessionId;
+    }
+    if (details.weekday !== undefined) {
+        if (!Number.isInteger(details.weekday) || details.weekday < 0 || details.weekday > 6) {
+            throw new TypeError("Audit weekday detail is invalid.");
+        }
+        output.weekday = details.weekday;
     }
 
     const serialized = JSON.stringify(output);

@@ -1440,6 +1440,210 @@ const rateLimitsChecks = [
     )
 );
 
+const unifiedCalendarMigrationId = "012_unified_training_calendar";
+const unifiedCalendarExistingTableElement = { pendingMissingAllowed: false };
+
+const unifiedCalendarWorkoutColumns = [
+    ["workouts", "public_id", "char(36)", false]
+].map(([tableName, columnName, columnType, nullable]) =>
+    column(
+        unifiedCalendarMigrationId,
+        tableName,
+        columnName,
+        columnType,
+        nullable,
+        unifiedCalendarExistingTableElement
+    )
+);
+
+const unifiedCalendarWorkoutIndexes = [
+    ["workouts", "uq_workouts_public_id", ["public_id"], true]
+].map(([tableName, indexName, columns, unique]) =>
+    index(
+        unifiedCalendarMigrationId,
+        tableName,
+        indexName,
+        columns,
+        unique,
+        unifiedCalendarExistingTableElement
+    )
+);
+
+const unifiedCalendarTables = [
+    "studio_assignment_schedule_rules",
+    "training_calendar_entries"
+].map((name) => table(unifiedCalendarMigrationId, name));
+
+const unifiedCalendarColumns = [
+    ["studio_assignment_schedule_rules", "id", "int", false],
+    ["studio_assignment_schedule_rules", "public_id", "char(36)", false],
+    ["studio_assignment_schedule_rules", "studio_id", "int", false],
+    ["studio_assignment_schedule_rules", "assignment_id", "int", false],
+    ["studio_assignment_schedule_rules", "program_day_id", "int", false],
+    ["studio_assignment_schedule_rules", "weekday", "tinyint", false],
+    ["studio_assignment_schedule_rules", "week_interval", "int", false],
+    ["studio_assignment_schedule_rules", "anchor_date", "date", false],
+    ["studio_assignment_schedule_rules", "active_from", "date", false],
+    ["studio_assignment_schedule_rules", "active_until", "date", true],
+    ["studio_assignment_schedule_rules", "status", "varchar(16)", false],
+    ["studio_assignment_schedule_rules", "created_by_user_id", "int", false],
+    ["studio_assignment_schedule_rules", "created_at", "timestamp(3)", false],
+    ["studio_assignment_schedule_rules", "updated_at", "timestamp(3)", false],
+
+    ["training_calendar_entries", "id", "int", false],
+    ["training_calendar_entries", "public_id", "char(36)", false],
+    ["training_calendar_entries", "user_id", "int", false],
+    ["training_calendar_entries", "scheduled_date", "date", false],
+    ["training_calendar_entries", "status", "varchar(16)", false],
+    ["training_calendar_entries", "source_type", "varchar(16)", false],
+    ["training_calendar_entries", "title_snapshot", "varchar(160)", false],
+    ["training_calendar_entries", "studio_id", "int", true],
+    ["training_calendar_entries", "program_assignment_id", "int", true],
+    ["training_calendar_entries", "program_day_id", "int", true],
+    ["training_calendar_entries", "schedule_rule_id", "int", true],
+    ["training_calendar_entries", "personal_workout_id", "int", true],
+    ["training_calendar_entries", "studio_workout_session_id", "int", true],
+    ["training_calendar_entries", "completed_at", "timestamp(3)", true],
+    ["training_calendar_entries", "skipped_at", "timestamp(3)", true],
+    ["training_calendar_entries", "cancelled_at", "timestamp(3)", true],
+    ["training_calendar_entries", "created_by_user_id", "int", true],
+    ["training_calendar_entries", "created_at", "timestamp(3)", false],
+    ["training_calendar_entries", "updated_at", "timestamp(3)", false],
+    ["training_calendar_entries", "revision", "int", false]
+].map(([tableName, columnName, columnType, nullable]) =>
+    column(
+        unifiedCalendarMigrationId,
+        tableName,
+        columnName,
+        columnType,
+        nullable,
+        unifiedCalendarExistingTableElement
+    )
+);
+
+const unifiedCalendarIndexes = [
+    ["studio_assignment_schedule_rules", "PRIMARY", ["id"], true],
+    ["studio_assignment_schedule_rules", "uq_assignment_schedule_rules_public_id", ["public_id"], true],
+    ["studio_assignment_schedule_rules", "idx_assignment_schedule_rules_assignment", ["assignment_id"], false],
+    [
+        "studio_assignment_schedule_rules",
+        "idx_assignment_schedule_rules_studio_status",
+        ["studio_id", "status"],
+        false
+    ],
+
+    ["training_calendar_entries", "PRIMARY", ["id"], true],
+    ["training_calendar_entries", "uq_training_calendar_entries_public_id", ["public_id"], true],
+    [
+        "training_calendar_entries",
+        "uq_training_calendar_entries_rule_date",
+        ["schedule_rule_id", "scheduled_date"],
+        true
+    ],
+    ["training_calendar_entries", "idx_training_calendar_entries_user_date", ["user_id", "scheduled_date"], false],
+    ["training_calendar_entries", "idx_training_calendar_entries_studio", ["studio_id"], false],
+    ["training_calendar_entries", "idx_training_calendar_entries_assignment", ["program_assignment_id"], false]
+].map(([tableName, indexName, columns, unique]) =>
+    index(
+        unifiedCalendarMigrationId,
+        tableName,
+        indexName,
+        columns,
+        unique,
+        unifiedCalendarExistingTableElement
+    )
+);
+
+const unifiedCalendarForeignKeys = [
+    [
+        "studio_assignment_schedule_rules", "fk_assignment_schedule_rules_studio",
+        ["studio_id"], "studios", ["id"], "CASCADE"
+    ],
+    [
+        "studio_assignment_schedule_rules", "fk_assignment_schedule_rules_assignment",
+        ["assignment_id"], "studio_program_assignments", ["id"], "CASCADE"
+    ],
+    [
+        "studio_assignment_schedule_rules", "fk_assignment_schedule_rules_program_day",
+        ["program_day_id"], "studio_training_program_days", ["id"], "CASCADE"
+    ],
+    [
+        "studio_assignment_schedule_rules", "fk_assignment_schedule_rules_created_by",
+        ["created_by_user_id"], "users", ["id"], "RESTRICT"
+    ],
+    [
+        "training_calendar_entries", "fk_training_calendar_entries_user",
+        ["user_id"], "users", ["id"], "CASCADE"
+    ],
+    [
+        "training_calendar_entries", "fk_training_calendar_entries_studio",
+        ["studio_id"], "studios", ["id"], "CASCADE"
+    ],
+    [
+        "training_calendar_entries", "fk_training_calendar_entries_assignment",
+        ["program_assignment_id"], "studio_program_assignments", ["id"], "CASCADE"
+    ],
+    [
+        "training_calendar_entries", "fk_training_calendar_entries_program_day",
+        ["program_day_id"], "studio_training_program_days", ["id"], "CASCADE"
+    ],
+    [
+        "training_calendar_entries", "fk_training_calendar_entries_schedule_rule",
+        ["schedule_rule_id"], "studio_assignment_schedule_rules", ["id"], "CASCADE"
+    ],
+    [
+        "training_calendar_entries", "fk_training_calendar_entries_personal_workout",
+        ["personal_workout_id"], "workouts", ["id"], "SET NULL"
+    ],
+    [
+        "training_calendar_entries", "fk_training_calendar_entries_workout_session",
+        ["studio_workout_session_id"], "studio_workout_sessions", ["id"], "SET NULL"
+    ],
+    [
+        "training_calendar_entries", "fk_training_calendar_entries_created_by",
+        ["created_by_user_id"], "users", ["id"], "RESTRICT"
+    ]
+].map(([
+    tableName,
+    constraintName,
+    columns,
+    referencedTable,
+    referencedColumns,
+    deleteRule
+]) =>
+    foreignKey(
+        unifiedCalendarMigrationId,
+        tableName,
+        constraintName,
+        columns,
+        referencedTable,
+        referencedColumns,
+        deleteRule,
+        unifiedCalendarExistingTableElement
+    )
+);
+
+const unifiedCalendarChecks = [
+    ["studio_assignment_schedule_rules", "chk_assignment_schedule_rules_weekday"],
+    ["studio_assignment_schedule_rules", "chk_assignment_schedule_rules_week_interval"],
+    ["studio_assignment_schedule_rules", "chk_assignment_schedule_rules_active_window"],
+    ["studio_assignment_schedule_rules", "chk_assignment_schedule_rules_status"],
+    ["training_calendar_entries", "chk_training_calendar_entries_status"],
+    ["training_calendar_entries", "chk_training_calendar_entries_source_type"],
+    ["training_calendar_entries", "chk_training_calendar_entries_source_shape"],
+    ["training_calendar_entries", "chk_training_calendar_entries_completed_at"],
+    ["training_calendar_entries", "chk_training_calendar_entries_skipped_at"],
+    ["training_calendar_entries", "chk_training_calendar_entries_cancelled_at"],
+    ["training_calendar_entries", "chk_training_calendar_entries_revision"]
+].map(([tableName, constraintName]) =>
+    checkConstraint(
+        unifiedCalendarMigrationId,
+        tableName,
+        constraintName,
+        unifiedCalendarExistingTableElement
+    )
+);
+
 const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
     {
         migrationId: "001_initial_schema",
@@ -1530,6 +1734,18 @@ const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
             ...rateLimitsColumns,
             ...rateLimitsIndexes,
             ...rateLimitsChecks
+        ]
+    },
+    {
+        migrationId: unifiedCalendarMigrationId,
+        checks: [
+            ...unifiedCalendarWorkoutColumns,
+            ...unifiedCalendarWorkoutIndexes,
+            ...unifiedCalendarTables,
+            ...unifiedCalendarColumns,
+            ...unifiedCalendarIndexes,
+            ...unifiedCalendarForeignKeys,
+            ...unifiedCalendarChecks
         ]
     }
 ]);
