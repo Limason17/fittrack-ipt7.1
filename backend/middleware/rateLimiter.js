@@ -1,176 +1,109 @@
 const { RateLimitError } = require("../errors/AppError");
+const { RateLimitBackendUnavailableError, RateLimitStoreUnavailableError } = require("../errors/RateLimitErrors");
+const { RATE_LIMIT_KEY_SECRET } = require("../config/rateLimitConfig");
+const { hashRateLimitKey } = require("../rateLimiting/rateLimitKeys");
+const { createRateLimitPolicies } = require("../rateLimiting/rateLimitPolicies");
 
-function createFixedWindowRateLimiter({
-    windowMs,
-    max,
-    now = Date.now,
-    keyGenerator = (req) => req.ip || req.socket?.remoteAddress || "unknown",
-    code
-}) {
-    if (!Number.isSafeInteger(windowMs) || windowMs <= 0 || !Number.isSafeInteger(max) || max <= 0) {
-        throw new TypeError("windowMs and max must be positive integers");
+// Builds one Express middleware for exactly one policy against exactly one
+// store. The store is always injected - there is no default here, and
+// deliberately no fallback if the given store throws
+// RateLimitStoreUnavailableError: Section 10's contract is fail-closed, not
+// "try memory instead". `now` is injectable for deterministic tests; the
+// real app always uses Date.now (the default).
+function createRateLimitMiddleware({ policy, store, keySecret = RATE_LIMIT_KEY_SECRET, now = Date.now }) {
+    if (!policy || typeof policy.buildKey !== "function" || typeof policy.id !== "string") {
+        throw new TypeError("createRateLimitMiddleware requires a policy with an id and buildKey().");
+    }
+    if (!store || typeof store.consume !== "function") {
+        throw new TypeError("createRateLimitMiddleware requires a rate limit store with consume().");
     }
 
-    const windows = new Map();
-    let requestsSinceSweep = 0;
-
-    return function fixedWindowRateLimiter(req, res, next) {
-        const currentTime = now();
-        const key = keyGenerator(req);
-        const previous = windows.get(key);
-        const state = !previous || previous.resetAt <= currentTime
-            ? { count: 0, resetAt: currentTime + windowMs }
-            : previous;
-
-        state.count += 1;
-        windows.set(key, state);
-
-        const remaining = Math.max(0, max - state.count);
-        res.setHeader("RateLimit-Limit", String(max));
-        res.setHeader("RateLimit-Remaining", String(remaining));
-        res.setHeader("RateLimit-Reset", String(Math.ceil(state.resetAt / 1000)));
-
-        requestsSinceSweep += 1;
-        if (requestsSinceSweep >= 1000) {
-            for (const [storedKey, stored] of windows) {
-                if (stored.resetAt <= currentTime) {
-                    windows.delete(storedKey);
-                }
+    return async function rateLimitMiddleware(req, res, next) {
+        let outcome;
+        try {
+            const rawKey = policy.buildKey(req);
+            const keyHash = hashRateLimitKey(keySecret, rawKey);
+            outcome = await store.consume({
+                policyId: policy.id,
+                keyHash,
+                windowMs: policy.windowMs,
+                max: policy.max,
+                now: now()
+            });
+        } catch (error) {
+            if (error instanceof RateLimitStoreUnavailableError) {
+                // Section 18: policy ID, outcome and request ID only - never
+                // the raw key, the SQL error text, or any request body.
+                const logger = req.app?.locals?.logger;
+                logger?.error?.("rate_limit_store_unavailable", {
+                    requestId: req.requestId,
+                    policyId: policy.id
+                });
+                next(new RateLimitBackendUnavailableError());
+                return;
             }
-            requestsSinceSweep = 0;
-        }
-
-        if (state.count > max) {
-            res.setHeader("Retry-After", String(Math.ceil((state.resetAt - currentTime) / 1000)));
-            next(code ? new RateLimitError(undefined, code) : new RateLimitError());
+            next(error);
             return;
         }
 
+        res.setHeader("RateLimit-Limit", String(policy.max));
+        res.setHeader("RateLimit-Remaining", String(outcome.remaining));
+        res.setHeader("RateLimit-Reset", String(Math.ceil(outcome.resetAt / 1000)));
+
+        if (!outcome.allowed) {
+            res.setHeader("Retry-After", String(outcome.retryAfterSeconds));
+            const logger = req.app?.locals?.logger;
+            // Section 18: an expected 429 is not a warning-worthy anomaly on
+            // its own (it is the limiter working as designed) - logged at
+            // info, not warn/error, to avoid alert/log spam for expected
+            // traffic shaping.
+            logger?.info?.("rate_limit_exceeded", {
+                requestId: req.requestId,
+                policyId: policy.id,
+                retryAfterSeconds: outcome.retryAfterSeconds
+            });
+            next(new RateLimitError(undefined, policy.code));
+            return;
+        }
         next();
     };
 }
 
-function positiveInteger(value, fallback, name) {
-    if (value === undefined || value === null || value === "") {
-        return fallback;
+// Builds the complete set of rate-limit middleware the application needs,
+// all sharing one store instance (see rateLimiting/mysqlRateLimitStore.js in
+// the real app, rateLimiting/memoryRateLimitStore.js in isolated unit
+// tests - see that file's own header comment for why the real app must
+// never use it). `store` is required: there is no parameterless default,
+// so every caller (the composition root, every test) is explicit about
+// which store backs its rate limiting - see docs/STAGE_3D_SECURITY_HARDENING.md.
+function createRateLimiters({ store, env = process.env, keySecret = RATE_LIMIT_KEY_SECRET, now = Date.now, policies } = {}) {
+    if (!store || typeof store.consume !== "function") {
+        throw new TypeError("createRateLimiters requires a rate limit store with consume().");
     }
-    const parsed = Number(value);
-    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-        throw new TypeError(`${name} must be a positive integer.`);
-    }
-    return parsed;
-}
-
-function createAuthRateLimiters(options = {}) {
-    const env = options.env || process.env;
-    const now = options.now || Date.now;
-    const loginWindowMs = options.loginWindowMs ?? positiveInteger(
-        env.AUTH_LOGIN_RATE_LIMIT_WINDOW_MS,
-        15 * 60 * 1000,
-        "AUTH_LOGIN_RATE_LIMIT_WINDOW_MS"
-    );
-    const loginMax = options.loginMax ?? positiveInteger(
-        env.AUTH_LOGIN_RATE_LIMIT_MAX,
-        10,
-        "AUTH_LOGIN_RATE_LIMIT_MAX"
-    );
-    const registrationWindowMs = options.registrationWindowMs ?? positiveInteger(
-        env.AUTH_REGISTRATION_RATE_LIMIT_WINDOW_MS,
-        60 * 60 * 1000,
-        "AUTH_REGISTRATION_RATE_LIMIT_WINDOW_MS"
-    );
-    const registrationMax = options.registrationMax ?? positiveInteger(
-        env.AUTH_REGISTRATION_RATE_LIMIT_MAX,
-        5,
-        "AUTH_REGISTRATION_RATE_LIMIT_MAX"
-    );
-    const passwordChangeWindowMs = options.passwordChangeWindowMs ?? positiveInteger(
-        env.AUTH_PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS,
-        60 * 60 * 1000,
-        "AUTH_PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS"
-    );
-    const passwordChangeMax = options.passwordChangeMax ?? positiveInteger(
-        env.AUTH_PASSWORD_CHANGE_RATE_LIMIT_MAX,
-        5,
-        "AUTH_PASSWORD_CHANGE_RATE_LIMIT_MAX"
-    );
-    const emailChangeRequestWindowMs = options.emailChangeRequestWindowMs ?? positiveInteger(
-        env.AUTH_EMAIL_CHANGE_RATE_LIMIT_WINDOW_MS,
-        60 * 60 * 1000,
-        "AUTH_EMAIL_CHANGE_RATE_LIMIT_WINDOW_MS"
-    );
-    const emailChangeRequestMax = options.emailChangeRequestMax ?? positiveInteger(
-        env.AUTH_EMAIL_CHANGE_RATE_LIMIT_MAX,
-        5,
-        "AUTH_EMAIL_CHANGE_RATE_LIMIT_MAX"
-    );
-    const emailChangeConfirmWindowMs = options.emailChangeConfirmWindowMs ?? positiveInteger(
-        env.AUTH_EMAIL_CHANGE_CONFIRM_RATE_LIMIT_WINDOW_MS,
-        15 * 60 * 1000,
-        "AUTH_EMAIL_CHANGE_CONFIRM_RATE_LIMIT_WINDOW_MS"
-    );
-    const emailChangeConfirmMax = options.emailChangeConfirmMax ?? positiveInteger(
-        env.AUTH_EMAIL_CHANGE_CONFIRM_RATE_LIMIT_MAX,
-        20,
-        "AUTH_EMAIL_CHANGE_CONFIRM_RATE_LIMIT_MAX"
-    );
+    const resolvedPolicies = policies || createRateLimitPolicies({ env });
+    const middlewareFor = (policyId) => createRateLimitMiddleware({
+        policy: resolvedPolicies[policyId],
+        store,
+        keySecret,
+        now
+    });
 
     return {
-        login: createFixedWindowRateLimiter({ windowMs: loginWindowMs, max: loginMax, now }),
-        registration: createFixedWindowRateLimiter({
-            windowMs: registrationWindowMs,
-            max: registrationMax,
-            now
-        }),
-        passwordChange: createFixedWindowRateLimiter({
-            windowMs: passwordChangeWindowMs,
-            max: passwordChangeMax,
-            now
-        }),
-        emailChangeRequest: createFixedWindowRateLimiter({
-            windowMs: emailChangeRequestWindowMs,
-            max: emailChangeRequestMax,
-            now
-        }),
-        emailChangeConfirm: createFixedWindowRateLimiter({
-            windowMs: emailChangeConfirmWindowMs,
-            max: emailChangeConfirmMax,
-            now
-        })
-    };
-}
-
-function createInvitationRateLimiters(options = {}) {
-    const env = options.env || process.env;
-    const now = options.now || Date.now;
-    const resendWindowMs = options.resendWindowMs ?? positiveInteger(
-        env.INVITATION_RESEND_RATE_LIMIT_WINDOW_MS,
-        15 * 60 * 1000,
-        "INVITATION_RESEND_RATE_LIMIT_WINDOW_MS"
-    );
-    const resendMax = options.resendMax ?? positiveInteger(
-        env.INVITATION_RESEND_RATE_LIMIT_MAX,
-        5,
-        "INVITATION_RESEND_RATE_LIMIT_MAX"
-    );
-
-    return {
-        resend: createFixedWindowRateLimiter({
-            windowMs: resendWindowMs,
-            max: resendMax,
-            now,
-            // Keyed by actor + target invitation: caps how often any one
-            // admin can hammer a single invitation, without letting a hot
-            // invitation exhaust a budget shared across unrelated ones.
-            keyGenerator: (req) => `${req.user?.id ?? "anon"}:${req.params?.invitationId ?? ""}`,
-            code: "INVITATION_RESEND_RATE_LIMITED"
-        })
+        login: middlewareFor("auth.login"),
+        registration: middlewareFor("auth.registration"),
+        refresh: middlewareFor("auth.refresh"),
+        logoutAll: middlewareFor("auth.logoutAll"),
+        passwordChange: middlewareFor("account.passwordChange"),
+        emailChangeRequest: middlewareFor("account.emailChangeRequest"),
+        emailChangeConfirm: middlewareFor("account.emailChangeConfirm"),
+        invitationCreate: middlewareFor("invitation.create"),
+        invitationResend: middlewareFor("invitation.resend"),
+        invitationAccept: middlewareFor("invitation.accept"),
+        policies: resolvedPolicies
     };
 }
 
 module.exports = {
-    createAuthRateLimiters,
-    createFixedWindowRateLimiter,
-    createInvitationRateLimiters,
-    positiveInteger
+    createRateLimitMiddleware,
+    createRateLimiters
 };

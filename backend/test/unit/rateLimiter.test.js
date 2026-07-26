@@ -1,33 +1,50 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const {
-    createAuthRateLimiters,
-    createFixedWindowRateLimiter,
-    createInvitationRateLimiters
-} = require("../../middleware/rateLimiter");
+const { createRateLimitMiddleware, createRateLimiters } = require("../../middleware/rateLimiter");
+const { createMemoryRateLimitStore } = require("../../rateLimiting/memoryRateLimitStore");
+const { createRateLimitPolicies } = require("../../rateLimiting/rateLimitPolicies");
 const {
     errorHandler,
     requestIdMiddleware
 } = require("../../middleware/httpFoundation");
 
-function request(ip = "127.0.0.1") {
-    return { ip, socket: { remoteAddress: ip } };
+const TEST_SECRET = "unit-test-rate-limit-key-secret-32-bytes-minimum";
+
+function request(overrides = {}) {
+    return {
+        ip: "127.0.0.1",
+        socket: { remoteAddress: "127.0.0.1" },
+        body: {},
+        params: {},
+        headers: {},
+        ...overrides
+    };
 }
 
-test("rate limiter allows the configured number and rejects the next request", () => {
+test("createRateLimiters requires an explicit store - there is no parameterless default", () => {
+    assert.throws(() => createRateLimiters({}), TypeError);
+    assert.throws(() => createRateLimiters(), TypeError);
+});
+
+test("the middleware allows the configured number and rejects the next request", async () => {
     let time = 1000;
-    const limiter = createFixedWindowRateLimiter({
-        windowMs: 60_000,
-        max: 2,
+    const policies = createRateLimitPolicies({
+        env: { AUTH_LOGIN_RATE_LIMIT_MAX: "2", AUTH_LOGIN_RATE_LIMIT_WINDOW_MS: "60000" }
+    });
+    const middleware = createRateLimitMiddleware({
+        policy: policies["auth.login"],
+        store: createMemoryRateLimitStore(),
+        keySecret: TEST_SECRET,
         now: () => time
     });
     const res = { setHeader() {} };
     const outcomes = [];
+    const req = request({ body: { email: "user@example.test" } });
 
-    limiter(request(), res, (error) => outcomes.push(error || null));
-    limiter(request(), res, (error) => outcomes.push(error || null));
-    limiter(request(), res, (error) => outcomes.push(error || null));
+    await middleware(req, res, (error) => outcomes.push(error || null));
+    await middleware(req, res, (error) => outcomes.push(error || null));
+    await middleware(req, res, (error) => outcomes.push(error || null));
 
     assert.equal(outcomes[0], null);
     assert.equal(outcomes[1], null);
@@ -35,26 +52,33 @@ test("rate limiter allows the configured number and rejects the next request", (
     assert.equal(outcomes[2].code, "RATE_LIMIT_EXCEEDED");
 
     time += 60_001;
-    limiter(request(), res, (error) => outcomes.push(error || null));
-    assert.equal(outcomes[3], null);
+    await middleware(req, res, (error) => outcomes.push(error || null));
+    assert.equal(outcomes[3], null, "a new window must allow the request again");
 });
 
-test("login and registration windows are independent and clients do not block each other", () => {
-    const { login, registration } = createAuthRateLimiters({
+test("login and registration policies are independent and different clients do not block each other", async () => {
+    const store = createMemoryRateLimitStore();
+    const { login, registration } = createRateLimiters({
+        store,
+        keySecret: TEST_SECRET,
         now: () => 1000,
-        loginMax: 1,
-        registrationMax: 1,
-        loginWindowMs: 60_000,
-        registrationWindowMs: 60_000
+        policies: createRateLimitPolicies({
+            env: {
+                AUTH_LOGIN_RATE_LIMIT_MAX: "1",
+                AUTH_REGISTRATION_RATE_LIMIT_MAX: "1",
+                AUTH_LOGIN_RATE_LIMIT_WINDOW_MS: "60000",
+                AUTH_REGISTRATION_RATE_LIMIT_WINDOW_MS: "60000"
+            }
+        })
     });
     const headers = {};
     const res = { setHeader(name, value) { headers[name] = value; } };
     const outcomes = [];
 
-    registration(request("client-a"), res, (error) => outcomes.push(error || null));
-    registration(request("client-a"), res, (error) => outcomes.push(error || null));
-    login(request("client-a"), res, (error) => outcomes.push(error || null));
-    registration(request("client-b"), res, (error) => outcomes.push(error || null));
+    await registration(request({ ip: "client-a" }), res, (error) => outcomes.push(error || null));
+    await registration(request({ ip: "client-a" }), res, (error) => outcomes.push(error || null));
+    await login(request({ ip: "client-a", body: { email: "a@example.test" } }), res, (error) => outcomes.push(error || null));
+    await registration(request({ ip: "client-b" }), res, (error) => outcomes.push(error || null));
 
     assert.equal(outcomes[0], null);
     assert.equal(outcomes[1].status, 429);
@@ -64,71 +88,77 @@ test("login and registration windows are independent and clients do not block ea
     assert.equal(headers["RateLimit-Remaining"], "0");
 });
 
-test("Stage 3B1: passwordChange, emailChangeRequest and emailChangeConfirm limiters exist and are independent of login/registration", () => {
-    const limiters = createAuthRateLimiters({
+test("Stage 3D: all ten policies exist, are independent, and read env overrides with sane defaults", async () => {
+    const store = createMemoryRateLimitStore();
+    const limiters = createRateLimiters({
+        store,
+        keySecret: TEST_SECRET,
         now: () => 1000,
-        passwordChangeMax: 1,
-        emailChangeRequestMax: 1,
-        emailChangeConfirmMax: 1,
-        passwordChangeWindowMs: 60_000,
-        emailChangeRequestWindowMs: 60_000,
-        emailChangeConfirmWindowMs: 60_000
+        policies: createRateLimitPolicies({
+            env: { AUTH_PASSWORD_CHANGE_RATE_LIMIT_MAX: "1", AUTH_EMAIL_CHANGE_RATE_LIMIT_MAX: "1", AUTH_EMAIL_CHANGE_CONFIRM_RATE_LIMIT_MAX: "1" }
+        })
     });
-    assert.equal(typeof limiters.passwordChange, "function");
-    assert.equal(typeof limiters.emailChangeRequest, "function");
-    assert.equal(typeof limiters.emailChangeConfirm, "function");
+    for (const name of [
+        "login", "registration", "refresh", "logoutAll", "passwordChange",
+        "emailChangeRequest", "emailChangeConfirm", "invitationCreate", "invitationResend", "invitationAccept"
+    ]) {
+        assert.equal(typeof limiters[name], "function", `expected a ${name} middleware`);
+    }
 
     const res = { setHeader() {} };
     const outcomes = [];
-    limiters.passwordChange(request("client-a"), res, (error) => outcomes.push(error || null));
-    limiters.passwordChange(request("client-a"), res, (error) => outcomes.push(error || null));
-    limiters.emailChangeRequest(request("client-a"), res, (error) => outcomes.push(error || null));
-    limiters.emailChangeConfirm(request("client-a"), res, (error) => outcomes.push(error || null));
+    const req = request({ user: { id: 7 } });
+    await limiters.passwordChange(req, res, (error) => outcomes.push(error || null));
+    await limiters.passwordChange(req, res, (error) => outcomes.push(error || null));
+    await limiters.emailChangeRequest(req, res, (error) => outcomes.push(error || null));
+    await limiters.emailChangeConfirm(request(), res, (error) => outcomes.push(error || null));
 
     assert.equal(outcomes[0], null);
     assert.equal(outcomes[1].status, 429);
-    assert.equal(outcomes[2], null, "emailChangeRequest limiter must not share passwordChange state");
-    assert.equal(outcomes[3], null, "emailChangeConfirm limiter must not share passwordChange state");
+    assert.equal(outcomes[2], null, "emailChangeRequest must not share passwordChange state");
+    assert.equal(outcomes[3], null, "emailChangeConfirm must not share passwordChange state");
 });
 
-test("Stage 3B1: account rate limiter env var overrides are honoured with sane defaults", () => {
-    const limiters = createAuthRateLimiters({
-        env: {
-            AUTH_PASSWORD_CHANGE_RATE_LIMIT_MAX: "2",
-            AUTH_EMAIL_CHANGE_RATE_LIMIT_MAX: "3"
-        },
-        now: () => 1000
+test("account rate limiter env var overrides are honoured", async () => {
+    const store = createMemoryRateLimitStore();
+    const limiters = createRateLimiters({
+        store,
+        keySecret: TEST_SECRET,
+        now: () => 1000,
+        policies: createRateLimitPolicies({
+            env: { AUTH_PASSWORD_CHANGE_RATE_LIMIT_MAX: "2" }
+        })
     });
     const res = { setHeader() {} };
     const outcomes = [];
-    limiters.passwordChange(request("client-a"), res, (error) => outcomes.push(error || null));
-    limiters.passwordChange(request("client-a"), res, (error) => outcomes.push(error || null));
-    limiters.passwordChange(request("client-a"), res, (error) => outcomes.push(error || null));
+    const req = request({ user: { id: 1 } });
+    await limiters.passwordChange(req, res, (error) => outcomes.push(error || null));
+    await limiters.passwordChange(req, res, (error) => outcomes.push(error || null));
+    await limiters.passwordChange(req, res, (error) => outcomes.push(error || null));
     assert.equal(outcomes[0], null);
     assert.equal(outcomes[1], null);
     assert.equal(outcomes[2].status, 429);
 });
 
-test("invitation resend limiter is keyed per actor+invitation and reports a dedicated error code", () => {
-    const { resend } = createInvitationRateLimiters({
+test("invitation resend limiter is keyed per actor+invitation and reports the dedicated error code", async () => {
+    const store = createMemoryRateLimitStore();
+    const { invitationResend } = createRateLimiters({
+        store,
+        keySecret: TEST_SECRET,
         now: () => 1000,
-        resendMax: 2,
-        resendWindowMs: 60_000
+        policies: createRateLimitPolicies({
+            env: { INVITATION_RESEND_RATE_LIMIT_MAX: "2" }
+        })
     });
     const res = { setHeader() {} };
     const outcomes = [];
-    const reqFor = (userId, invitationId) => ({
-        ip: "127.0.0.1",
-        socket: { remoteAddress: "127.0.0.1" },
-        user: { id: userId },
-        params: { invitationId }
-    });
+    const reqFor = (userId, invitationId) => request({ user: { id: userId }, params: { invitationId } });
 
-    resend(reqFor(1, "inv-a"), res, (error) => outcomes.push(error || null));
-    resend(reqFor(1, "inv-a"), res, (error) => outcomes.push(error || null));
-    resend(reqFor(1, "inv-a"), res, (error) => outcomes.push(error || null));
-    resend(reqFor(1, "inv-b"), res, (error) => outcomes.push(error || null));
-    resend(reqFor(2, "inv-a"), res, (error) => outcomes.push(error || null));
+    await invitationResend(reqFor(1, "inv-a"), res, (error) => outcomes.push(error || null));
+    await invitationResend(reqFor(1, "inv-a"), res, (error) => outcomes.push(error || null));
+    await invitationResend(reqFor(1, "inv-a"), res, (error) => outcomes.push(error || null));
+    await invitationResend(reqFor(1, "inv-b"), res, (error) => outcomes.push(error || null));
+    await invitationResend(reqFor(2, "inv-a"), res, (error) => outcomes.push(error || null));
 
     assert.equal(outcomes[0], null);
     assert.equal(outcomes[1], null);
@@ -138,7 +168,77 @@ test("invitation resend limiter is keyed per actor+invitation and reports a dedi
     assert.equal(outcomes[4], null, "a different actor must have its own budget");
 });
 
-test("429 responses retain request ID and retry metadata", () => {
+test("invitation create is keyed per actor+studio, and invitation accept is keyed per actor", async () => {
+    const store = createMemoryRateLimitStore();
+    const { invitationCreate, invitationAccept } = createRateLimiters({
+        store,
+        keySecret: TEST_SECRET,
+        now: () => 1000,
+        policies: createRateLimitPolicies({
+            env: { INVITATION_CREATE_RATE_LIMIT_MAX: "1", INVITATION_ACCEPT_RATE_LIMIT_MAX: "1" }
+        })
+    });
+    const res = { setHeader() {} };
+    const outcomes = [];
+
+    await invitationCreate(request({ user: { id: 1 }, params: { studioId: "s1" } }), res, (e) => outcomes.push(e || null));
+    await invitationCreate(request({ user: { id: 1 }, params: { studioId: "s1" } }), res, (e) => outcomes.push(e || null));
+    await invitationCreate(request({ user: { id: 1 }, params: { studioId: "s2" } }), res, (e) => outcomes.push(e || null));
+    assert.equal(outcomes[0], null);
+    assert.equal(outcomes[1].status, 429);
+    assert.equal(outcomes[2], null, "a different studio must have its own budget");
+
+    outcomes.length = 0;
+    await invitationAccept(request({ user: { id: 5 } }), res, (e) => outcomes.push(e || null));
+    await invitationAccept(request({ user: { id: 5 } }), res, (e) => outcomes.push(e || null));
+    assert.equal(outcomes[0], null);
+    assert.equal(outcomes[1].status, 429);
+});
+
+test("refresh is keyed by client IP alone", async () => {
+    const store = createMemoryRateLimitStore();
+    const { refresh } = createRateLimiters({
+        store,
+        keySecret: TEST_SECRET,
+        now: () => 1000,
+        policies: createRateLimitPolicies({ env: { AUTH_REFRESH_RATE_LIMIT_MAX: "1" } })
+    });
+    const res = { setHeader() {} };
+    const outcomes = [];
+    await refresh(request({ ip: "1.2.3.4" }), res, (e) => outcomes.push(e || null));
+    await refresh(request({ ip: "1.2.3.4" }), res, (e) => outcomes.push(e || null));
+    await refresh(request({ ip: "5.6.7.8" }), res, (e) => outcomes.push(e || null));
+    assert.equal(outcomes[0], null);
+    assert.equal(outcomes[1].status, 429);
+    assert.equal(outcomes[2], null, "a different IP must have its own budget");
+});
+
+test("logout-all is keyed by authenticated user, not IP", async () => {
+    const store = createMemoryRateLimitStore();
+    const { logoutAll } = createRateLimiters({
+        store,
+        keySecret: TEST_SECRET,
+        now: () => 1000,
+        policies: createRateLimitPolicies({ env: { AUTH_LOGOUT_ALL_RATE_LIMIT_MAX: "1" } })
+    });
+    const res = { setHeader() {} };
+    const outcomes = [];
+    await logoutAll(request({ ip: "9.9.9.9", user: { id: 1 } }), res, (e) => outcomes.push(e || null));
+    await logoutAll(request({ ip: "9.9.9.9", user: { id: 2 } }), res, (e) => outcomes.push(e || null));
+    await logoutAll(request({ ip: "9.9.9.9", user: { id: 1 } }), res, (e) => outcomes.push(e || null));
+    assert.equal(outcomes[0], null);
+    assert.equal(outcomes[1], null, "a different user sharing the same IP must have its own budget");
+    assert.equal(outcomes[2].status, 429);
+});
+
+test("429 responses retain request ID and retry metadata", async () => {
+    const store = createMemoryRateLimitStore();
+    const { login } = createRateLimiters({
+        store,
+        keySecret: TEST_SECRET,
+        now: () => 1000,
+        policies: createRateLimitPolicies({ env: { AUTH_LOGIN_RATE_LIMIT_MAX: "1", AUTH_LOGIN_RATE_LIMIT_WINDOW_MS: "60000" } })
+    });
     const headers = {};
     const res = {
         statusCode: 200,
@@ -151,20 +251,16 @@ test("429 responses retain request ID and retry metadata", () => {
         headers: { "x-request-id": "rate-limit-request" },
         ip: "client-a",
         socket: { remoteAddress: "client-a" },
+        body: { email: "someone@example.test" },
         method: "POST",
-        originalUrl: "/api/users/register",
-        app: { locals: { logger: { warn() {} } } }
+        originalUrl: "/api/users/login",
+        app: { locals: { logger: { warn() {}, info() {}, error() {} } } }
     };
-    const limiter = createFixedWindowRateLimiter({
-        windowMs: 60_000,
-        max: 1,
-        now: () => 1000
-    });
 
     requestIdMiddleware(req, res, () => {});
-    limiter(req, res, () => {});
+    await login(req, res, () => {});
     let limitedError;
-    limiter(req, res, (error) => { limitedError = error; });
+    await login(req, res, (error) => { limitedError = error; });
     errorHandler(limitedError, req, res, () => {});
 
     assert.equal(res.statusCode, 429);
@@ -172,4 +268,20 @@ test("429 responses retain request ID and retry metadata", () => {
     assert.equal(headers["Retry-After"], "60");
     assert.equal(res.body.error.requestId, "rate-limit-request");
     assert.equal(res.body.error.code, "RATE_LIMIT_EXCEEDED");
+});
+
+test("a store failure fails closed with RATE_LIMIT_BACKEND_UNAVAILABLE, never a silent allow", async () => {
+    const failingStore = { consume: async () => { throw new (require("../../errors/RateLimitErrors").RateLimitStoreUnavailableError)("simulated outage"); } };
+    const policies = createRateLimitPolicies({ env: {} });
+    const middleware = createRateLimitMiddleware({
+        policy: policies["auth.login"],
+        store: failingStore,
+        keySecret: TEST_SECRET
+    });
+    const res = { setHeader() {} };
+    let error;
+    await middleware(request({ body: { email: "x@example.test" } }), res, (e) => { error = e; });
+    assert.equal(error.status, 503);
+    assert.equal(error.code, "RATE_LIMIT_BACKEND_UNAVAILABLE");
+    assert.doesNotMatch(error.message, /sql|mysql|ECONNREFUSED/i, "must not leak internal store details");
 });

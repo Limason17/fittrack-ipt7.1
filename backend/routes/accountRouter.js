@@ -2,7 +2,6 @@ const express = require("express");
 
 const db = require("../config/db");
 const authenticateToken = require("../middleware/authMiddleware");
-const { createAuthRateLimiters } = require("../middleware/rateLimiter");
 const { createAccountService } = require("../services/accountService");
 const {
     validateChangePasswordPayload,
@@ -13,13 +12,17 @@ const {
 function createAccountRouter({
     service = createAccountService({ database: db.promise() }),
     authenticate = authenticateToken,
-    rateLimiters = createAuthRateLimiters()
+    rateLimiters
 } = {}) {
     if (!service || typeof service !== "object") {
         throw new TypeError("Account router requires an account service.");
     }
     if (typeof authenticate !== "function") {
         throw new TypeError("Account router requires authentication middleware.");
+    }
+    if (!rateLimiters || typeof rateLimiters.passwordChange !== "function" ||
+        typeof rateLimiters.emailChangeRequest !== "function" || typeof rateLimiters.emailChangeConfirm !== "function") {
+        throw new TypeError("Account router requires passwordChange/emailChangeRequest/emailChangeConfirm rate limiters.");
     }
 
     const router = express.Router();

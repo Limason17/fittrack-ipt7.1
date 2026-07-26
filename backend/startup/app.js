@@ -21,7 +21,8 @@ const {
     createAccountEmailDelivery,
     resolveDefaultAccountProvider
 } = require("../delivery/accountEmailDelivery");
-const { createAuthRateLimiters, createInvitationRateLimiters } = require("../middleware/rateLimiter");
+const { createRateLimiters } = require("../middleware/rateLimiter");
+const { createMySqlRateLimitStore } = require("../rateLimiting/mysqlRateLimitStore");
 const { readSmtpConfig } = require("../config/smtpConfig");
 const { allowedOrigins } = require("../config/corsOrigins");
 const { createSessionService } = require("../services/sessionService");
@@ -165,6 +166,17 @@ function createDefaultAccountService({
     return createAccountService({ database, delivery, sessionService });
 }
 
+// One MySqlRateLimitStore, one createRateLimiters() call, shared by every
+// router below - all backed by the exact same `database` this composition
+// root was given (the real pool in production, an explicit test pool in
+// integration tests). See middleware/rateLimiter.js and
+// rateLimiting/mysqlRateLimitStore.js: there is deliberately no in-memory
+// fallback anywhere in this path (Section 5/10).
+function createDefaultRateLimiters({ env, database }) {
+    const store = createMySqlRateLimitStore({ database });
+    return createRateLimiters({ store, env });
+}
+
 function defaultRouters({ env, database = db.promise(), transportFactory } = {}) {
     const sharedTransportFactory = resolveSharedSmtpTransportFactory(env || process.env, { transportFactory });
     const studioService = createDefaultStudioService({ env, database, transportFactory: sharedTransportFactory });
@@ -176,6 +188,7 @@ function defaultRouters({ env, database = db.promise(), transportFactory } = {})
     // consistent with sharedTransportFactory above.
     const sessionService = createSessionService({ database });
     const accountService = createDefaultAccountService({ env, database, transportFactory: sharedTransportFactory, sessionService });
+    const rateLimiters = createDefaultRateLimiters({ env, database });
     return {
         users: require("../routes/users"),
         exercises: require("../routes/exercises"),
@@ -183,15 +196,29 @@ function defaultRouters({ env, database = db.promise(), transportFactory } = {})
         progress: require("../routes/progress"),
         studioV1: createStudioV1Router({
             service: studioService,
-            rateLimiters: createInvitationRateLimiters({ env })
+            rateLimiters: {
+                create: rateLimiters.invitationCreate,
+                resend: rateLimiters.invitationResend,
+                accept: rateLimiters.invitationAccept
+            }
         }),
         trainingProgramV1: createTrainingProgramV1Router({ studioService }),
         workoutSessionV1: createWorkoutSessionV1Router({ studioService }),
         account: createAccountRouter({
             service: accountService,
-            rateLimiters: createAuthRateLimiters({ env })
+            rateLimiters: {
+                passwordChange: rateLimiters.passwordChange,
+                emailChangeRequest: rateLimiters.emailChangeRequest,
+                emailChangeConfirm: rateLimiters.emailChangeConfirm
+            }
         }),
-        authSession: createAuthSessionRouter({ sessionService })
+        authSession: createAuthSessionRouter({
+            sessionService,
+            rateLimiters: {
+                refresh: rateLimiters.refresh,
+                logoutAll: rateLimiters.logoutAll
+            }
+        })
     };
 }
 
