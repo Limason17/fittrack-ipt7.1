@@ -143,6 +143,27 @@
 > eingerichtet.
 >
 > ---
+>
+> **Nachtrag (2026-07-26, Stage 5A1 Unified Training Calendar — Backend
+> Foundation):** Nach dem in Stage 4A erklärten "local product development
+> complete" wurde eine neue, separat beauftragte Produktphase begonnen: ein
+> vereinheitlichter persönlicher Trainingskalender. Stage 5A1 (siehe
+> `STAGE_5A1_UNIFIED_CALENDAR_BACKEND.md`) liefert ausschliesslich das
+> Backend-Fundament — Datenmodell (Migration 012: `studio_assignment_schedule_rules`,
+> `training_calendar_entries`), Domänenlogik, Terminierungsregeln für
+> Coaches, Lese-/Mutations-APIs, Verknüpfung mit der bestehenden
+> Workout-Session-Ausführung, vollständige Testabdeckung. **Es gibt noch
+> keine Kalender-Oberfläche** — das ist ausdrücklich Stage 5A2 vorbehalten
+> und wurde in dieser Phase bewusst nicht begonnen. Damit ist die
+> Kalenderfunktion serverseitig vollständig, aber für Endnutzer noch nicht
+> sichtbar/nutzbar. Empfehlung für die unmittelbar nächste Phase: **Stage
+> 5A2 — Personal Calendar UI**, die dieses Backend an eine Vue-Ansicht
+> anbindet. Alle in den vorherigen Nachträgen genannten offenen Punkte
+> bleiben unverändert ausserhalb des Scopes dieser Phase. Stage 2B2B bleibt
+> weiterhin **Deferred until first customer / production deployment**; es
+> wurde für Stage 5A1 keine Cloud-Infrastruktur eingerichtet.
+>
+> ---
 
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-

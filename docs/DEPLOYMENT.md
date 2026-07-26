@@ -1104,3 +1104,44 @@ wie Produktion) folgenlos, siehe `LOCAL_PILOT_RUNBOOK.md` Abschnitt 4.
       erwarteten Startfehler-Szenarien (schwaches/identisches Secret,
       HTTP-/localhost-/Wildcard-Origin, ungültiger Proxy-Modus, unsichere
       Cookie-Konfiguration, ungültige Request-Limits) verifiziert
+
+## Ergänzung für Stufe 5A1
+
+Stufe 5A1 liefert das Backend-Fundament für einen vereinheitlichten
+persönlichen Trainingskalender (siehe
+`STAGE_5A1_UNIFIED_CALENDAR_BACKEND.md`) — **keine Kalender-Oberfläche**
+(Stage 5A2, nicht Teil dieser Stufe). **Neue Migration 012** — vor dem
+Start einer neuen Version zwingend anwenden (`npm run db:migrate`), sonst
+fehlen `studio_assignment_schedule_rules`/`training_calendar_entries` und
+jede Kalender-Route schlägt fehl. Migration 012 ändert zusätzlich die
+bestehende Tabelle `workouts` (neue Spalte `public_id`, rückwirkend für
+alle Bestandszeilen befüllt) — bei einer sehr grossen bestehenden
+`workouts`-Tabelle läuft die Backfill-`UPDATE`-Anweisung entsprechend
+länger; in der lokalen Pilotgrösse (einstellige bis niedrige
+dreistellige Zeilenzahl) ist das nicht spürbar.
+
+**Keine neue Umgebungsvariable, keine neue Infrastrukturabhängigkeit.**
+Kein Scheduler nötig — Kalendervorkommnisse werden bedarfsgerecht beim
+Lesen materialisiert, begrenzt auf maximal 93 Tage pro Anfrage.
+
+**Neue API-Routen** unter `/api/v1/training-calendar` (persönlich, nur
+`authenticateToken`) und
+`/api/v1/studios/:studioId/program-assignments/:assignmentId/schedule-rules`
+(studio-gebunden, Owner/Admin/Trainer) — beide bereits in
+`startup/app.js#defaultRouters()` verdrahtet, kein zusätzlicher
+Deployment-Schritt nötig.
+
+### Zusätzliche Release-Checks
+
+- [ ] Migration 012 angewendet (`npm run db:migrate:status` zeigt
+      `applied`, keine `pending`), Migration Doctor meldet `ready` mit
+      `applied: 12`, `schemaIssues: 0`, `ledgerIssues: 0`
+- [ ] alle Bestandszeilen von `workouts` haben ein befülltes, eindeutiges
+      `public_id` (kein `NULL`, kein Duplikat)
+- [ ] bestehender `GET/PUT/DELETE /workouts/:id`-Vertrag (roher Integer)
+      unverändert nutzbar
+- [ ] ein realer verschlüsselter Backup-/Restore-Drill gegen die
+      aktualisierte Datenbank erfolgreich, Quelldatenbank dabei
+      unverändert
+- [ ] vollständige bestehende Backend-/Frontend-/E2E-Suite bleibt grün,
+      einschliesslich der neuen Kalender-Unit-/Integrationstests

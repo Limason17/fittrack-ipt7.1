@@ -155,7 +155,7 @@ test(
 
             assert.equal(pending.exitCode, DOCTOR_EXIT_CODES.PENDING);
             assert.equal(pending.recoveryRequired, false);
-            assert.equal(pending.summary.pending, 11);
+            assert.equal(pending.summary.pending, 12);
             assert.equal(emptyBefore.hasLedger, false);
             assert.deepEqual(emptyAfter, emptyBefore, "doctor must not create the ledger");
 
