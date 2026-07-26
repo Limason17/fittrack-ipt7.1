@@ -74,6 +74,11 @@ async function mountView(actorRole = 'trainer') {
       { path: '/studios/:studioId/assignments', name: 'studio-program-assignments', component: ProgramAssignmentsView },
       { path: '/studios', name: 'studios', component: { template: '<div />' } },
       { path: '/studios/:studioId/access-denied', name: 'studio-access-denied', component: { template: '<div />' } },
+      {
+        path: '/studios/:studioId/program-assignments/:assignmentId/schedule',
+        name: 'studio-assignment-schedule',
+        component: { template: '<div />' },
+      },
     ],
   })
   await router.push('/studios/studio-a/assignments')
@@ -230,5 +235,18 @@ describe('ProgramAssignmentsView', () => {
     await mountView()
 
     expect(wrapper.text()).toContain('Noch keine Zuweisungen vorhanden.')
+  })
+
+  it('links to the schedule view for every assignment regardless of status', async () => {
+    await mountView()
+
+    const links = wrapper.findAllComponents({ name: 'RouterLink' })
+      .filter((link) => link.props('to')?.name === 'studio-assignment-schedule')
+    expect(links).toHaveLength(2)
+    expect(links[0].props('to')).toEqual({
+      name: 'studio-assignment-schedule',
+      params: { studioId: 'studio-a', assignmentId: 'assignment-1' },
+    })
+    expect(links[1].props('to').params.assignmentId).toBe('assignment-2')
   })
 })
