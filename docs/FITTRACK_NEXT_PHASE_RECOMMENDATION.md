@@ -164,6 +164,27 @@
 > wurde für Stage 5A1 keine Cloud-Infrastruktur eingerichtet.
 >
 > ---
+>
+> **Nachtrag (2026-07-26, Stage 5A2 Personal Calendar UI):** Die in Stage
+> 5A1 empfohlene unmittelbar nächste Phase ist jetzt abgeschlossen: eine
+> persönliche Kalenderseite (siehe `STAGE_5A2_PERSONAL_CALENDAR_UI.md`)
+> macht den in Stage 5A1 gebauten vereinheitlichten Trainingskalender für
+> Endnutzer sichtbar und nutzbar — Monatsansicht, mobile Agenda,
+> Statusfarben, Filter, persönliche Erstellung/Bearbeitung/Verschiebung,
+> Bestätigen/Überspringen/Absagen, Studio-Workout-Start über den
+> bestehenden Session-Vertrag, vollständige DE/EN-Übersetzung und
+> Barrierefreiheit. **Es gibt weiterhin keine Coach-Planungsoberfläche** —
+> das ist ausdrücklich Stage 5A3 vorbehalten und wurde in dieser Phase
+> bewusst nicht begonnen. Empfehlung für die unmittelbar nächste Phase:
+> **Stage 5A3 — Coach Scheduling UI**, die Owner/Admin/Trainer eine
+> Oberfläche zum Verwalten der in Stage 5A1 bereits bestehenden
+> Terminierungsregeln gibt (aktuell nur über die API erreichbar). Alle in
+> den vorherigen Nachträgen genannten offenen Punkte bleiben unverändert
+> ausserhalb des Scopes dieser Phase. Stage 2B2B bleibt weiterhin
+> **Deferred until first customer / production deployment**; es wurde für
+> Stage 5A2 keine Cloud-Infrastruktur eingerichtet.
+>
+> ---
 
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-

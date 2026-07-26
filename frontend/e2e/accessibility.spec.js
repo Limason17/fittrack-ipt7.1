@@ -54,6 +54,7 @@ test('Kernseiten haben keine schweren oder kritischen Axe-Verstöße', async ({ 
 
   for (const route of [
     '/workouts',
+    '/calendar',
     '/progress',
     '/profile',
     '/studios',
@@ -151,7 +152,7 @@ test('Pilot-Viewports haben auf Kernseiten keinen horizontalen Overflow', async 
 
   for (const viewport of viewports) {
     await page.setViewportSize(viewport)
-    for (const route of ['/workouts', '/progress']) {
+    for (const route of ['/workouts', '/calendar', '/progress']) {
       // See the networkidle comment on the axe-scan loop above - same
       // rapid-fire-reload/bootstrap-refresh race applies to this loop.
       await page.goto(route, { waitUntil: 'networkidle' })
@@ -238,4 +239,51 @@ test('Stage-1B.2A-Seiten haben bei 1440/1024/768/390 keinen horizontalen Overflo
       expect(dimensions.bodyWidth, `${route} at ${viewport.width}x${viewport.height}`).toBeLessThanOrEqual(dimensions.viewportWidth)
     }
   }
+})
+
+test('Stage-5A2-Kalender: Desktop, mobil, gefüllt und alle drei Dialoge haben keine schweren oder kritischen Axe-Verstöße', async ({ page, request }) => {
+  test.setTimeout(90_000)
+  const user = userFixture('a11y-calendar')
+  await authenticate(page, request, user)
+
+  const future = new Date()
+  future.setDate(future.getDate() + 4)
+  const futureStr = future.toISOString().slice(0, 10)
+
+  await page.goto('/calendar')
+  await expectNoSeriousAxeViolations(page) // empty state, desktop
+
+  // ---- Create dialog ----
+  await page.getByRole('button', { name: 'Training eintragen' }).click()
+  await expect(page.getByRole('dialog')).toBeVisible()
+  await expectNoSeriousAxeViolations(page)
+  await page.getByLabel('Titel').fill('Axe Test Training')
+  await page.getByLabel('Datum').fill(futureStr)
+  await page.getByRole('button', { name: 'Speichern' }).click()
+  await expect(page.getByText('Training wurde eingetragen.')).toBeVisible()
+
+  // ---- Filled calendar, desktop ----
+  await expectNoSeriousAxeViolations(page)
+
+  // ---- Event detail dialog ----
+  await page.getByRole('button', { name: /Axe Test Training/ }).click()
+  await expect(page.getByRole('dialog')).toBeVisible()
+  await expectNoSeriousAxeViolations(page)
+
+  // ---- Confirm dialog (the "skip" confirm variant) ----
+  await page.getByRole('button', { name: 'Überspringen' }).click()
+  await expect(page.getByRole('dialog').getByText('wird als übersprungen markiert')).toBeVisible()
+  await expectNoSeriousAxeViolations(page)
+  await page.getByRole('dialog').getByRole('button', { name: 'Abbrechen' }).click()
+
+  // ---- Mobile viewport: filled calendar (agenda view) ----
+  await page.keyboard.press('Escape')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoSeriousAxeViolations(page)
+
+  const dimensions = await page.evaluate(() => ({
+    documentWidth: document.documentElement.scrollWidth,
+    viewportWidth: document.documentElement.clientWidth,
+  }))
+  expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewportWidth)
 })
