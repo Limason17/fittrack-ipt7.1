@@ -26,7 +26,7 @@ process.env.AUTH_EMAIL_CHANGE_CONFIRM_RATE_LIMIT_MAX = "1000";
 process.env.AUTH_REFRESH_RATE_LIMIT_MAX = "1000";
 process.env.AUTH_LOGOUT_ALL_RATE_LIMIT_MAX = "1000";
 process.env.INVITATION_ACCEPT_BASE_URL = "http://127.0.0.1:4173";
-process.env.CORS_ORIGIN = "http://127.0.0.1:4173";
+process.env.CORS_ALLOWED_ORIGINS = "http://127.0.0.1:4173";
 process.env.INVITATION_EMAIL_PROVIDER = "";
 process.env.AUTH_MAX_ACTIVE_SESSIONS = "3";
 

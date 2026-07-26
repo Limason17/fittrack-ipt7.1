@@ -49,9 +49,9 @@ test("Origin allowlist matching is case-insensitive", () => {
 
 test("an error thrown while resolving the allowlist is forwarded, not swallowed", () => {
     const guard = createOriginGuard({
-        getAllowedOrigins: () => { throw new Error("bad CORS_ORIGIN config"); }
+        getAllowedOrigins: () => { throw new Error("bad CORS_ALLOWED_ORIGINS config"); }
     });
     const req = { headers: { origin: "http://localhost:5173", host: "localhost:3001" } };
     const error = run(guard, req);
-    assert.equal(error?.message, "bad CORS_ORIGIN config");
+    assert.equal(error?.message, "bad CORS_ALLOWED_ORIGINS config");
 });

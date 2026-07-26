@@ -74,6 +74,43 @@ async function startInstance(overrides = {}) {
     return { server, baseUrl: `http://127.0.0.1:${server.address().port}` };
 }
 
+async function loginRemaining(baseUrl, { email, forwardedFor }) {
+    const headers = { "Content-Type": "application/json", Accept: "application/json" };
+    if (forwardedFor) headers["X-Forwarded-For"] = forwardedFor;
+    const response = await fetch(`${baseUrl}/api/users/login`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ email, password: "irrelevant-wrong-password" })
+    });
+    await response.json();
+    return Number(response.headers.get("ratelimit-remaining"));
+}
+
+// createApp() reads trust-proxy configuration synchronously, at
+// construction time, via config/proxyConfig.js's readProxyConfig(), which
+// defaults to reading process.env - so building an instance with a
+// different trust-proxy setting than the rest of this file means mutating
+// process.env only for the duration of that one startInstance() call.
+function restoreEnvVar(name, previousValue) {
+    if (previousValue === undefined) {
+        delete process.env[name];
+    } else {
+        process.env[name] = previousValue;
+    }
+}
+
+async function startInstanceWithProxyConfig(proxyEnv) {
+    const previousMode = process.env.TRUST_PROXY_MODE;
+    const previousHops = process.env.TRUST_PROXY_HOPS;
+    Object.assign(process.env, proxyEnv);
+    try {
+        return await startInstance();
+    } finally {
+        restoreEnvVar("TRUST_PROXY_MODE", previousMode);
+        restoreEnvVar("TRUST_PROXY_HOPS", previousHops);
+    }
+}
+
 async function register(baseUrl) {
     const user = fixture();
     const response = await fetch(`${baseUrl}/api/users/register`, {
@@ -210,6 +247,55 @@ test(
         } finally {
             await new Promise((resolve) => server.close(resolve));
             await brokenPool.end();
+        }
+    }
+);
+
+test(
+    "without trust proxy configured, a client-supplied X-Forwarded-For cannot change which rate-limit bucket a request counts against",
+    { skip: !RUN_INTEGRATION },
+    async () => {
+        // instanceA was built with the ambient (default, disabled) proxy
+        // config - see the top of this file. Both calls below are made
+        // from this same test process's loopback address regardless of
+        // what X-Forwarded-For claims.
+        const email = `xff-spoof-${crypto.randomBytes(4).toString("hex")}@example.test`;
+        const first = await loginRemaining(instanceA.baseUrl, { email, forwardedFor: "9.9.9.9" });
+        const second = await loginRemaining(instanceA.baseUrl, { email, forwardedFor: "8.8.8.8" });
+        assert.equal(
+            second,
+            first - 1,
+            "a spoofed X-Forwarded-For must not let the second call escape into a separate bucket"
+        );
+    }
+);
+
+test(
+    "with an explicit TRUST_PROXY_MODE=hops configuration, X-Forwarded-For is correctly used to distinguish clients",
+    { skip: !RUN_INTEGRATION },
+    async () => {
+        const { server, baseUrl } = await startInstanceWithProxyConfig({
+            TRUST_PROXY_MODE: "hops",
+            TRUST_PROXY_HOPS: "1"
+        });
+        try {
+            const email = `xff-trusted-${crypto.randomBytes(4).toString("hex")}@example.test`;
+            const first = await loginRemaining(baseUrl, { email, forwardedFor: "203.0.113.11" });
+            const second = await loginRemaining(baseUrl, { email, forwardedFor: "203.0.113.12" });
+            assert.equal(
+                second,
+                first,
+                "with exactly one trusted hop, two different forwarded addresses must be treated as two different clients, each with its own fresh bucket"
+            );
+
+            const third = await loginRemaining(baseUrl, { email, forwardedFor: "203.0.113.11" });
+            assert.equal(
+                third,
+                first - 1,
+                "reusing the same forwarded address must still count against that address's own bucket"
+            );
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
         }
     }
 );

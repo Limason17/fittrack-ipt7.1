@@ -24,48 +24,68 @@ const {
 const { createRateLimiters } = require("../middleware/rateLimiter");
 const { createMySqlRateLimitStore } = require("../rateLimiting/mysqlRateLimitStore");
 const { readSmtpConfig } = require("../config/smtpConfig");
-const { allowedOrigins } = require("../config/corsOrigins");
+const { readCorsConfig } = require("../config/corsOrigins");
+const { readProxyConfig } = require("../config/proxyConfig");
 const { createSessionService } = require("../services/sessionService");
 const { createAuthSessionRouter } = require("../routes/authSessionRouter");
 
-function readTrustProxyHops(env = process.env) {
-    const value = env.TRUST_PROXY_HOPS;
-    if (value === undefined || value === null || value === "") {
-        return 0;
-    }
-    const hops = Number(value);
-    if (!Number.isInteger(hops) || hops < 0 || hops > 10) {
-        const error = new Error("TRUST_PROXY_HOPS must be an integer between 0 and 10.");
-        error.code = "INVALID_PROXY_CONFIG";
-        throw error;
-    }
-    return hops;
-}
+// Minimal, explicit allow-lists (Section 13) rather than reflecting
+// whatever a preflight requests: every method and header this API's routes
+// actually use, and nothing else. `cors` handles OPTIONS itself
+// (preflightContinue defaults to false), so it does not need to appear here.
+const CORS_ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+const CORS_ALLOWED_HEADERS = ["Content-Type", "Authorization", "X-CSRF-Token"];
+// Response headers a browser's JS may read cross-origin: the rate-limit
+// bookkeeping headers (for the frontend's Retry-After countdown UX) and the
+// request id (for user-facing error reporting) - see middleware/rateLimiter.js
+// and middleware/httpFoundation.js respectively.
+const CORS_EXPOSED_HEADERS = ["RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset", "Retry-After", "X-Request-ID"];
 
-function createCorsOptions(configuredOrigins = allowedOrigins()) {
+function createCorsOptions(corsConfig = readCorsConfig()) {
+    const { allowedOrigins, allowCredentials, maxAgeSeconds } = corsConfig;
     return (req, callback) => {
         const origin = req.headers.origin;
         const requestOrigin = origin?.toLowerCase();
         const requestHost = req.headers.host?.toLowerCase();
 
         if (!requestOrigin) {
-            callback(null, { origin: true });
+            callback(null, {
+                origin: true,
+                methods: CORS_ALLOWED_METHODS,
+                allowedHeaders: CORS_ALLOWED_HEADERS,
+                exposedHeaders: CORS_EXPOSED_HEADERS,
+                maxAge: maxAgeSeconds
+            });
             return;
         }
 
         try {
             const originHost = new URL(requestOrigin).host;
             const isSameHost = requestHost && originHost === requestHost;
-            const allowed = Boolean(isSameHost || configuredOrigins.includes(requestOrigin));
+            // Exact membership only - never a substring/suffix/prefix
+            // match, so "https://example.com.evil.test" can never be
+            // confused with an allowed "https://example.com".
+            const allowed = Boolean(isSameHost || allowedOrigins.includes(requestOrigin));
 
             // Stage 3B2: cookie-based auth endpoints (/api/auth/*) need the
             // browser to both send and read Set-Cookie on a cross-port local
             // dev origin (5173 -> 3001), which requires
             // Access-Control-Allow-Credentials: true. Only ever reflected
             // for a request whose Origin actually matched the allowlist/
-            // same-host check above - never alongside a wildcard/unconditional
-            // allow, which would be a real credential-leak vulnerability.
-            callback(null, { origin: allowed, credentials: allowed });
+            // same-host check above, and only when CORS_ALLOW_CREDENTIALS
+            // permits it - never alongside a wildcard/unconditional allow,
+            // which would be a real credential-leak vulnerability. A
+            // rejected origin gets `origin: false`, which makes the `cors`
+            // package omit every Access-Control-* header entirely (no
+            // permissive header of any kind leaks to a disallowed origin).
+            callback(null, {
+                origin: allowed,
+                credentials: allowed && allowCredentials,
+                methods: CORS_ALLOWED_METHODS,
+                allowedHeaders: CORS_ALLOWED_HEADERS,
+                exposedHeaders: CORS_EXPOSED_HEADERS,
+                maxAge: maxAgeSeconds
+            });
         } catch (error) {
             callback(error);
         }
@@ -237,9 +257,12 @@ function createApp({
 
     const app = express();
     app.disable("x-powered-by");
-    const trustProxyHops = readTrustProxyHops();
-    if (trustProxyHops > 0) {
-        app.set("trust proxy", trustProxyHops);
+    const proxyConfig = readProxyConfig();
+    if (proxyConfig.mode === "hops") {
+        // Always a specific integer hop count - never `app.set('trust
+        // proxy', true)`, which would trust an unbounded chain and let a
+        // client's own X-Forwarded-For prefix be believed.
+        app.set("trust proxy", proxyConfig.hops);
     }
     app.locals.logger = logger;
     app.use(requestIdMiddleware);
@@ -294,13 +317,11 @@ function createApp({
 }
 
 module.exports = {
-    allowedOrigins,
     createApp,
     createCorsOptions,
     createDefaultAccountService,
     createDefaultStudioService,
     createReadyHandler,
     defaultRouters,
-    readTrustProxyHops,
     sendLive
 };

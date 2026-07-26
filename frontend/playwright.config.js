@@ -16,7 +16,7 @@ const sharedBackendEnvironment = {
   DB_PASSWORD: process.env.DB_PASSWORD || 'root',
   DB_NAME: 'fittrack_e2e_stage1a',
   JWT_SECRET: 'fittrack-stage1a-e2e-secret-with-at-least-32-characters',
-  CORS_ORIGIN: 'http://127.0.0.1:4173',
+  CORS_ALLOWED_ORIGINS: 'http://127.0.0.1:4173',
   INVITATION_ACCEPT_BASE_URL: 'http://127.0.0.1:4173',
   AUTH_LOGIN_RATE_LIMIT_MAX: '100',
   AUTH_REGISTRATION_RATE_LIMIT_MAX: '100',
