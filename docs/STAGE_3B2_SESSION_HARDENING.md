@@ -115,7 +115,7 @@ Zwei unabhängige, sich ergänzende Schichten für `POST /api/auth/refresh|logou
 
 1. **Double-Submit-Cookie** (`backend/security/csrfGuard.js`): `X-CSRF-Token`-Header muss dem `fittrack_csrf`-Cookie-Wert exakt entsprechen, Vergleich per `crypto.timingSafeEqual`. Ein Angreifer kann das Cookie zwar automatisch mitsenden lassen (klassisches CSRF), aber den Wert wegen Same-Origin-Policy nicht auslesen, um einen passenden Header zu fälschen.
 2. **Serverseitige Bindung an das Refresh Token** (nur beim Refresh, `sessionService.rotateRefreshToken`): der Hash des Headers wird zusätzlich gegen `csrf_token_hash` der *konkreten* präsentierten Refresh-Token-Zeile geprüft — stärker als reines Double-Submit, da unabhängig von einer eventuellen Cookie-Manipulation.
-3. **Origin-Schutz** (`backend/security/originGuard.js`): ein *vorhandener* `Origin`-Header muss der `CORS_ORIGIN`-Allowlist oder dem Host der Anfrage entsprechen, sonst `403 AUTH_ORIGIN_NOT_ALLOWED`. Ein *fehlender* `Origin`-Header wird bewusst durchgelassen — echte Browser-`fetch()`-Aufrufe senden ihn immer für zustandsändernde Anfragen; sein Fehlen kennzeichnet einen kontrollierten CLI-/Testaufruf (dokumentierte Ausnahme, kein Sicherheitsloch, da ein Angreifer den Header nicht *entfernen* kann, nur fälschen).
+3. **Origin-Schutz** (`backend/security/originGuard.js`): ein *vorhandener* `Origin`-Header muss der `CORS_ORIGIN`-Allowlist (**Nachtrag 2026-07-26, Stage 3D: umbenannt zu `CORS_ALLOWED_ORIGINS`, mit vollständig validiertem Vertrag — siehe `STAGE_3D_SECURITY_HARDENING.md` Abschnitt 11; der hier beschriebene Origin-Guard-Mechanismus selbst ist unverändert**) oder dem Host der Anfrage entsprechen, sonst `403 AUTH_ORIGIN_NOT_ALLOWED`. Ein *fehlender* `Origin`-Header wird bewusst durchgelassen — echte Browser-`fetch()`-Aufrufe senden ihn immer für zustandsändernde Anfragen; sein Fehlen kennzeichnet einen kontrollierten CLI-/Testaufruf (dokumentierte Ausnahme, kein Sicherheitsloch, da ein Angreifer den Header nicht *entfernen* kann, nur fälschen).
 
 `backend/startup/app.js`s CORS-Konfiguration wurde zusätzlich korrigiert: `Access-Control-Allow-Credentials: true` wird jetzt nur reflektiert, wenn die Origin bereits verifiziert erlaubt ist — nie zusammen mit einem unbedingten Allow (sonst ein echtes Credential-Leak).
 
@@ -277,7 +277,7 @@ AUTH_COOKIE_SAME_SITE=strict       # strict | lax | none (none erfordert Secure=
 
 - **Neuanmeldung nach Deployment**: einmalig für alle bestehenden Sitzungen (siehe Abschnitt 8), identisch zur bereits akzeptierten Stage-3B1-Erfahrung.
 - **Produktion erzwingt** `AUTH_COOKIE_SECURE=true` (Startfehler sonst) — echtes HTTPS ist damit *vorausgesetzt*, aber Stage 3B2 richtet selbst **keine** TLS-Terminierung, keine Cloud-Infrastruktur und keinen echten S3-Bucket ein (unverändert außerhalb des Scopes).
-- `CORS_ORIGIN` muss weiterhin die exakte(n) Produktions-Frontend-Origin(s) enthalten, da Cookie-Credentials nur für verifiziert erlaubte Origins reflektiert werden (Abschnitt 5).
+- `CORS_ORIGIN` (**Nachtrag 2026-07-26: umbenannt zu `CORS_ALLOWED_ORIGINS`, siehe oben**) muss weiterhin die exakte(n) Produktions-Frontend-Origin(s) enthalten, da Cookie-Credentials nur für verifiziert erlaubte Origins reflektiert werden (Abschnitt 5).
 - Keine neue Infrastrukturabhängigkeit: kein Redis, kein externer Sitzungsspeicher — `user_auth_sessions`/`user_refresh_tokens` leben in derselben MySQL-Datenbank wie der Rest der Anwendung.
 
 ---

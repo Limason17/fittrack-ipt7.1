@@ -30,7 +30,13 @@ Produktionswerte gehören in den Secret Store der Zielplattform und nicht in Git
 | `FITTRACK_AUTO_MIGRATE` | nein | Exakt `true` oder `false`, Standard `false`; `true` nur für einen kontrollierten Migrations-Owner |
 | `FITTRACK_MIGRATION_EXPECTED_DATABASE` | bei jeder Migration | Muss vor `db:migrate`, `db:dev:init` und Auto-Migrate exakt dem expliziten `DB_NAME` entsprechen |
 | `JWT_SECRET` | ja in Produktion | Eindeutig, mindestens 32 Zeichen; bekannte Platzhalter werden abgelehnt |
-| `CORS_ORIGIN` | ja in Produktion | Kommaseparierte HTTP(S)-Origins ohne Pfad |
+| `RATE_LIMIT_KEY_SECRET` | ja in Produktion | Eindeutig, mindestens 32 Zeichen, verschieden von `JWT_SECRET`; bekannte Platzhalter werden abgelehnt (Stage 3D) |
+| `CORS_ALLOWED_ORIGINS` | ja in Produktion | Kommaseparierte, vollständige HTTP(S)-Origins ohne Pfad (umbenannt von `CORS_ORIGIN` in Stage 3D); Produktion verbietet HTTP und `localhost`/`127.*`/`::1` ausnahmslos |
+| `CORS_ALLOW_CREDENTIALS` | nein | `true`/`false`, Standard `true` (Stage 3D) |
+| `CORS_MAX_AGE_SECONDS` | nein | Preflight-Cache-Dauer in Sekunden, Standard 600 (Stage 3D) |
+| `TRUST_PROXY_MODE` | ja in Produktion | `disabled` (Standard) oder `hops`; nie ein pauschales Vertrauen (Stage 3D) |
+| `TRUST_PROXY_HOPS` | nur bei `TRUST_PROXY_MODE=hops` | Exakte Anzahl vertrauenswürdiger Reverse-Proxy-Hops, 1–10 |
+| `REQUEST_JSON_LIMIT` | nein | Maximale JSON-Body-Grösse, Standard `256kb` (Stage 3D) |
 
 Beispiel ohne echte Secrets:
 
@@ -48,7 +54,12 @@ DB_QUEUE_LIMIT=100
 FITTRACK_AUTO_MIGRATE=false
 FITTRACK_MIGRATION_EXPECTED_DATABASE=fittrack
 JWT_SECRET=<unique-random-secret-at-least-32-characters>
-CORS_ORIGIN=https://app.example.ch
+RATE_LIMIT_KEY_SECRET=<different-unique-random-secret-at-least-32-characters>
+CORS_ALLOWED_ORIGINS=https://app.example.ch
+CORS_ALLOW_CREDENTIALS=true
+CORS_MAX_AGE_SECONDS=600
+TRUST_PROXY_MODE=disabled
+REQUEST_JSON_LIMIT=256kb
 ```
 
 ### Deterministische `.env`-Auflösung
@@ -344,7 +355,7 @@ CI-Zugangsdaten wie `root/root` existieren ausschließlich im isolierten, kurzle
 - [ ] Remote-CI für den exakten Release-Commit grün
 - [ ] keine Security-Befunde ab `high`
 - [ ] Backup aktuell, Hash vorhanden und Restore-Weg bestätigt
-- [ ] `NODE_ENV`, `JWT_SECRET`, DB-Secrets und CORS-Origin geprüft
+- [ ] `NODE_ENV`, `JWT_SECRET`, `RATE_LIMIT_KEY_SECRET`, DB-Secrets, `CORS_ALLOWED_ORIGINS` und `TRUST_PROXY_MODE` geprüft
 - [ ] `FITTRACK_AUTO_MIGRATE=false` für normale Runtime-Instanzen
 - [ ] erwartete Datenbank entspricht exakt `DB_NAME`
 - [ ] sicherer Ziel-Log geprüft, keine Credentials enthalten
@@ -948,9 +959,10 @@ stiller Fallback**), `AUTH_COOKIE_SAME_SITE` (Default `strict`).
 Terminierung selbst bleibt weiterhin außerhalb des Repositorys (Reverse-
 Proxy/Ingress), unverändert seit Stufe 0C.
 
-**`CORS_ORIGIN` muss die exakte(n) Produktions-Frontend-Origin(s) enthalten**
-— `Access-Control-Allow-Credentials` wird nur für verifiziert erlaubte
-Origins reflektiert; ohne korrekt gepflegte `CORS_ORIGIN` funktionieren die
+**`CORS_ALLOWED_ORIGINS`** (umbenannt von `CORS_ORIGIN` in Stufe 3D) **muss
+die exakte(n) Produktions-Frontend-Origin(s) enthalten** —
+`Access-Control-Allow-Credentials` wird nur für verifiziert erlaubte Origins
+reflektiert; ohne korrekt gepflegte `CORS_ALLOWED_ORIGINS` funktionieren die
 Cookie-Endpunkte (`/api/auth/refresh|logout|logout-all`) im Browser nicht,
 auch wenn Login/API-Bearer-Aufrufe weiterhin funktionieren.
 
@@ -969,8 +981,8 @@ prozesslokale Rate Limiter ist unverändert.
 - [ ] `AUTH_COOKIE_SECURE` in Produktion aktiv `true` (Startfehler bei
       `false` bereits durch `sessionConfig.js` erzwungen — trotzdem vor dem
       Rollout explizit prüfen, kein Verlass auf den impliziten Default)
-- [ ] `CORS_ORIGIN` enthält die tatsächliche(n) Produktions-Frontend-
-      Origin(s), keine Platzhalter
+- [ ] `CORS_ALLOWED_ORIGINS` enthält die tatsächliche(n) Produktions-
+      Frontend-Origin(s), keine Platzhalter
 - [ ] Login erzeugt eine Sitzung + HttpOnly-Refresh-Cookie + lesbares
       CSRF-Cookie; Access Token erscheint in keinem persistenten
       Browser-Speicher
@@ -989,3 +1001,58 @@ prozesslokale Rate Limiter ist unverändert.
 - [ ] vollständige bestehende Test-/E2E-Suite bleibt grün, insbesondere zwei
       unabhängige, vollständig saubere Chromium-E2E-Läufe ohne
       `AUTH_REFRESH_REUSE_DETECTED` aus einem legitimen Testablauf
+
+## Ergänzung für Stufe 3D
+
+Stufe 3D ersetzt den prozesslokalen Rate Limiter durch einen gemeinsam
+genutzten, atomaren MySQL-Store und härtet CORS, Trust-Proxy, Security
+Header, Request-Grössen und Content-Type (siehe
+`STAGE_3D_SECURITY_HARDENING.md`). **Neue Migration 011** — vor dem Start
+einer neuen Version zwingend anwenden (`npm run db:migrate`), sonst
+schlägt jede rate-limitierte Route mit `RATE_LIMIT_BACKEND_UNAVAILABLE`
+fehl (fail-closed, kein stiller Durchlass).
+
+**Neue, zwingend zu prüfende Umgebungsvariablen** (siehe
+`backend/.env.example`, vollständige Tabelle oben): `RATE_LIMIT_KEY_SECRET`
+(Produktion erzwingt einen von `JWT_SECRET` verschiedenen, mindestens
+32-stelligen Wert), `CORS_ALLOWED_ORIGINS` (umbenannt von `CORS_ORIGIN` —
+**ein bestehendes `CORS_ORIGIN` in einer Produktionsumgebung wird ab
+dieser Version stillschweigend ignoriert, nicht automatisch übernommen**;
+vor dem Rollout umbenennen), `TRUST_PROXY_MODE` (Produktion erzwingt einen
+expliziten Wert, `disabled` oder `hops`; kein impliziter Default mehr).
+
+**Sitzungsverhalten unverändert:** Refresh/Logout/Logout-All funktionieren
+wie in Stufe 3B2 beschrieben; Logout-All hat jetzt zusätzlich ein eigenes
+Rate-Limit (`AUTH_LOGOUT_ALL_RATE_LIMIT_MAX`, Default 10/15min, pro
+Benutzer), das bei normaler Nutzung nie greift.
+
+**Keine neue Infrastrukturabhängigkeit:** kein Redis, kein externer
+Rate-Limit-Dienst — `security_rate_limit_buckets` lebt in derselben MySQL-
+Datenbank wie der Rest der Anwendung und wird von jeder Anwendungsinstanz
+geteilt.
+
+### Zusätzliche Release-Checks
+
+- [ ] Migration 011 angewendet (`npm run db:migrate:status` zeigt
+      `applied`, keine `pending`), Migration Doctor meldet `ready` mit
+      `applied: 11`, `schemaIssues: 0`, `ledgerIssues: 0`
+- [ ] `RATE_LIMIT_KEY_SECRET` gesetzt, eindeutig und verschieden von
+      `JWT_SECRET` (Startfehler bereits durch `config/rateLimitConfig.js`
+      erzwungen — trotzdem vor dem Rollout explizit prüfen)
+- [ ] `CORS_ALLOWED_ORIGINS` enthält die tatsächliche(n)
+      Produktions-Frontend-Origin(s) unter dem neuen Variablennamen; ein
+      altes `CORS_ORIGIN` wurde entfernt/umbenannt
+- [ ] `TRUST_PROXY_MODE` entspricht der tatsächlichen Deployment-Topologie
+      (`disabled` bei direktem Zugriff, `hops` plus exaktem
+      `TRUST_PROXY_HOPS` hinter einem Reverse-Proxy)
+- [ ] mehrere Anwendungsinstanzen (falls betrieben) teilen nachweislich ein
+      Rate-Limit-Kontingent, nicht je eines
+- [ ] ein simulierter Store-Ausfall liefert `503
+      RATE_LIMIT_BACKEND_UNAVAILABLE`, nie einen stillen Durchlass
+- [ ] HSTS-Header ist in Produktion vorhanden, in Entwicklung/Test nicht
+- [ ] `Cache-Control: no-store` auf Auth-/Account-/User-Antworten
+- [ ] ein zu grosser JSON-Body liefert `413 PAYLOAD_TOO_LARGE`, ein
+      falscher (aber vorhandener) Content-Type liefert
+      `415 UNSUPPORTED_MEDIA_TYPE`
+- [ ] vollständige bestehende Test-/E2E-Suite bleibt grün, einschliesslich
+      der neuen Browser-CORS- und Rate-Limit-E2E-Tests
