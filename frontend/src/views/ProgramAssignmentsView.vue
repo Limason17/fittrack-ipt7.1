@@ -346,23 +346,31 @@ watch(studioId, () => {
                 <td :data-label="t('studios.assignments.columnStarts')">{{ assignment.startsOn ? formatDate(assignment.startsOn) : '—' }}</td>
                 <td :data-label="t('studios.assignments.columnEnds')">{{ assignment.endsOn ? formatDate(assignment.endsOn) : '—' }}</td>
                 <td :data-label="t('studios.assignments.columnActions')">
-                  <div v-if="assignment.status === 'active'" class="table-actions">
-                    <button
+                  <div class="table-actions">
+                    <router-link
                       class="btn btn-secondary btn-sm"
-                      type="button"
-                      :disabled="mutatingId === assignment.id"
-                      @click="requestAction(assignment, 'completed')"
+                      :to="{ name: 'studio-assignment-schedule', params: { studioId, assignmentId: assignment.id } }"
                     >
-                      {{ t('studios.assignments.completeAction') }}
-                    </button>
-                    <button
-                      class="btn btn-danger btn-sm"
-                      type="button"
-                      :disabled="mutatingId === assignment.id"
-                      @click="requestAction(assignment, 'cancelled')"
-                    >
-                      {{ t('studios.assignments.cancelAction') }}
-                    </button>
+                      {{ t('studios.assignments.scheduleAction') }}
+                    </router-link>
+                    <template v-if="assignment.status === 'active'">
+                      <button
+                        class="btn btn-secondary btn-sm"
+                        type="button"
+                        :disabled="mutatingId === assignment.id"
+                        @click="requestAction(assignment, 'completed')"
+                      >
+                        {{ t('studios.assignments.completeAction') }}
+                      </button>
+                      <button
+                        class="btn btn-danger btn-sm"
+                        type="button"
+                        :disabled="mutatingId === assignment.id"
+                        @click="requestAction(assignment, 'cancelled')"
+                      >
+                        {{ t('studios.assignments.cancelAction') }}
+                      </button>
+                    </template>
                   </div>
                 </td>
               </tr>

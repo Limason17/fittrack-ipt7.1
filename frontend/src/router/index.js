@@ -161,6 +161,17 @@ const routes = [
         },
     },
     {
+        path: '/studios/:studioId/program-assignments/:assignmentId/schedule',
+        name: 'studio-assignment-schedule',
+        component: () => import('../views/ScheduleRulesView.vue'),
+        meta: {
+            requiresAuth: true,
+            requiresStudio: true,
+            studioRoles: ['owner', 'admin', 'trainer'],
+            titleKey: 'routing.titles.studioAssignmentSchedule',
+        },
+    },
+    {
         path: '/studios/:studioId/my-training-plan',
         name: 'studio-my-training-plan',
         component: () => import('../views/MyTrainingPlanView.vue'),
