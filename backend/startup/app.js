@@ -17,6 +17,10 @@ const { createInvitationDelivery, resolveDefaultProvider } = require("../deliver
 const { createStudioV1Router } = require("../routes/studioV1");
 const { createTrainingProgramV1Router } = require("../routes/trainingProgramV1");
 const { createWorkoutSessionV1Router } = require("../routes/workoutSessionV1");
+const { createTrainingCalendarV1Router } = require("../routes/trainingCalendarV1");
+const { createAssignmentScheduleRuleV1Router } = require("../routes/assignmentScheduleRuleV1");
+const { createTrainingCalendarService } = require("../services/trainingCalendarService");
+const { createScheduleRuleService } = require("../services/scheduleRuleService");
 const { createAccountService } = require("../services/accountService");
 const { createAccountRouter } = require("../routes/accountRouter");
 const {
@@ -226,6 +230,13 @@ function defaultRouters({ env, database = db.promise(), transportFactory } = {})
         }),
         trainingProgramV1: createTrainingProgramV1Router({ studioService }),
         workoutSessionV1: createWorkoutSessionV1Router({ studioService }),
+        trainingCalendarV1: createTrainingCalendarV1Router({
+            service: createTrainingCalendarService({ database })
+        }),
+        assignmentScheduleRuleV1: createAssignmentScheduleRuleV1Router({
+            studioService,
+            scheduleRuleService: createScheduleRuleService({ database })
+        }),
         account: createAccountRouter({
             service: accountService,
             rateLimiters: {
@@ -299,6 +310,12 @@ function createApp({
         }
         if (routeSet.workoutSessionV1) {
             app.use("/api/v1", routeSet.workoutSessionV1);
+        }
+        if (routeSet.trainingCalendarV1) {
+            app.use("/api/v1", routeSet.trainingCalendarV1);
+        }
+        if (routeSet.assignmentScheduleRuleV1) {
+            app.use("/api/v1", routeSet.assignmentScheduleRuleV1);
         }
         if (routeSet.account) {
             app.use("/api/account", routeSet.account);
