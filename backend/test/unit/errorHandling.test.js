@@ -3,9 +3,10 @@ const assert = require("node:assert/strict");
 
 const { AuthorizationError, ValidationError } = require("../../errors/AppError");
 const {
+    createSecurityHeaders,
     errorHandler,
-    requestIdMiddleware,
-    securityHeaders
+    noStoreCache,
+    requestIdMiddleware
 } = require("../../middleware/httpFoundation");
 
 function responseDouble() {
@@ -111,8 +112,44 @@ test("malformed JSON is a client error without parser details", () => {
 test("baseline security headers are added", () => {
     const req = {};
     const res = responseDouble();
-    securityHeaders(req, res, () => {});
+    createSecurityHeaders({ env: { NODE_ENV: "test" } })(req, res, () => {});
     assert.equal(res.headers["x-content-type-options"], "nosniff");
     assert.equal(res.headers["x-frame-options"], "DENY");
     assert.equal(res.headers["referrer-policy"], "no-referrer");
+    assert.equal(res.headers["permissions-policy"], "camera=(), microphone=(), geolocation=()");
+    assert.match(res.headers["content-security-policy"], /default-src 'none'/);
+});
+
+test("HSTS is present only in production", () => {
+    const prodRes = responseDouble();
+    createSecurityHeaders({ env: { NODE_ENV: "production" } })({}, prodRes, () => {});
+    assert.match(prodRes.headers["strict-transport-security"], /max-age=\d+/);
+
+    for (const nodeEnv of ["development", "test", undefined]) {
+        const res = responseDouble();
+        createSecurityHeaders({ env: { NODE_ENV: nodeEnv } })({}, res, () => {});
+        assert.equal(res.headers["strict-transport-security"], undefined, `HSTS must not be sent when NODE_ENV=${nodeEnv}`);
+    }
+});
+
+test("noStoreCache sets Cache-Control: no-store", () => {
+    const res = responseDouble();
+    noStoreCache({}, res, () => {});
+    assert.equal(res.headers["cache-control"], "no-store");
+});
+
+test("a body exceeding the configured limit is a client error without parser/library details", () => {
+    const req = {
+        requestId: "test-request-id",
+        method: "POST",
+        originalUrl: "/api/workouts",
+        app: { locals: { logger: { error() {} } } }
+    };
+    const res = responseDouble();
+    const tooLargeError = new Error("request entity too large");
+    tooLargeError.type = "entity.too.large";
+    errorHandler(tooLargeError, req, res, () => {});
+    assert.equal(res.statusCode, 413);
+    assert.equal(res.body.error.code, "PAYLOAD_TOO_LARGE");
+    assert.doesNotMatch(JSON.stringify(res.body), /entity too large/);
 });

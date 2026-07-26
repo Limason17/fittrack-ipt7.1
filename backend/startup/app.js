@@ -4,10 +4,12 @@ const cookieParser = require("cookie-parser");
 const {
     errorHandler: defaultErrorHandler,
     notFoundHandler: defaultNotFoundHandler,
+    createJsonContentTypeGuard,
     createRequestLoggingMiddleware,
-    requestIdMiddleware,
-    securityHeaders
+    createSecurityHeaders,
+    requestIdMiddleware
 } = require("../middleware/httpFoundation");
+const { readRequestLimitsConfig } = require("../config/requestLimitsConfig");
 const db = require("../config/db");
 const { createStudioService } = require("../services/studioService");
 const { createInvitationOutbox } = require("../outbox/invitationOutbox");
@@ -267,7 +269,7 @@ function createApp({
     app.locals.logger = logger;
     app.use(requestIdMiddleware);
     app.use(createRequestLoggingMiddleware());
-    app.use(securityHeaders);
+    app.use(createSecurityHeaders());
 
     if (typeof beforeMiddleware === "function") {
         beforeMiddleware(app);
@@ -275,7 +277,8 @@ function createApp({
 
     app.use(cors(createCorsOptions()));
     app.use(cookieParser());
-    app.use(express.json({ limit: "1mb" }));
+    app.use(createJsonContentTypeGuard());
+    app.use(express.json({ limit: readRequestLimitsConfig().jsonLimit }));
 
     const readyHandler = createReadyHandler(readiness, logger);
     app.get("/api/health/live", sendLive);

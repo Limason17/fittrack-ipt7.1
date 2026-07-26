@@ -51,6 +51,12 @@ class RateLimitError extends AppError {
     }
 }
 
+class UnsupportedMediaTypeError extends AppError {
+    constructor(message = "The request must use Content-Type: application/json.") {
+        super({ status: 415, code: "UNSUPPORTED_MEDIA_TYPE", message });
+    }
+}
+
 module.exports = {
     AppError,
     AuthenticationError,
@@ -59,5 +65,6 @@ module.exports = {
     NotFoundError,
     RateLimitError,
     ServiceUnavailableError,
+    UnsupportedMediaTypeError,
     ValidationError
 };

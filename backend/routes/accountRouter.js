@@ -1,6 +1,7 @@
 const express = require("express");
 
 const db = require("../config/db");
+const { noStoreCache } = require("../middleware/httpFoundation");
 const authenticateToken = require("../middleware/authMiddleware");
 const { createAccountService } = require("../services/accountService");
 const {
@@ -26,6 +27,8 @@ function createAccountRouter({
     }
 
     const router = express.Router();
+    // Passwords, sessions, and pending e-mail changes - never cacheable.
+    router.use(noStoreCache);
 
     router.post(
         "/change-password",

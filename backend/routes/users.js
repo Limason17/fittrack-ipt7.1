@@ -2,6 +2,7 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const db = require("../config/db");
 const authenticateToken = require("../middleware/authMiddleware");
+const { noStoreCache } = require("../middleware/httpFoundation");
 const { createRateLimiters } = require("../middleware/rateLimiter");
 const { createMySqlRateLimitStore } = require("../rateLimiting/mysqlRateLimitStore");
 const { createSessionService } = require("../services/sessionService");
@@ -19,6 +20,9 @@ const {
 } = require("../validation/userValidation");
 
 const router = express.Router();
+// Login/registration issue tokens; /me, and the preference endpoints below,
+// all return per-user account data - never cacheable (Section 15).
+router.use(noStoreCache);
 
 const {
     login: loginRateLimiter,

@@ -1,5 +1,6 @@
 const express = require("express");
 
+const { noStoreCache } = require("../middleware/httpFoundation");
 const authenticateToken = require("../middleware/authMiddleware");
 const { createOriginGuard } = require("../security/originGuard");
 const { createCsrfGuard } = require("../security/csrfGuard");
@@ -38,6 +39,9 @@ function createAuthSessionRouter({
     }
 
     const router = express.Router();
+    // Every response from this router carries session/token state - never
+    // cacheable, by any browser or intermediary (Section 15).
+    router.use(noStoreCache);
 
     // Rate-limited BEFORE the origin/CSRF guards: a request that will be
     // rejected anyway should still count against the limiter (otherwise an

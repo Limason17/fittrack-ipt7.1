@@ -1,4 +1,5 @@
 const db = require("./config/db");
+const { validateStartupConfig } = require("./config/startupConfig");
 const { createMigrationRunner } = require("./migrations/runner");
 const { createApp } = require("./startup/app");
 const { bootstrap } = require("./startup/bootstrap");
@@ -102,6 +103,7 @@ function installShutdownHandlers({ server, database, readiness, logger }) {
 }
 
 async function main(options = {}) {
+    validateStartupConfig(options.env || process.env);
     const runtimeConfig = options.runtimeConfig || readRuntimeConfig(options.env || process.env);
     const port = options.port || readPort((options.env || process.env).PORT);
     const runtime = options.runtime || createRuntime(options);

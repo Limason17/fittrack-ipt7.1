@@ -285,3 +285,77 @@ test("a store failure fails closed with RATE_LIMIT_BACKEND_UNAVAILABLE, never a 
     assert.equal(error.code, "RATE_LIMIT_BACKEND_UNAVAILABLE");
     assert.doesNotMatch(error.message, /sql|mysql|ECONNREFUSED/i, "must not leak internal store details");
 });
+
+// Section 18: rate-limit logs may contain policy ID, outcome, HTTP status,
+// Retry-After, and request ID - never an e-mail, IP, token, or the raw
+// rate-limit key/secret.
+test("Section 18: the 429 log entry contains only policy id/outcome/request id - never the e-mail or IP that triggered it", async () => {
+    const entries = [];
+    const logger = { info(event, fields) { entries.push({ event, fields }); }, warn() {}, error() {} };
+    const store = createMemoryRateLimitStore();
+    const { login } = createRateLimiters({
+        store,
+        keySecret: TEST_SECRET,
+        now: () => 1000,
+        policies: createRateLimitPolicies({ env: { AUTH_LOGIN_RATE_LIMIT_MAX: "1", AUTH_LOGIN_RATE_LIMIT_WINDOW_MS: "60000" } })
+    });
+    const res = { setHeader() {} };
+    const email = "log-redaction-target@example.test";
+    const req = request({ ip: "203.0.113.55", body: { email }, requestId: "redaction-check", app: { locals: { logger } } });
+
+    await login(req, res, () => {});
+    await login(req, res, () => {});
+
+    const rateLimitLog = entries.find((entry) => entry.event === "rate_limit_exceeded");
+    assert.ok(rateLimitLog, "expected a rate_limit_exceeded log entry");
+    assert.deepEqual(Object.keys(rateLimitLog.fields).sort(), ["policyId", "requestId", "retryAfterSeconds"]);
+    const serialized = JSON.stringify(entries);
+    assert.equal(serialized.includes(email), false);
+    assert.equal(serialized.includes("203.0.113.55"), false);
+    assert.equal(serialized.includes(TEST_SECRET), false);
+});
+
+test("Section 18: an expected 429 is logged at info level, not warn/error - it is not an anomaly", async () => {
+    const levels = [];
+    const logger = {
+        info(event) { levels.push(["info", event]); },
+        warn(event) { levels.push(["warn", event]); },
+        error(event) { levels.push(["error", event]); }
+    };
+    const store = createMemoryRateLimitStore();
+    const { login } = createRateLimiters({
+        store,
+        keySecret: TEST_SECRET,
+        now: () => 1000,
+        policies: createRateLimitPolicies({ env: { AUTH_LOGIN_RATE_LIMIT_MAX: "1", AUTH_LOGIN_RATE_LIMIT_WINDOW_MS: "60000" } })
+    });
+    const res = { setHeader() {} };
+    const req = request({ body: { email: "info-level-check@example.test" }, app: { locals: { logger } } });
+
+    await login(req, res, () => {});
+    await login(req, res, () => {});
+
+    assert.deepEqual(levels, [["info", "rate_limit_exceeded"]]);
+});
+
+test("Section 18: the store-unavailable log entry contains only policy id and request id - never key material", async () => {
+    const entries = [];
+    const logger = {
+        error(event, fields) { entries.push({ event, fields }); },
+        info() {},
+        warn() {}
+    };
+    const { RateLimitStoreUnavailableError } = require("../../errors/RateLimitErrors");
+    const failingStore = { consume: async () => { throw new RateLimitStoreUnavailableError(`simulated outage for ${TEST_SECRET}`); } };
+    const policies = createRateLimitPolicies({ env: {} });
+    const middleware = createRateLimitMiddleware({ policy: policies["auth.login"], store: failingStore, keySecret: TEST_SECRET });
+    const res = { setHeader() {} };
+    const req = request({ body: { email: "outage-check@example.test" }, requestId: "outage-request-id", app: { locals: { logger } } });
+
+    await middleware(req, res, () => {});
+
+    const outageLog = entries.find((entry) => entry.event === "rate_limit_store_unavailable");
+    assert.ok(outageLog);
+    assert.deepEqual(Object.keys(outageLog.fields).sort(), ["policyId", "requestId"]);
+    assert.equal(JSON.stringify(entries).includes("outage-check@example.test"), false);
+});
