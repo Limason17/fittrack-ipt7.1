@@ -3,6 +3,7 @@ const {
     NotFoundError,
     ValidationError
 } = require("../errors/AppError");
+const { createPublicId } = require("../domain/studioDomain");
 const { normalizeProgressEntry, normalizeText } = require("../utils/taxonomy");
 const { MAX_EPLEY_REPS } = require("../utils/trainingMetrics");
 const { validateMetricsForExercise } = require("../validation/trainingValidation");
@@ -230,9 +231,9 @@ function createTrainingService(database) {
             await connection.beginTransaction();
             transactionStarted = true;
             const [result] = await connection.query(
-                `INSERT INTO workouts (user_id, title, workout_date, notes)
-                 VALUES (?, ?, ?, ?)`,
-                [userId, input.title, input.workout_date, input.notes]
+                `INSERT INTO workouts (user_id, title, workout_date, notes, public_id)
+                 VALUES (?, ?, ?, ?, ?)`,
+                [userId, input.title, input.workout_date, input.notes, createPublicId()]
             );
             await insertWorkoutRows(
                 connection,
