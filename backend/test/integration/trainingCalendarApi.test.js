@@ -368,6 +368,60 @@ test("starting the workout session flips the linked occurrence to IN_PROGRESS an
     assert.ok(completedEvent);
 });
 
+// Stage 5A2 contract fix: starting a studio workout session requires the
+// assignment's public id in the URL (POST .../program-assignments/:assignmentId/
+// workout-sessions), but the calendar entry response never exposed it even
+// though studio_program_assignments was already joined for program/day
+// metadata. This test uses only the assignmentId from the GET response
+// itself (never the test fixture's own assignmentA.id) to prove the START
+// action is genuinely constructible from the API alone. Starting a session
+// only ever links to *today's* occurrence (see workoutSessionService.js's
+// findOrMaterializeTodayCalendarEntry), so - exactly like the "aborting an
+// in-progress session..." test further below - todayRuleId is disabled
+// first and a fresh rule for the same weekday is created, since only one
+// active rule may cover a given assignment+day+weekday at a time and
+// today's original occurrence is already COMPLETED from an earlier test.
+test("a studio calendar entry exposes assignmentId, independently usable to start the workout session via the existing contract", async () => {
+    const disableOld = await api(
+        `/api/v1/studios/${studioA.id}/program-assignments/${assignmentA.id}/schedule-rules/${todayRuleId}`,
+        { method: "PATCH", token: accounts.ownerA.token, body: { status: "disabled" } }
+    );
+    assert.equal(disableOld.response.status, 200, JSON.stringify(disableOld.data));
+    const freshRule = await createRule(accounts.ownerA.token, studioA.id, assignmentA.id);
+    assert.equal(freshRule.response.status, 201, JSON.stringify(freshRule.data));
+
+    const calResult = await api(`/api/v1/training-calendar?from=${today}&to=${today}`, { token: accounts.memberA.token });
+    const entry = calResult.data.entries.find((e) => e.sourceType === "studio" && e.persistedStatus === "PLANNED");
+    assert.ok(entry, "the fresh rule's occurrence appears in the list response, still PLANNED");
+    assert.equal(entry.assignmentId, assignmentA.id, "the exposed assignmentId matches the real assignment");
+    assert.ok(entry.programDay?.id, "programDayId is also available from the same response");
+
+    const startResult = await api(`/api/v1/studios/${studioA.id}/program-assignments/${entry.assignmentId}/workout-sessions`, {
+        method: "POST", token: accounts.memberA.token,
+        body: { programDayId: entry.programDay.id, clientStartKey: `cal-assignmentid-${runId}` }
+    });
+    assert.equal(startResult.response.status, 201, JSON.stringify(startResult.data));
+
+    // Leave the fixture state exactly as the next test ("aborting an
+    // in-progress session...") expects it: only todayRuleId (already
+    // disabled) exists for this assignment+day+weekday, so its own fresh
+    // rule can be created without hitting CALENDAR_SCHEDULE_RULE_CONFLICT.
+    const disableFresh = await api(
+        `/api/v1/studios/${studioA.id}/program-assignments/${assignmentA.id}/schedule-rules/${freshRule.data.scheduleRule.id}`,
+        { method: "PATCH", token: accounts.ownerA.token, body: { status: "disabled" } }
+    );
+    assert.equal(disableFresh.response.status, 200, JSON.stringify(disableFresh.data));
+});
+
+test("a personal and a synthesized legacy-workout calendar entry both expose assignmentId as null", async () => {
+    const personalDate = addDays(today, 16);
+    const createResult = await api("/api/v1/training-calendar", {
+        method: "POST", token: accounts.memberA.token, body: { scheduledDate: personalDate, title: "No assignment here" }
+    });
+    assert.equal(createResult.response.status, 201, JSON.stringify(createResult.data));
+    assert.equal(createResult.data.calendarEntry.assignmentId, null);
+});
+
 test("aborting an in-progress session reverts its calendar occurrence back to PLANNED and clears the session link", async () => {
     // Today's occurrence from the original rule (todayRuleId) is already
     // COMPLETED from the earlier "starting the workout session..." test -
@@ -442,6 +496,69 @@ test("personal entry creation follows the future/today/past default rules and th
         [pastResult.data.calendarEntry.linkedWorkoutPublicId]
     );
     assert.equal(Number(count.total), 1);
+});
+
+// Stage 5A2 contract fix: every mutation requires expectedRevision, so a real
+// HTTP client (with no database access) must be able to learn the current
+// revision purely from API responses - both the calendar list and every
+// mutation response. This test performs two consecutive mutations using only
+// API-supplied revision values (never a hardcoded number, never a direct
+// database query), proving the field is present, correctly typed and
+// authoritative end-to-end.
+test("revision is exposed on every calendar list entry and every mutation response, and is independently usable for optimistic concurrency", async () => {
+    const scheduledDate = addDays(today, 40);
+    const createResult = await api("/api/v1/training-calendar", {
+        method: "POST", token: accounts.memberA.token, body: { scheduledDate, title: "Revision contract" }
+    });
+    assert.equal(createResult.response.status, 201, JSON.stringify(createResult.data));
+    assert.equal(createResult.data.calendarEntry.revision, 0);
+    const entryId = createResult.data.calendarEntry.id;
+
+    const listResult = await api(`/api/v1/training-calendar?from=${scheduledDate}&to=${scheduledDate}`, {
+        token: accounts.memberA.token
+    });
+    const listedEntry = listResult.data.entries.find((entry) => entry.id === entryId);
+    assert.ok(listedEntry, "the newly created entry appears in the list response");
+    assert.equal(listedEntry.revision, 0, "the list response exposes the same revision as the create response");
+
+    const firstMutation = await api(`/api/v1/training-calendar/${entryId}`, {
+        method: "PATCH", token: accounts.memberA.token,
+        body: { title: "Revision contract renamed", expectedRevision: listedEntry.revision }
+    });
+    assert.equal(firstMutation.response.status, 200, JSON.stringify(firstMutation.data));
+    assert.equal(firstMutation.data.calendarEntry.revision, 1, "a successful mutation returns the incremented revision");
+
+    // The second mutation uses only the revision from the first mutation's own
+    // response - never a hardcoded number - proving the chain is fully
+    // API-driven end-to-end.
+    const secondMutation = await api(`/api/v1/training-calendar/${entryId}/cancel`, {
+        method: "POST", token: accounts.memberA.token,
+        body: { expectedRevision: firstMutation.data.calendarEntry.revision }
+    });
+    assert.equal(secondMutation.response.status, 200, JSON.stringify(secondMutation.data));
+    assert.equal(secondMutation.data.calendarEntry.persistedStatus, "CANCELLED");
+    assert.equal(secondMutation.data.calendarEntry.revision, 2);
+});
+
+test("the synthesized legacy-workout calendar entry exposes revision as null, never a fabricated number", async () => {
+    const exercisesResult = await api("/api/exercises", { token: accounts.memberA.token });
+    const exerciseId = exercisesResult.data[0].id;
+    const legacyDate = addDays(today, -40);
+    const legacyResult = await api("/api/workouts", {
+        method: "POST", token: accounts.memberA.token,
+        body: {
+            title: "Legacy revision check", workout_date: legacyDate,
+            exercises: [{ exercise_id: exerciseId, sets: 3, reps: 10, weight: 40 }]
+        }
+    });
+    assert.equal(legacyResult.response.status, 201, JSON.stringify(legacyResult.data));
+
+    const listResult = await api(`/api/v1/training-calendar?from=${legacyDate}&to=${legacyDate}`, {
+        token: accounts.memberA.token
+    });
+    const legacyEntry = listResult.data.entries.find((entry) => entry.sourceType === "personal" && entry.title === "Legacy revision check");
+    assert.ok(legacyEntry, "the legacy workout appears via the unified read model");
+    assert.equal(legacyEntry.revision, null);
 });
 
 test("reschedule, skip, cancel and invalid-transition rejection on a personal entry", async () => {
@@ -564,16 +681,21 @@ test("disabling a schedule rule never alters already-materialized historical occ
     // Materialize the occurrence and mark it COMPLETED via the same path a
     // real session completion would use: directly flip status for this
     // test's purposes via the skip endpoint (any terminal status proves
-    // immutability equally well).
-    await api(`/api/v1/training-calendar?from=${historicalDate}&to=${historicalDate}`, { token: accounts.memberA.token });
-    const [[entryRow]] = await pool.query(
-        "SELECT public_id, revision FROM training_calendar_entries WHERE schedule_rule_id = (SELECT id FROM studio_assignment_schedule_rules WHERE public_id = ?)",
-        [ruleId]
-    );
-    const skipResult = await api(`/api/v1/training-calendar/${entryRow.public_id}/skip`, {
-        method: "POST", token: accounts.memberA.token, body: { expectedRevision: entryRow.revision }
+    // immutability equally well). Both the occurrence's id and its revision
+    // come from the list response alone (Stage 5A2 contract fix) - a real
+    // client has no database access and could never query for them directly.
+    const listResult = await api(`/api/v1/training-calendar?from=${historicalDate}&to=${historicalDate}`, { token: accounts.memberA.token });
+    const listedEntry = listResult.data.entries.find((entry) => entry.sourceType === "studio" && entry.scheduledDate === historicalDate);
+    assert.ok(listedEntry, "the historical studio occurrence was materialized and returned by the list endpoint");
+    const skipResult = await api(`/api/v1/training-calendar/${listedEntry.id}/skip`, {
+        method: "POST", token: accounts.memberA.token, body: { expectedRevision: listedEntry.revision }
     });
     assert.equal(skipResult.response.status, 200, JSON.stringify(skipResult.data));
+
+    const [[entryRow]] = await pool.query(
+        "SELECT public_id FROM training_calendar_entries WHERE schedule_rule_id = (SELECT id FROM studio_assignment_schedule_rules WHERE public_id = ?)",
+        [ruleId]
+    );
 
     const disableResult = await api(
         `/api/v1/studios/${studioA.id}/program-assignments/${assignmentA.id}/schedule-rules/${ruleId}`,

@@ -43,6 +43,12 @@ const routes = [
         meta: { requiresAuth: true, personalContext: true, titleKey: 'routing.titles.progress' },
     },
     {
+        path: '/calendar',
+        name: 'calendar',
+        component: () => import('../views/CalendarView.vue'),
+        meta: { requiresAuth: true, personalContext: true, titleKey: 'routing.titles.calendar' },
+    },
+    {
         path: '/profile',
         name: 'profile',
         component: () => import('../views/ProfileView.vue'),

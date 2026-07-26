@@ -39,6 +39,20 @@
     /* Back-compat alias: previously "--warning" doubled as the error color. */
     --warning-legacy-soft: var(--danger-soft);
 
+    /* ---- Calendar-specific semantic colors (Stage 5A2) ----
+       DUE_TODAY and IN_PROGRESS each need their own distinct hue: PLANNED
+       already owns --info (blue) and OVERDUE reuses --warning (amber), so
+       reusing either for "due today" or "actively in progress" would
+       collapse two different meanings onto one color. Centralized here
+       rather than hard-coded per component. */
+    --calendar-due-today: #6d28d9;
+    --calendar-due-today-soft: #f2ebfc;
+    --calendar-due-today-border: #ddc7f5;
+
+    --calendar-in-progress: #3730a3;
+    --calendar-in-progress-soft: #e9e8fb;
+    --calendar-in-progress-border: #c9c6f3;
+
     /* ---- Layout ---- */
     --container: 1180px;
     --shell-sidebar-width: 248px;
@@ -489,6 +503,8 @@ main {
 .badge-danger,
 .studio-pill-warning { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-border); }
 .badge-info { background: var(--info-soft); color: var(--info); border-color: var(--info-border); }
+.badge-due-today { background: var(--calendar-due-today-soft); color: var(--calendar-due-today); border-color: var(--calendar-due-today-border); }
+.badge-in-progress { background: var(--calendar-in-progress-soft); color: var(--calendar-in-progress); border-color: var(--calendar-in-progress-border); }
 
 /* ---- Tables (desktop table, CSS-only card fallback for mobile) ---- */
 .table-wrap {

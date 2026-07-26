@@ -75,6 +75,21 @@ async function findOrMaterializeTodayCalendarEntry(
 
 // ---- Row shaping ----
 
+// Stage 5A2 contract fixes (documented in docs/STAGE_5A1_UNIFIED_CALENDAR_BACKEND.md
+// and docs/STAGE_5A2_PERSONAL_CALENDAR_UI.md):
+// 1) every mutation endpoint requires the caller to send `expectedRevision`,
+//    but no response previously exposed the current `revision` value - a real
+//    HTTP client had no way to learn it (Stage 5A1's own integration tests
+//    could only work around this by querying the database directly, which is
+//    not an option for the frontend). `revision` is `null` for the
+//    synthesized legacy-workout rows in getCalendar() below, which have no
+//    backing training_calendar_entries row and are never mutable.
+// 2) the START action is advertised via availableActions for studio entries,
+//    but starting a session requires the assignment's public id in the URL
+//    (POST /v1/studios/:studioId/program-assignments/:assignmentId/workout-sessions,
+//    see workoutSessionApi.js) - a value the response never exposed even
+//    though studio_program_assignments was already joined for program/day
+//    metadata. `assignmentId` is `null` for personal/legacy entries.
 function publicCalendarEntry(row, { today }) {
     const displayStatus = deriveDisplayStatus(row.status, row.scheduledDate, today);
     const hasLinkedWorkout = Boolean(row.linkedWorkoutPublicId);
@@ -85,9 +100,11 @@ function publicCalendarEntry(row, { today }) {
         displayStatus,
         sourceType: row.sourceType,
         title: row.title,
+        revision: row.revision === undefined ? null : row.revision,
         studio: row.studioPublicId ? { id: row.studioPublicId, name: row.studioName } : null,
         program: row.programPublicId ? { id: row.programPublicId, name: row.programName } : null,
         programDay: row.programDayPublicId ? { id: row.programDayPublicId, name: row.programDayName } : null,
+        assignmentId: row.assignmentPublicId || null,
         linkedWorkoutType: row.linkedWorkoutType,
         linkedWorkoutPublicId: row.linkedWorkoutPublicId,
         availableActions: deriveAvailableActions({ displayStatus, sourceType: row.sourceType, hasLinkedWorkout })
@@ -183,9 +200,10 @@ function createTrainingCalendarService({ database, generatePublicId = createPubl
             const [entryRows] = await connection.query(
                 `SELECT
                     e.public_id, DATE_FORMAT(e.scheduled_date, '%Y-%m-%d') AS scheduled_date,
-                    e.status, e.source_type, e.title_snapshot,
+                    e.status, e.source_type, e.title_snapshot, e.revision,
                     e.personal_workout_id, e.studio_workout_session_id,
                     s.public_id AS studio_public_id, s.name AS studio_name, s.default_timezone AS studio_timezone,
+                    pa.public_id AS assignment_public_id,
                     tp.public_id AS program_public_id, tp.name AS program_name,
                     pd.public_id AS program_day_public_id, pd.name AS program_day_name,
                     w.public_id AS personal_workout_public_id,
@@ -219,9 +237,11 @@ function createTrainingCalendarService({ database, generatePublicId = createPubl
                 status: row.status,
                 sourceType: row.source_type,
                 title: row.title_snapshot,
+                revision: row.revision,
                 studioPublicId: row.studio_public_id,
                 studioName: row.studio_name,
                 studioTimezone: row.studio_timezone,
+                assignmentPublicId: row.assignment_public_id,
                 programPublicId: row.program_public_id,
                 programName: row.program_name,
                 programDayPublicId: row.program_day_public_id,
@@ -236,9 +256,11 @@ function createTrainingCalendarService({ database, generatePublicId = createPubl
                     status: "COMPLETED",
                     sourceType: "personal",
                     title: row.title,
+                    revision: null,
                     studioPublicId: null,
                     studioName: null,
                     studioTimezone: null,
+                    assignmentPublicId: null,
                     programPublicId: null,
                     programName: null,
                     programDayPublicId: null,
@@ -295,7 +317,7 @@ function createTrainingCalendarService({ database, generatePublicId = createPubl
         const [rows] = await connection.query(
             `SELECT
                 e.public_id, DATE_FORMAT(e.scheduled_date, '%Y-%m-%d') AS scheduled_date,
-                e.status, e.source_type, e.title_snapshot,
+                e.status, e.source_type, e.title_snapshot, e.revision,
                 e.personal_workout_id, e.studio_workout_session_id,
                 w.public_id AS personal_workout_public_id,
                 ws.public_id AS workout_session_public_id
@@ -313,6 +335,7 @@ function createTrainingCalendarService({ database, generatePublicId = createPubl
             status: row.status,
             sourceType: row.source_type,
             title: row.title_snapshot,
+            revision: row.revision,
             studioPublicId: null,
             studioName: null,
             programPublicId: null,
