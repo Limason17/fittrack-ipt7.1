@@ -55,6 +55,9 @@ const { handleModalKeydown } = useModalFocus({ isOpen, dialogRef, close })
         <RouterLink to="/workouts" class="app-sidebar-link" @click="emit('close')">
           {{ t('nav.workouts') }}
         </RouterLink>
+        <RouterLink to="/calendar" class="app-sidebar-link" @click="emit('close')">
+          {{ t('nav.calendar') }}
+        </RouterLink>
         <RouterLink to="/exercises" class="app-sidebar-link" @click="emit('close')">
           {{ t('nav.exercises') }}
         </RouterLink>

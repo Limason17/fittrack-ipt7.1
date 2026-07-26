@@ -5,7 +5,8 @@ const props = defineProps({
   tone: {
     type: String,
     default: 'neutral',
-    validator: (value) => ['neutral', 'success', 'warning', 'danger', 'info'].includes(value),
+    validator: (value) =>
+      ['neutral', 'success', 'warning', 'danger', 'info', 'due-today', 'in-progress'].includes(value),
   },
   dot: { type: Boolean, default: false },
 })
