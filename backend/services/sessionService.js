@@ -175,18 +175,43 @@ function createSessionService({
             );
             if (reference.length === 0) throw new AuthRefreshTokenInvalidError();
 
+            // Lock ordering: users before user_auth_sessions, consistently
+            // with accountService.js's changePassword/confirmEmailChange and
+            // this file's own logoutAll - the owner lookup below is unlocked
+            // purely to discover which user this session belongs to (an
+            // immutable relationship once the session exists), mirroring
+            // confirmEmailChange's identical peek-then-lock-in-order
+            // sequence. A single JOIN ... FOR UPDATE here previously let
+            // MySQL's own join-scan order lock user_auth_sessions before
+            // users, which could deadlock against a concurrent password- or
+            // e-mail-change transaction for the same user, since that side
+            // always locks users first (see authSessionApi.test.js's
+            // dedicated "refresh racing against a password/e-mail change"
+            // tests).
+            const [owner] = await connection.query(
+                "SELECT user_id FROM user_auth_sessions WHERE id = ? LIMIT 1",
+                [reference[0].session_id]
+            );
+            if (owner.length === 0) throw new AuthRefreshTokenInvalidError();
+
+            const [userRows] = await connection.query(
+                "SELECT auth_version FROM users WHERE id = ? FOR UPDATE",
+                [owner[0].user_id]
+            );
+            if (userRows.length === 0) throw new AuthRefreshTokenInvalidError();
+
             const [sessionRows] = await connection.query(
-                `SELECT s.id AS session_internal_id, s.public_id AS session_public_id,
-                        s.user_id, s.status AS session_status, s.expires_at AS session_expires_at,
-                        s.auth_version AS session_auth_version, u.auth_version AS user_auth_version
-                 FROM user_auth_sessions s
-                 INNER JOIN users u ON u.id = s.user_id
-                 WHERE s.id = ?
+                `SELECT id AS session_internal_id, public_id AS session_public_id,
+                        user_id, status AS session_status, expires_at AS session_expires_at,
+                        auth_version AS session_auth_version
+                 FROM user_auth_sessions
+                 WHERE id = ?
                  FOR UPDATE`,
                 [reference[0].session_id]
             );
             if (sessionRows.length === 0) throw new AuthRefreshTokenInvalidError();
             const session = sessionRows[0];
+            session.user_auth_version = userRows[0].auth_version;
             // Mirrors authMiddleware.js's sessionAuthVersionStale check: a
             // session's auth_version is a snapshot taken at login time (see
             // startSession above). If the user's auth_version has since

@@ -43,7 +43,8 @@ test("dateibasierte Registry entdeckt alle Migrationen in stabiler Reihenfolge",
             "007_studio_workout_execution",
             "008_studio_workout_session_feedback",
             "009_account_self_service",
-            "010_auth_sessions"
+            "010_auth_sessions",
+            "011_security_rate_limits"
         ]
     );
     assert.ok(migrations.every((item) => /^[a-f0-9]{64}$/.test(item.checksum)));

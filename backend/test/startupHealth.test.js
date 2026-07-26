@@ -3,7 +3,8 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { afterEach, test } = require("node:test");
 
-const { createApp, readTrustProxyHops } = require("../startup/app");
+const { createApp } = require("../startup/app");
+const { readProxyConfig } = require("../config/proxyConfig");
 const { bootstrap } = require("../startup/bootstrap");
 const { createReadinessProbe } = require("../startup/readiness");
 const { main } = require("../server");
@@ -83,16 +84,31 @@ test("Server-Modulimport startet weder Listener noch DB-/Migration-I/O", async (
     assert.equal(result.stderr, "");
 });
 
-test("proxy trust requires an explicit bounded hop count", () => {
-    assert.equal(readTrustProxyHops({}), 0);
-    assert.equal(readTrustProxyHops({ TRUST_PROXY_HOPS: "2" }), 2);
+test("proxy trust defaults to disabled and requires an explicit, bounded hop count when enabled", () => {
+    assert.deepEqual(readProxyConfig({}), { mode: "disabled", hops: 0 });
+    assert.deepEqual(readProxyConfig({ TRUST_PROXY_MODE: "hops", TRUST_PROXY_HOPS: "2" }), { mode: "hops", hops: 2 });
     assert.throws(
-        () => readTrustProxyHops({ TRUST_PROXY_HOPS: "all" }),
+        () => readProxyConfig({ TRUST_PROXY_MODE: "hops", TRUST_PROXY_HOPS: "all" }),
         (error) => error.code === "INVALID_PROXY_CONFIG"
     );
     assert.throws(
-        () => readTrustProxyHops({ TRUST_PROXY_HOPS: "11" }),
+        () => readProxyConfig({ TRUST_PROXY_MODE: "hops", TRUST_PROXY_HOPS: "11" }),
         (error) => error.code === "INVALID_PROXY_CONFIG"
+    );
+    assert.throws(
+        () => readProxyConfig({ TRUST_PROXY_MODE: "hops" }),
+        (error) => error.code === "INVALID_PROXY_CONFIG",
+        "hops mode requires an explicit TRUST_PROXY_HOPS, not an implicit default"
+    );
+    assert.throws(
+        () => readProxyConfig({ NODE_ENV: "production" }),
+        (error) => error.code === "INVALID_PROXY_CONFIG",
+        "production must configure TRUST_PROXY_MODE explicitly, never fall back to disabled silently"
+    );
+    assert.throws(
+        () => readProxyConfig({ TRUST_PROXY_HOPS: "3" }),
+        (error) => error.code === "INVALID_PROXY_CONFIG",
+        "a hop count without an explicit hops mode must not silently enable proxy trust"
     );
 });
 

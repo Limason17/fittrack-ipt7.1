@@ -17,8 +17,16 @@ process.env.AUTH_REGISTRATION_RATE_LIMIT_MAX = "1000";
 process.env.AUTH_PASSWORD_CHANGE_RATE_LIMIT_MAX = "1000";
 process.env.AUTH_EMAIL_CHANGE_RATE_LIMIT_MAX = "1000";
 process.env.AUTH_EMAIL_CHANGE_CONFIRM_RATE_LIMIT_MAX = "1000";
+// Stage 3D: auth.refresh is keyed by client IP alone, and every request in
+// this whole file originates from the same loopback address - without a
+// generous override this file's own volume of legitimate refresh calls
+// (not abuse) would trip the production-sized default (30/5min) long
+// before the file finishes. auth.logoutAll is keyed per user, at much lower
+// real risk, but is bumped too for the same reason.
+process.env.AUTH_REFRESH_RATE_LIMIT_MAX = "1000";
+process.env.AUTH_LOGOUT_ALL_RATE_LIMIT_MAX = "1000";
 process.env.INVITATION_ACCEPT_BASE_URL = "http://127.0.0.1:4173";
-process.env.CORS_ORIGIN = "http://127.0.0.1:4173";
+process.env.CORS_ALLOWED_ORIGINS = "http://127.0.0.1:4173";
 process.env.INVITATION_EMAIL_PROVIDER = "";
 process.env.AUTH_MAX_ACTIVE_SESSIONS = "3";
 

@@ -430,6 +430,18 @@ export async function apiRequest(path, options = {}) {
         const error = new Error(data?.error?.message || data?.message || response.statusText)
         error.status = response.status
         error.data = data
+        // Backend rate-limit responses (Stage 3D) always carry a
+        // Retry-After header, in seconds - exposed here as the one
+        // chokepoint every caller's caught error already flows through, so
+        // no view needs to read response headers itself. null when absent
+        // or not a valid positive number, never NaN/negative.
+        const retryAfterHeader = response.headers?.get?.('Retry-After')
+        const retryAfterSeconds = retryAfterHeader !== null && retryAfterHeader !== undefined
+            ? Number(retryAfterHeader)
+            : NaN
+        error.retryAfterSeconds = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+            ? retryAfterSeconds
+            : null
         throw error
     }
 

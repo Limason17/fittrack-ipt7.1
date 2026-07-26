@@ -91,6 +91,33 @@
 > wurde keine Cloud-Infrastruktur eingerichtet.
 >
 > ---
+>
+> **Nachtrag (2026-07-26, Stage 3D Security Hardening):** Stage 3D (siehe
+> `STAGE_3D_SECURITY_HARDENING.md`) ist abgeschlossen: ein gemeinsam
+> nutzbarer, atomarer MySQL-Rate-Limit-Store (Migration 011) ersetzt den
+> rein prozesslokalen In-Memory-Limiter und deckt neu auch Refresh,
+> Logout-All, Einladung erstellen und Einladung annehmen ab (zuvor ganz
+> ohne Limit); die CORS-Konfiguration ist jetzt vollständig validiert und
+> sowohl per HTTP als auch echt im Browser getestet (`CORS_ALLOWED_ORIGINS`,
+> Produktionsregeln, minimale Methoden/Header); Trust-Proxy-Konfiguration
+> ist explizit und fail-closed; Security Header (HSTS produktionsseitig,
+> `Cache-Control: no-store` auf Auth-/Account-Antworten), Request-Grössen-
+> und Content-Type-Grenzen sowie eine gebündelte Startkonfigurationsprüfung
+> sind implementiert. Von den in den vorherigen Nachträgen genannten offenen
+> Punkten sind damit **zwei weitere geschlossen** ("Rate Limiter pro
+> Prozess", "CORS-Konfiguration ungetestet" — beide unten aus „Weiterhin
+> nicht blockierend" entfernt). Die in Stage 3A vorgeschlagene
+> Blockreihenfolge (3B1 → 3B2 → 3C → 3D) ist damit vollständig abgearbeitet.
+> Weiterhin offen und explizit ausserhalb des Scopes dieser Phase: toter
+> Policy-Code (`coachActionEligibility`) weiterhin unbereinigt, 2FA,
+> Passkeys, Social Login, Passwort-vergessen/Reset, Kontolöschung,
+> vollständige Geräteverwaltung, Abrechnung, neue Trainingsfunktionen, eine
+> Monitoring-Plattform. Stage 2B2B bleibt weiterhin **Deferred until first
+> customer / production deployment** — unverändert durch diese Phase; es
+> wurde keine Cloud-Infrastruktur eingerichtet. **Nach Stage 3D folgt
+> ausschliesslich Stage 4A — Final Local Acceptance.**
+>
+> ---
 
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-
@@ -191,10 +218,8 @@ ab, dies vor den verbleibenden operativen Punkten zu priorisieren.
 
 - **Toter Policy-Code (`coachActionEligibility` in `studioPolicy.js`).**
   Weiterhin unverdrahtet.
-- **CORS-Konfiguration ungetestet.**
 - **Login-Timing-Seitenkanal** (Konto-Enumeration über `bcrypt.compare`-
   Timing).
-- **Rate Limiter pro Prozess** (Skalierungsgrenze bei mehreren Instanzen).
 - **Kein Recht-auf-Löschung-/Anonymisierungspfad** für Benutzer-,
   Trainings- oder Feedbackdaten.
 - **Kein Bounce-/Complaint-Handling und keine Zustell-Warteschlange** für

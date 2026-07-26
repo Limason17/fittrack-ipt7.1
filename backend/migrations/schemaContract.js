@@ -1373,6 +1373,73 @@ const authSessionsChecks = [
     )
 );
 
+const rateLimitsMigrationId = "011_security_rate_limits";
+const rateLimitsExistingTableElement = { pendingMissingAllowed: false };
+
+const rateLimitsTables = ["security_rate_limit_buckets"].map((name) =>
+    table(rateLimitsMigrationId, name)
+);
+
+const rateLimitsColumns = [
+    ["security_rate_limit_buckets", "id", "int", false],
+    ["security_rate_limit_buckets", "policy_id", "varchar(64)", false],
+    ["security_rate_limit_buckets", "key_hash", "binary(32)", false],
+    ["security_rate_limit_buckets", "window_started_at", "datetime(3)", false],
+    ["security_rate_limit_buckets", "request_count", "int unsigned", false],
+    ["security_rate_limit_buckets", "blocked_until", "datetime(3)", true],
+    ["security_rate_limit_buckets", "expires_at", "datetime(3)", false],
+    ["security_rate_limit_buckets", "created_at", "datetime(3)", false],
+    ["security_rate_limit_buckets", "updated_at", "datetime(3)", false]
+].map(([tableName, columnName, columnType, nullable]) =>
+    column(
+        rateLimitsMigrationId,
+        tableName,
+        columnName,
+        columnType,
+        nullable,
+        rateLimitsExistingTableElement
+    )
+);
+
+const rateLimitsIndexes = [
+    ["security_rate_limit_buckets", "PRIMARY", ["id"], true],
+    [
+        "security_rate_limit_buckets",
+        "uq_security_rate_limit_buckets_policy_key",
+        ["policy_id", "key_hash"],
+        true
+    ],
+    [
+        "security_rate_limit_buckets",
+        "idx_security_rate_limit_buckets_expires",
+        ["expires_at"],
+        false
+    ]
+].map(([tableName, indexName, columns, unique]) =>
+    index(
+        rateLimitsMigrationId,
+        tableName,
+        indexName,
+        columns,
+        unique,
+        rateLimitsExistingTableElement
+    )
+);
+
+const rateLimitsChecks = [
+    ["security_rate_limit_buckets", "chk_security_rate_limit_buckets_policy_id"],
+    ["security_rate_limit_buckets", "chk_security_rate_limit_buckets_request_count"],
+    ["security_rate_limit_buckets", "chk_security_rate_limit_buckets_window_order"],
+    ["security_rate_limit_buckets", "chk_security_rate_limit_buckets_blocked_until_order"]
+].map(([tableName, constraintName]) =>
+    checkConstraint(
+        rateLimitsMigrationId,
+        tableName,
+        constraintName,
+        rateLimitsExistingTableElement
+    )
+);
+
 const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
     {
         migrationId: "001_initial_schema",
@@ -1454,6 +1521,15 @@ const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
             ...authSessionsIndexes,
             ...authSessionsForeignKeys,
             ...authSessionsChecks
+        ]
+    },
+    {
+        migrationId: rateLimitsMigrationId,
+        checks: [
+            ...rateLimitsTables,
+            ...rateLimitsColumns,
+            ...rateLimitsIndexes,
+            ...rateLimitsChecks
         ]
     }
 ]);

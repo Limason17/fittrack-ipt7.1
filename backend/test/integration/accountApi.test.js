@@ -16,6 +16,10 @@ process.env.AUTH_REGISTRATION_RATE_LIMIT_MAX = "100";
 process.env.AUTH_PASSWORD_CHANGE_RATE_LIMIT_MAX = "100";
 process.env.AUTH_EMAIL_CHANGE_RATE_LIMIT_MAX = "100";
 process.env.AUTH_EMAIL_CHANGE_CONFIRM_RATE_LIMIT_MAX = "100";
+// Stage 3D: same reasoning as authSessionApi.test.js - auth.refresh is
+// IP-keyed and every call in this file shares one loopback address.
+process.env.AUTH_REFRESH_RATE_LIMIT_MAX = "100";
+process.env.AUTH_LOGOUT_ALL_RATE_LIMIT_MAX = "100";
 process.env.INVITATION_ACCEPT_BASE_URL = "http://127.0.0.1:4173";
 // Same isolation rationale as studioApi.test.js: never allow a leaked local
 // .env SMTP config to escape into this test process.
@@ -26,6 +30,8 @@ const { createMigrationRunner } = require("../../migrations/runner");
 const { createAccountService } = require("../../services/accountService");
 const { createAccountRouter } = require("../../routes/accountRouter");
 const { createApp } = require("../../startup/app");
+const { createRateLimiters } = require("../../middleware/rateLimiter");
+const { createMySqlRateLimitStore } = require("../../rateLimiting/mysqlRateLimitStore");
 
 const logger = { info() {}, warn() {}, error() {} };
 const runId = crypto.randomBytes(5).toString("hex");
@@ -124,6 +130,7 @@ before(async () => {
         async sendNotificationBestEffort() {}
     };
     const failingAccountService = createAccountService({ database: pool, delivery: failingDelivery });
+    const failingRateLimiters = createRateLimiters({ store: createMySqlRateLimitStore({ database: pool }) });
     const failingApp = createApp({
         readiness: { check: async () => ({ ready: true }) },
         logger,
@@ -132,7 +139,14 @@ before(async () => {
             exercises: require("../../routes/exercises"),
             workouts: require("../../routes/workouts"),
             progress: require("../../routes/progress"),
-            account: createAccountRouter({ service: failingAccountService })
+            account: createAccountRouter({
+                service: failingAccountService,
+                rateLimiters: {
+                    passwordChange: failingRateLimiters.passwordChange,
+                    emailChangeRequest: failingRateLimiters.emailChangeRequest,
+                    emailChangeConfirm: failingRateLimiters.emailChangeConfirm
+                }
+            })
         }
     });
     failingServer = failingApp.listen(0, "127.0.0.1");

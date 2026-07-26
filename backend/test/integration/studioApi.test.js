@@ -13,6 +13,13 @@ process.env.DB_NAME = TEST_DATABASE;
 process.env.JWT_SECRET = "fittrack-stage-1a-test-secret-with-at-least-32-characters";
 process.env.AUTH_LOGIN_RATE_LIMIT_MAX = "100";
 process.env.AUTH_REGISTRATION_RATE_LIMIT_MAX = "100";
+// This file's own test volume (not abuse) creates and accepts far more
+// invitations against one actor/studio than the Stage 3D production
+// defaults allow for - INVITATION_RESEND_RATE_LIMIT_MAX is deliberately
+// NOT overridden here: the dedicated resend-rate-limit test below relies on
+// that default (5) actually tripping.
+process.env.INVITATION_CREATE_RATE_LIMIT_MAX = "1000";
+process.env.INVITATION_ACCEPT_RATE_LIMIT_MAX = "1000";
 process.env.INVITATION_ACCEPT_BASE_URL = "http://127.0.0.1:4173";
 // Isolate this run from any real SMTP configuration a developer may have in
 // their own local backend/.env for manual provider testing - the default,

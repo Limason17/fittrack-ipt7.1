@@ -19,6 +19,13 @@ async function expectNoSeriousAxeViolations(page) {
 }
 
 test('Kernseiten haben keine schweren oder kritischen Axe-Verstöße', async ({ page, request }) => {
+  // Stage 3D: this test does 17 back-to-back hard reloads, each with its own
+  // silent-refresh bootstrap and a full axe-core analysis. Refresh now does a
+  // real MySQL round trip for its shared rate-limit bucket (Section 5), which
+  // adds a few hundred ms per call; across 17 iterations that legitimately
+  // pushes total runtime past the default 45s test timeout, so this needs
+  // realistic headroom rather than a different wait heuristic.
+  test.setTimeout(180_000)
   await page.goto('/login')
   await expectNoSeriousAxeViolations(page)
   await page.goto('/register')
@@ -64,16 +71,14 @@ test('Kernseiten haben keine schweren oder kritischen Axe-Verstöße', async ({ 
     `/studios/${studio.id}/access-denied`,
     `/invitations/${'a'.repeat(43)}`,
   ]) {
-    // Stage 3B2: the access token is memory-only, so every one of these
-    // hard reloads triggers its own silent-refresh bootstrap. The default
-    // 'load' wait resolves before that bootstrap's own fetch necessarily
-    // completes, which - across this many back-to-back reloads - can race
-    // the previous reload's still-in-flight refresh (single-use rotation,
-    // see services/sessionService.js) and spuriously invalidate the
-    // session. Waiting for network idle keeps each reload's bootstrap fully
-    // settled before the next one starts, so this loop exercises real
-    // sequential page loads rather than an artificial rapid-fire-reload
-    // race no normal user would trigger.
+    // The access token is memory-only, so every one of these hard reloads
+    // triggers its own silent-refresh bootstrap. The default 'load' wait
+    // resolves before that bootstrap's own fetch necessarily completes,
+    // which - across this many back-to-back reloads - can race the
+    // previous reload's still-in-flight refresh (single-use rotation, see
+    // services/sessionService.js) and spuriously invalidate the session, so
+    // this loop must not start the next reload until the current one has
+    // actually gone network-idle.
     await page.goto(route, { waitUntil: 'networkidle' })
     await expect(page).not.toHaveURL(/\/login/)
     await expectNoSeriousAxeViolations(page)

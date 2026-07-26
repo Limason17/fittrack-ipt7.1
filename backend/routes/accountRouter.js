@@ -1,8 +1,8 @@
 const express = require("express");
 
 const db = require("../config/db");
+const { noStoreCache } = require("../middleware/httpFoundation");
 const authenticateToken = require("../middleware/authMiddleware");
-const { createAuthRateLimiters } = require("../middleware/rateLimiter");
 const { createAccountService } = require("../services/accountService");
 const {
     validateChangePasswordPayload,
@@ -13,7 +13,7 @@ const {
 function createAccountRouter({
     service = createAccountService({ database: db.promise() }),
     authenticate = authenticateToken,
-    rateLimiters = createAuthRateLimiters()
+    rateLimiters
 } = {}) {
     if (!service || typeof service !== "object") {
         throw new TypeError("Account router requires an account service.");
@@ -21,8 +21,14 @@ function createAccountRouter({
     if (typeof authenticate !== "function") {
         throw new TypeError("Account router requires authentication middleware.");
     }
+    if (!rateLimiters || typeof rateLimiters.passwordChange !== "function" ||
+        typeof rateLimiters.emailChangeRequest !== "function" || typeof rateLimiters.emailChangeConfirm !== "function") {
+        throw new TypeError("Account router requires passwordChange/emailChangeRequest/emailChangeConfirm rate limiters.");
+    }
 
     const router = express.Router();
+    // Passwords, sessions, and pending e-mail changes - never cacheable.
+    router.use(noStoreCache);
 
     router.post(
         "/change-password",

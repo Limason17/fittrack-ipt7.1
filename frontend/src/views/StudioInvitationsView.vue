@@ -12,6 +12,7 @@ import { invitationStatusTone, roleTone } from '../utils/studioBadges'
 import { createInvitation, listInvitations, resendInvitation, revokeInvitation } from '../utils/studioApi'
 import { MANAGEMENT_ROLES, activeStudio, refreshSelectedStudio } from '../utils/studioContext'
 import { toastError, toastSuccess } from '../utils/toast'
+import { createRetryCountdown } from '../utils/retryCountdown'
 
 const RESENDABLE_STATUSES = ['pending', 'expired']
 const RESEND_ERROR_KEYS = {
@@ -47,6 +48,8 @@ const isSaving = ref(false)
 const revokingId = ref(null)
 const resendingId = ref(null)
 const errorMessage = ref('')
+const { secondsRemaining: resendRetrySeconds, start: startResendRetryCountdown } = createRetryCountdown()
+const resendRateLimited = computed(() => resendRetrySeconds.value > 0)
 const successMessage = ref('')
 const pendingRevoke = ref(null)
 const pendingResend = ref(null)
@@ -251,6 +254,9 @@ async function resend(invitation) {
       const message = error.status === 403
         ? t('studios.permissionDenied')
         : t(RESEND_ERROR_KEYS[code] || 'studios.invitations.resendError')
+      if (code === 'INVITATION_RESEND_RATE_LIMITED') {
+        startResendRetryCountdown(error.retryAfterSeconds)
+      }
       if (RESEND_ERRORS_REQUIRING_RELOAD.has(code)) {
         // A failed delivery already changed the server-side status (see
         // compensateResendDeliveryFailure) - reload rather than leave the
@@ -293,7 +299,10 @@ onBeforeUnmount(() => { deliveryLink.value = '' })
             </select>
           </div>
         </div>
-        <p v-if="errorMessage" class="message message-error" role="alert">{{ errorMessage }}</p>
+        <p v-if="errorMessage" class="message message-error" role="alert">
+          {{ errorMessage }}
+          <span v-if="resendRateLimited"> {{ t('common.retryAfter', { seconds: resendRetrySeconds }) }}</span>
+        </p>
         <p v-if="successMessage" class="message message-success" role="status">{{ successMessage }}</p>
         <aside v-if="deliveryLink" class="studio-delivery" aria-live="polite">
           <strong>{{ t('studios.invitations.devDeliveryTitle') }}</strong>
@@ -355,7 +364,7 @@ onBeforeUnmount(() => { deliveryLink.value = '' })
                     <button
                       class="btn btn-secondary btn-sm"
                       type="button"
-                      :disabled="resendingId === invitation.id || revokingId === invitation.id"
+                      :disabled="resendingId === invitation.id || revokingId === invitation.id || resendRateLimited"
                       :aria-label="t('studios.invitations.resendFor', { email: displayEmail(invitation) })"
                       @click="requestResend(invitation)"
                     >

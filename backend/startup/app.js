@@ -4,10 +4,12 @@ const cookieParser = require("cookie-parser");
 const {
     errorHandler: defaultErrorHandler,
     notFoundHandler: defaultNotFoundHandler,
+    createJsonContentTypeGuard,
     createRequestLoggingMiddleware,
-    requestIdMiddleware,
-    securityHeaders
+    createSecurityHeaders,
+    requestIdMiddleware
 } = require("../middleware/httpFoundation");
+const { readRequestLimitsConfig } = require("../config/requestLimitsConfig");
 const db = require("../config/db");
 const { createStudioService } = require("../services/studioService");
 const { createInvitationOutbox } = require("../outbox/invitationOutbox");
@@ -21,50 +23,71 @@ const {
     createAccountEmailDelivery,
     resolveDefaultAccountProvider
 } = require("../delivery/accountEmailDelivery");
-const { createAuthRateLimiters, createInvitationRateLimiters } = require("../middleware/rateLimiter");
+const { createRateLimiters } = require("../middleware/rateLimiter");
+const { createMySqlRateLimitStore } = require("../rateLimiting/mysqlRateLimitStore");
 const { readSmtpConfig } = require("../config/smtpConfig");
-const { allowedOrigins } = require("../config/corsOrigins");
+const { readCorsConfig } = require("../config/corsOrigins");
+const { readProxyConfig } = require("../config/proxyConfig");
 const { createSessionService } = require("../services/sessionService");
 const { createAuthSessionRouter } = require("../routes/authSessionRouter");
 
-function readTrustProxyHops(env = process.env) {
-    const value = env.TRUST_PROXY_HOPS;
-    if (value === undefined || value === null || value === "") {
-        return 0;
-    }
-    const hops = Number(value);
-    if (!Number.isInteger(hops) || hops < 0 || hops > 10) {
-        const error = new Error("TRUST_PROXY_HOPS must be an integer between 0 and 10.");
-        error.code = "INVALID_PROXY_CONFIG";
-        throw error;
-    }
-    return hops;
-}
+// Minimal, explicit allow-lists (Section 13) rather than reflecting
+// whatever a preflight requests: every method and header this API's routes
+// actually use, and nothing else. `cors` handles OPTIONS itself
+// (preflightContinue defaults to false), so it does not need to appear here.
+const CORS_ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+const CORS_ALLOWED_HEADERS = ["Content-Type", "Authorization", "X-CSRF-Token"];
+// Response headers a browser's JS may read cross-origin: the rate-limit
+// bookkeeping headers (for the frontend's Retry-After countdown UX) and the
+// request id (for user-facing error reporting) - see middleware/rateLimiter.js
+// and middleware/httpFoundation.js respectively.
+const CORS_EXPOSED_HEADERS = ["RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset", "Retry-After", "X-Request-ID"];
 
-function createCorsOptions(configuredOrigins = allowedOrigins()) {
+function createCorsOptions(corsConfig = readCorsConfig()) {
+    const { allowedOrigins, allowCredentials, maxAgeSeconds } = corsConfig;
     return (req, callback) => {
         const origin = req.headers.origin;
         const requestOrigin = origin?.toLowerCase();
         const requestHost = req.headers.host?.toLowerCase();
 
         if (!requestOrigin) {
-            callback(null, { origin: true });
+            callback(null, {
+                origin: true,
+                methods: CORS_ALLOWED_METHODS,
+                allowedHeaders: CORS_ALLOWED_HEADERS,
+                exposedHeaders: CORS_EXPOSED_HEADERS,
+                maxAge: maxAgeSeconds
+            });
             return;
         }
 
         try {
             const originHost = new URL(requestOrigin).host;
             const isSameHost = requestHost && originHost === requestHost;
-            const allowed = Boolean(isSameHost || configuredOrigins.includes(requestOrigin));
+            // Exact membership only - never a substring/suffix/prefix
+            // match, so "https://example.com.evil.test" can never be
+            // confused with an allowed "https://example.com".
+            const allowed = Boolean(isSameHost || allowedOrigins.includes(requestOrigin));
 
             // Stage 3B2: cookie-based auth endpoints (/api/auth/*) need the
             // browser to both send and read Set-Cookie on a cross-port local
             // dev origin (5173 -> 3001), which requires
             // Access-Control-Allow-Credentials: true. Only ever reflected
             // for a request whose Origin actually matched the allowlist/
-            // same-host check above - never alongside a wildcard/unconditional
-            // allow, which would be a real credential-leak vulnerability.
-            callback(null, { origin: allowed, credentials: allowed });
+            // same-host check above, and only when CORS_ALLOW_CREDENTIALS
+            // permits it - never alongside a wildcard/unconditional allow,
+            // which would be a real credential-leak vulnerability. A
+            // rejected origin gets `origin: false`, which makes the `cors`
+            // package omit every Access-Control-* header entirely (no
+            // permissive header of any kind leaks to a disallowed origin).
+            callback(null, {
+                origin: allowed,
+                credentials: allowed && allowCredentials,
+                methods: CORS_ALLOWED_METHODS,
+                allowedHeaders: CORS_ALLOWED_HEADERS,
+                exposedHeaders: CORS_EXPOSED_HEADERS,
+                maxAge: maxAgeSeconds
+            });
         } catch (error) {
             callback(error);
         }
@@ -165,6 +188,17 @@ function createDefaultAccountService({
     return createAccountService({ database, delivery, sessionService });
 }
 
+// One MySqlRateLimitStore, one createRateLimiters() call, shared by every
+// router below - all backed by the exact same `database` this composition
+// root was given (the real pool in production, an explicit test pool in
+// integration tests). See middleware/rateLimiter.js and
+// rateLimiting/mysqlRateLimitStore.js: there is deliberately no in-memory
+// fallback anywhere in this path (Section 5/10).
+function createDefaultRateLimiters({ env, database }) {
+    const store = createMySqlRateLimitStore({ database });
+    return createRateLimiters({ store, env });
+}
+
 function defaultRouters({ env, database = db.promise(), transportFactory } = {}) {
     const sharedTransportFactory = resolveSharedSmtpTransportFactory(env || process.env, { transportFactory });
     const studioService = createDefaultStudioService({ env, database, transportFactory: sharedTransportFactory });
@@ -176,6 +210,7 @@ function defaultRouters({ env, database = db.promise(), transportFactory } = {})
     // consistent with sharedTransportFactory above.
     const sessionService = createSessionService({ database });
     const accountService = createDefaultAccountService({ env, database, transportFactory: sharedTransportFactory, sessionService });
+    const rateLimiters = createDefaultRateLimiters({ env, database });
     return {
         users: require("../routes/users"),
         exercises: require("../routes/exercises"),
@@ -183,15 +218,29 @@ function defaultRouters({ env, database = db.promise(), transportFactory } = {})
         progress: require("../routes/progress"),
         studioV1: createStudioV1Router({
             service: studioService,
-            rateLimiters: createInvitationRateLimiters({ env })
+            rateLimiters: {
+                create: rateLimiters.invitationCreate,
+                resend: rateLimiters.invitationResend,
+                accept: rateLimiters.invitationAccept
+            }
         }),
         trainingProgramV1: createTrainingProgramV1Router({ studioService }),
         workoutSessionV1: createWorkoutSessionV1Router({ studioService }),
         account: createAccountRouter({
             service: accountService,
-            rateLimiters: createAuthRateLimiters({ env })
+            rateLimiters: {
+                passwordChange: rateLimiters.passwordChange,
+                emailChangeRequest: rateLimiters.emailChangeRequest,
+                emailChangeConfirm: rateLimiters.emailChangeConfirm
+            }
         }),
-        authSession: createAuthSessionRouter({ sessionService })
+        authSession: createAuthSessionRouter({
+            sessionService,
+            rateLimiters: {
+                refresh: rateLimiters.refresh,
+                logoutAll: rateLimiters.logoutAll
+            }
+        })
     };
 }
 
@@ -210,14 +259,17 @@ function createApp({
 
     const app = express();
     app.disable("x-powered-by");
-    const trustProxyHops = readTrustProxyHops();
-    if (trustProxyHops > 0) {
-        app.set("trust proxy", trustProxyHops);
+    const proxyConfig = readProxyConfig();
+    if (proxyConfig.mode === "hops") {
+        // Always a specific integer hop count - never `app.set('trust
+        // proxy', true)`, which would trust an unbounded chain and let a
+        // client's own X-Forwarded-For prefix be believed.
+        app.set("trust proxy", proxyConfig.hops);
     }
     app.locals.logger = logger;
     app.use(requestIdMiddleware);
     app.use(createRequestLoggingMiddleware());
-    app.use(securityHeaders);
+    app.use(createSecurityHeaders());
 
     if (typeof beforeMiddleware === "function") {
         beforeMiddleware(app);
@@ -225,7 +277,8 @@ function createApp({
 
     app.use(cors(createCorsOptions()));
     app.use(cookieParser());
-    app.use(express.json({ limit: "1mb" }));
+    app.use(createJsonContentTypeGuard());
+    app.use(express.json({ limit: readRequestLimitsConfig().jsonLimit }));
 
     const readyHandler = createReadyHandler(readiness, logger);
     app.get("/api/health/live", sendLive);
@@ -267,13 +320,11 @@ function createApp({
 }
 
 module.exports = {
-    allowedOrigins,
     createApp,
     createCorsOptions,
     createDefaultAccountService,
     createDefaultStudioService,
     createReadyHandler,
     defaultRouters,
-    readTrustProxyHops,
     sendLive
 };

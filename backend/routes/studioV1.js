@@ -7,7 +7,6 @@ const {
     requireStudioPermission
 } = require("../middleware/studioContext");
 const { PERMISSIONS } = require("../domain/studioPolicy");
-const { createInvitationRateLimiters } = require("../middleware/rateLimiter");
 const { createStudioService } = require("../services/studioService");
 const {
     validateCreateStudioPayload,
@@ -21,13 +20,17 @@ const {
 function createStudioV1Router({
     service = createStudioService({ database: db.promise() }),
     authenticate = authenticateToken,
-    rateLimiters = createInvitationRateLimiters()
+    rateLimiters
 } = {}) {
     if (!service || typeof service !== "object") {
         throw new TypeError("Studio v1 router requires a studio service.");
     }
     if (typeof authenticate !== "function") {
         throw new TypeError("Studio v1 router requires authentication middleware.");
+    }
+    if (!rateLimiters || typeof rateLimiters.create !== "function" ||
+        typeof rateLimiters.resend !== "function" || typeof rateLimiters.accept !== "function") {
+        throw new TypeError("Studio v1 router requires create/resend/accept rate limiters.");
     }
 
     const router = express.Router();
@@ -45,7 +48,7 @@ function createStudioV1Router({
         res.json({ studios });
     });
 
-    router.post("/invitations/:token/accept", authenticate, async (req, res) => {
+    router.post("/invitations/:token/accept", authenticate, rateLimiters.accept, async (req, res) => {
         const result = await service.acceptInvitation(req.user.id, req.params.token);
         res.json(result);
     });
@@ -124,6 +127,7 @@ function createStudioV1Router({
     router.post(
         "/studios/:studioId/invitations",
         authenticate,
+        rateLimiters.create,
         context,
         permission(PERMISSIONS.INVITATION_CREATE),
         async (req, res) => {

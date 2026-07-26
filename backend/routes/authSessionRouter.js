@@ -1,5 +1,6 @@
 const express = require("express");
 
+const { noStoreCache } = require("../middleware/httpFoundation");
 const authenticateToken = require("../middleware/authMiddleware");
 const { createOriginGuard } = require("../security/originGuard");
 const { createCsrfGuard } = require("../security/csrfGuard");
@@ -27,15 +28,29 @@ function createAuthSessionRouter({
     authenticate = authenticateToken,
     config = SESSION_CONFIG,
     verifyOrigin = createOriginGuard(),
-    verifyCsrf = createCsrfGuard({ config })
+    verifyCsrf = createCsrfGuard({ config }),
+    rateLimiters
 } = {}) {
     if (!sessionService || typeof sessionService.rotateRefreshToken !== "function") {
         throw new TypeError("Auth session router requires a session service.");
     }
+    if (!rateLimiters || typeof rateLimiters.refresh !== "function" || typeof rateLimiters.logoutAll !== "function") {
+        throw new TypeError("Auth session router requires refresh/logoutAll rate limiters.");
+    }
 
     const router = express.Router();
+    // Every response from this router carries session/token state - never
+    // cacheable, by any browser or intermediary (Section 15).
+    router.use(noStoreCache);
 
-    router.post("/refresh", verifyOrigin, verifyCsrf, async (req, res, next) => {
+    // Rate-limited BEFORE the origin/CSRF guards: a request that will be
+    // rejected anyway should still count against the limiter (otherwise an
+    // attacker could probe indefinitely using deliberately-wrong CSRF/Origin
+    // values, which cost nothing server-side, to avoid ever touching the
+    // limiter) - this mirrors the ordering the rest of this codebase already
+    // uses (e.g. invitation resend: rate limiter runs before the permission
+    // check in studioV1.js).
+    router.post("/refresh", rateLimiters.refresh, verifyOrigin, verifyCsrf, async (req, res, next) => {
         const refreshToken = req.cookies?.[config.refreshCookieName];
         const csrfHeaderToken = req.headers["x-csrf-token"];
 
@@ -76,7 +91,10 @@ function createAuthSessionRouter({
         res.json({ message: "Logged out." });
     });
 
-    router.post("/logout-all", authenticate, verifyOrigin, verifyCsrf, async (req, res) => {
+    // Keyed by authenticated user ID (see rateLimiting/rateLimitPolicies.js),
+    // so this must run after `authenticate` populates req.user - unlike
+    // /refresh above, which is keyed by IP and can run before any guard.
+    router.post("/logout-all", authenticate, rateLimiters.logoutAll, verifyOrigin, verifyCsrf, async (req, res) => {
         await sessionService.logoutAll(req.user.id, "logout_all");
         clearSessionCookies(res, config);
         res.json({ message: "Logged out of all devices." });

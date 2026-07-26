@@ -88,7 +88,7 @@ DB_PASSWORD=root
 DB_NAME=fittrack
 DB_PORT=3306
 JWT_SECRET=replace-with-a-local-secret-of-at-least-16-characters
-CORS_ORIGIN=http://localhost:5173
+CORS_ALLOWED_ORIGINS=http://localhost:5173
 ```
 
 Frontend:
@@ -98,7 +98,7 @@ VITE_API_BASE_URL=/api
 API_PROXY_TARGET=http://localhost:3001
 ```
 
-In Produktion muss `JWT_SECRET` eindeutig und mindestens 32 Zeichen lang sein. `CORS_ORIGIN` akzeptiert eine kommaseparierte Liste vollständiger HTTP(S)-Origins ohne Pfad. Alle Variablen und Grenzen sind in `docs/DEPLOYMENT.md` beschrieben.
+In Produktion müssen `JWT_SECRET` und `RATE_LIMIT_KEY_SECRET` eindeutig, voneinander verschieden und mindestens 32 Zeichen lang sein. `CORS_ALLOWED_ORIGINS` akzeptiert eine kommaseparierte Liste vollständiger HTTP(S)-Origins ohne Pfad; Produktion verlangt zusätzlich HTTPS und verbietet localhost/127.\*/::1. Alle Variablen und Grenzen sind in `docs/DEPLOYMENT.md` beschrieben.
 
 ## Datenbankbefehle und Sicherheit
 

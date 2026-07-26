@@ -140,7 +140,16 @@ test('two browser contexts for the same user: logout-all in one ends the session
     // so its own bootstrap only discovers the revocation on its next
     // navigation/reload - exactly the documented "not real-time push"
     // limitation for cross-device session invalidation (see Stage 3B2 docs).
-    await pageB.reload({ waitUntil: 'networkidle' })
+    //
+    // waitUntil: 'load' (not 'networkidle'): the reload's own failed
+    // /auth/refresh settles almost immediately and the router redirects
+    // client-side right after, but the resulting /login page keeps Vite's
+    // dev-only HMR WebSocket open, which can keep 'networkidle' from ever
+    // being satisfied even though the redirect itself already completed -
+    // confirmed by direct request-log inspection while diagnosing this
+    // during Stage 3D. The actual security assertion below (ending up on
+    // /login) is unchanged and still authoritative.
+    await pageB.reload({ waitUntil: 'load' })
     await expect(pageB).toHaveURL(/\/login/)
   } finally {
     await contextA.close()

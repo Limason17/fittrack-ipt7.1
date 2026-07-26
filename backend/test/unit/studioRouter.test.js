@@ -5,6 +5,8 @@ const express = require("express");
 const { createStudioV1Router } = require("../../routes/studioV1");
 const { createApp } = require("../../startup/app");
 const { StudioNotFoundError } = require("../../errors/StudioErrors");
+const { createRateLimiters } = require("../../middleware/rateLimiter");
+const { createMemoryRateLimitStore } = require("../../rateLimiting/memoryRateLimitStore");
 
 const STUDIO_A = "123e4567-e89b-42d3-a456-426614174000";
 const STUDIO_B = "223e4567-e89b-42d3-a456-426614174000";
@@ -107,7 +109,19 @@ before(async () => {
     const users = express.Router();
     users.get("/me", (req, res) => res.json({ personal: true }));
     const empty = express.Router();
-    const studioV1 = createStudioV1Router({ service, authenticate: authentication });
+    // A pure in-process MemoryRateLimitStore - this is a unit test with no
+    // real database, and the MySQL-backed store is the only one the real
+    // app is allowed to use (see rateLimiting/memoryRateLimitStore.js).
+    const rateLimiters = createRateLimiters({ store: createMemoryRateLimitStore() });
+    const studioV1 = createStudioV1Router({
+        service,
+        authenticate: authentication,
+        rateLimiters: {
+            create: rateLimiters.invitationCreate,
+            resend: rateLimiters.invitationResend,
+            accept: rateLimiters.invitationAccept
+        }
+    });
     const app = createApp({
         readiness: { check: async () => ({ ready: true }) },
         logger: { info() {}, warn() {}, error() {} },
