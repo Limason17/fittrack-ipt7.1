@@ -13,6 +13,7 @@ const {
     WorkoutSetNotFoundError,
     WorkoutStartKeyConflictError
 } = require("../errors/WorkoutSessionErrors");
+const { CalendarEntryConflictError } = require("../errors/TrainingCalendarErrors");
 const { createPublicId } = require("../domain/studioDomain");
 const { hasAnyResultMetric } = require("../domain/workoutSessionDomain");
 const {
@@ -26,6 +27,7 @@ const {
     paginationResult,
     promiseDatabase
 } = require("./trainingServiceHelpers");
+const { findOrMaterializeTodayCalendarEntry } = require("./trainingCalendarService");
 
 // ---- Row mapping ----
 
@@ -299,6 +301,52 @@ function createWorkoutSessionService({ database, generatePublicId = createPublic
 
                 const [[todayRow]] = await connection.query("SELECT DATE_FORMAT(CURDATE(), '%Y-%m-%d') AS today");
 
+                // Stage 5A1 calendar integration (Section 13): reuses this
+                // same request's own "today" (the pre-existing, unchanged
+                // server-local CURDATE() above) rather than computing a
+                // second, potentially disagreeing notion of today - see
+                // docs/STAGE_5A1_UNIFIED_CALENDAR_BACKEND.md. Finds (lazily
+                // materializing if needed) the occurrence this exact
+                // assignment+day+today combination belongs to, or null if no
+                // active schedule rule covers it - in which case every
+                // pre-existing behavior below is completely unchanged.
+                async function linkCalendarForSessionStart(linkedSessionInternalId) {
+                    const calendarEntry = await findOrMaterializeTodayCalendarEntry(connection, {
+                        userId: actor.userId,
+                        studioInternalId: studio.internalId,
+                        assignmentInternalId: assignment.id,
+                        programDayInternalId: programDay ? programDay.id : null,
+                        today: todayRow.today
+                    });
+                    if (!calendarEntry) return;
+                    if (Number(calendarEntry.studio_workout_session_id) === linkedSessionInternalId) {
+                        return; // already correctly linked - idempotent replay
+                    }
+                    if (calendarEntry.status !== "PLANNED") {
+                        // Someone else's session already claimed (or completed)
+                        // this exact occurrence - never silently relink it out
+                        // from under that session (Section 13: "doppelten Start
+                        // verhindern").
+                        throw new CalendarEntryConflictError();
+                    }
+                    const [linkResult] = await connection.query(
+                        `UPDATE training_calendar_entries
+                         SET status = 'IN_PROGRESS', studio_workout_session_id = ?, revision = revision + 1
+                         WHERE id = ? AND status = 'PLANNED'`,
+                        [linkedSessionInternalId, calendarEntry.id]
+                    );
+                    if (linkResult.affectedRows === 0) throw new CalendarEntryConflictError();
+
+                    await helpers.insertAudit(connection, {
+                        studioId: studio.internalId,
+                        actorUserId,
+                        eventType: "calendar.studio_workout.started",
+                        targetType: "training_calendar_entry",
+                        targetPublicId: calendarEntry.public_id,
+                        details: {}
+                    });
+                }
+
                 const decision = canStartWorkoutSession({
                     assignment: {
                         status: assignment.status,
@@ -330,6 +378,7 @@ function createWorkoutSessionService({ database, generatePublicId = createPublic
                     ) {
                         throw new WorkoutStartKeyConflictError();
                     }
+                    await linkCalendarForSessionStart(Number(existing.id));
                     return await loadSessionDetail(connection, existing.id, { includeMember: false });
                 }
 
@@ -357,6 +406,7 @@ function createWorkoutSessionService({ database, generatePublicId = createPublic
                             [actor.internalId, assignment.id, input.clientStartKey]
                         );
                         if (raceRows.length > 0) {
+                            await linkCalendarForSessionStart(Number(raceRows[0].id));
                             return await loadSessionDetail(connection, raceRows[0].id, { includeMember: false });
                         }
                         throw new WorkoutStartKeyConflictError();
@@ -412,6 +462,7 @@ function createWorkoutSessionService({ database, generatePublicId = createPublic
                     }
                 });
 
+                await linkCalendarForSessionStart(sessionInternalId);
                 return await loadSessionDetail(connection, sessionInternalId, { includeMember: false });
             }
         );
@@ -546,6 +597,35 @@ function createWorkoutSessionService({ database, generatePublicId = createPublic
                     details: {}
                 });
 
+                // Cascade to any linked calendar occurrence (Section 13):
+                // completing the session is sufficient on its own, no
+                // separate manual calendar confirmation is ever required.
+                // Not every session has a linked occurrence (ad-hoc starts
+                // with no matching schedule rule), so a 0-row result here is
+                // expected and not an error.
+                const [calendarRows] = await connection.query(
+                    `SELECT id, public_id FROM training_calendar_entries
+                     WHERE studio_workout_session_id = ? AND status = 'IN_PROGRESS'
+                     FOR UPDATE`,
+                    [session.internalId]
+                );
+                if (calendarRows.length > 0) {
+                    await connection.query(
+                        `UPDATE training_calendar_entries
+                         SET status = 'COMPLETED', completed_at = CURRENT_TIMESTAMP(3), revision = revision + 1
+                         WHERE id = ? AND status = 'IN_PROGRESS'`,
+                        [calendarRows[0].id]
+                    );
+                    await helpers.insertAudit(connection, {
+                        studioId: studio.internalId,
+                        actorUserId,
+                        eventType: "calendar.studio_workout.completed",
+                        targetType: "training_calendar_entry",
+                        targetPublicId: calendarRows[0].public_id,
+                        details: {}
+                    });
+                }
+
                 return await loadSessionDetail(connection, session.internalId, { includeMember: false });
             }
         );
@@ -575,6 +655,24 @@ function createWorkoutSessionService({ database, generatePublicId = createPublic
                     targetPublicId: sessionPublicId,
                     details: {}
                 });
+
+                // Design decision (Section 13, documented in
+                // docs/STAGE_5A1_UNIFIED_CALENDAR_BACKEND.md): an abort
+                // reverts any linked occurrence back to PLANNED and clears
+                // the session link, rather than leaving it stuck IN_PROGRESS
+                // forever - the member can start again (a fresh
+                // clientStartKey produces a new session, which
+                // linkCalendarForSessionStart will link to this same,
+                // now-PLANNED-again occurrence). No dedicated calendar audit
+                // event: workout_session.aborted above already captures the
+                // action, and PLANNED is not one of the terminal states
+                // Section 16 lists an audit event for.
+                await connection.query(
+                    `UPDATE training_calendar_entries
+                     SET status = 'PLANNED', studio_workout_session_id = NULL, revision = revision + 1
+                     WHERE studio_workout_session_id = ? AND status = 'IN_PROGRESS'`,
+                    [session.internalId]
+                );
 
                 return await loadSessionDetail(connection, session.internalId, { includeMember: false });
             }
