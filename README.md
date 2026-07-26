@@ -1,26 +1,31 @@
 # FitTrack
 
-FitTrack ist eine mehrsprachige Web-Applikation, mit der Nutzer Übungen verwalten, Workouts planen und ihren Trainingsfortschritt verfolgen können. Das Repository enthält ein Vue-Frontend, eine Express-API und eine MySQL-Datenbank mit versionierten Migrationen.
+FitTrack ist eine mehrsprachige Web-Applikation für Fitnessstudios: Nutzer verwalten persönliche Übungen, Workouts und ihren Trainingsfortschritt, und Studios verwalten Rollen (Owner/Admin/Trainer/Member), Coaching-Beziehungen, Trainingsprogramme, Programmzuweisungen und die vollständige Workout-Ausführung inklusive Coach-Feedback. Das Repository enthält ein Vue-Frontend, eine Express-API und eine MySQL-Datenbank mit versionierten Migrationen.
 
 ## Funktionen
 
-- Account erstellen und mit JWT anmelden
+- Account erstellen, mit einer serverseitig widerrufbaren, rotierenden Session anmelden (kein reines zustandsloses JWT), Passwort/E-Mail selbst verwalten
 - Deutsch/Englisch sowie kg/lb und km/mi pro Nutzer speichern
 - Globale und eigene Übungen anzeigen, filtern und verwalten
-- Workouts mit Kraft- und Cardio-Werten speichern, bearbeiten und löschen
-- Workouts im Kalender anzeigen
-- Manuellen und automatisch aus Workouts abgeleiteten Fortschritt verfolgen
-- Historische Übungsdaten in Workouts und Fortschritt unverändert erhalten
+- Workouts mit Kraft- und Cardio-Werten speichern, bearbeiten und löschen; Workouts im Kalender anzeigen
+- Manuellen und automatisch aus Workouts abgeleiteten Fortschritt verfolgen; historische Übungsdaten in Workouts und Fortschritt bleiben dabei unverändert erhalten
+- Studios mit Rollen (Owner/Admin/Trainer/Member), Mitgliederverwaltung und E-Mail-Einladungen (inkl. erneutem Versand) betreiben
+- Coaching-Beziehungen, versionierte Trainingsprogramme und Programmzuweisungen verwalten
+- Workout-Sessions inklusive Satzergebnissen ausführen, protokollieren und abschliessen; Coaches sehen Ergebnisse nur für aktiv gecoachte Mitglieder und können Feedback hinterlassen
+- Studio-weites Audit Log für sicherheits- und tenant-relevante Ereignisse
+- Geteiltes, datenbankgestütztes Rate Limiting (login, refresh, account-aktionen, einladungen, …), vollständig validierte CORS-Konfiguration und produktionsnahe Security Header — siehe `docs/STAGE_3D_SECURITY_HARDENING.md`
 
 ## Architektur
 
-- `frontend`: Vue 3, Vue Router, Vite und Vitest
+- `frontend`: Vue 3, Vue Router, Vite, Vitest sowie Playwright (+ Axe) für Browser-E2E-/Accessibility-Tests
 - `backend`: Node.js, Express, MySQL2 und der integrierte Node-Test-Runner
-- `database/migrations`: additive, versionierte Forward-Migrationen
-- `docker-compose.yml`: lokale MySQL-8-Instanz; kein Produktions-Deployment
-- `.github/workflows/ci.yml`: reproduzierbare Backend-, DB-, Frontend- und Audit-Gates
+- `database/migrations`: additive, versionierte Forward-Migrationen (aktuell 001–011)
+- `docker-compose.yml`: lokale MySQL-8-Instanz (Standarddienst) sowie eine lokale MinIO-Instanz für Off-host-Backup-Integrationstests (Profil `backup-test`); kein Produktions-Deployment
+- `.github/workflows/ci.yml`: reproduzierbare Backend-, DB-, Frontend-, Browser-E2E- und Audit-Gates
 
-Die API lauscht erst, wenn die Datenbank erreichbar ist, alle Migrationen angewendet sind und der Migrationsstatus sauber ist.
+Die API lauscht erst, wenn die Datenbank erreichbar ist, alle Migrationen angewendet sind und der Migrationsstatus sauber ist. Eine geteilte, atomare MySQL-Rate-Limit-Buchführung (Migration 011) ersetzt einen rein prozesslokalen Limiter, damit das Kontingent auch über mehrere App-Instanzen hinweg korrekt gilt.
+
+Der vollständige, aktuelle Funktions-, Sicherheits- und Teststand steht in `docs/FITTRACK_CURRENT_STATUS.md`, `docs/FITTRACK_SECURITY_AND_PRIVACY_STATUS.md` und den einzelnen `docs/STAGE_*.md`-Dokumenten; `docs/LOCAL_PILOT_RUNBOOK.md` beschreibt einen vollständigen lokalen Demo-/Pilotablauf Schritt für Schritt.
 
 ## Voraussetzungen
 
@@ -128,11 +133,18 @@ Weitere gezielte Befehle:
 
 | Befehl | Abdeckung |
 | --- | --- |
-| `npm run test:unit` | Konfiguration, Auth, Validierung, Fehlerformat, Rate Limit, Logger, Metriken und Startup-Health |
-| `npm run test:integration` | Reale API- und DB-Flows mit zwei Nutzern und Isolation |
-| `npm run test:migrations` | Registry-/Planungstests sowie reale Empty-/Legacy-/No-op-Szenarien in Wegwerf-DBs |
+| `npm run test:unit` | Konfiguration, Auth, Validierung, Fehlerformat, Rate Limit, CORS/Proxy, Logger, Metriken, Backup-Policy und Startup-Health |
+| `npm run test:integration` | Reale API- und DB-Flows (Auth/Sessions, Studios/RBAC, Training, Workouts, Rate-Limit-Store inkl. Multi-Instance, CORS-Header, Request-Grenzen, verschlüsselter Backup-/Restore-Drill) mit mehreren Nutzern und Tenant-Isolation |
+| `npm run test:migrations` | Registry-/Planungstests sowie reale Empty-/Legacy-/No-op-Szenarien in Wegwerf-DBs, Migration Doctor |
 | `npm run test:syntax` | Syntax aller Backend-JavaScript-Dateien |
 | `npm run test:coverage` | Coverage für die DB-unabhängige Kernlogik |
+| `npm run security:rate-limits:cleanup` | Löscht abgelaufene Rate-Limit-Buckets in begrenzten Batches (optional, kein Scheduler nötig) |
+
+Ein Teil der Backend-Integrationstests (`test/integration/backupRemoteMinio.test.js`) benötigt zusätzlich eine lokale MinIO-Instanz für die Off-host-Backup-Mechanik:
+
+```sh
+docker compose --profile backup-test up -d minio
+```
 
 Die realen Migrationstests laufen standardmäßig und benötigen MySQL 8. Nur für einen bewusst DB-losen Teilcheck können sie übersprungen werden:
 
@@ -153,6 +165,14 @@ npm run build
 npm audit --audit-level=high
 ```
 
+Browser-E2E und Accessibility (Chromium, startet Backend/Frontend/MySQL automatisch selbst über `playwright.config.js`):
+
+```sh
+cd frontend
+npx playwright install --with-deps chromium
+npm run test:e2e
+```
+
 ## Health-Endpunkte
 
 - `GET /api/health/live`: Prozess-Liveness, immer DB-unabhängig
@@ -163,15 +183,13 @@ Readiness liefert bei einem Problem HTTP 503 und einen stabilen `reason`; erst H
 
 ## CI und Deployment
 
-GitHub Actions führt bei Pull Requests und Pushes auf `main` mit Node 22.17.0 aus:
+GitHub Actions führt bei Pull Requests und Pushes auf `main` mit Node 22.17.0 in drei Jobs aus:
 
-- reproduzierbares `npm ci` in Backend und Frontend;
-- Security-Audits mit Fehler-Gate ab Schweregrad `high`;
-- Backend-Suite gegen MySQL 8 einschließlich Zwei-Nutzer-Isolation, Empty-/Legacy-Migrationen und No-op;
-- Coverage- und Syntaxprüfung;
-- Frontend-Tests und Produktionsbuild.
+- **Backend, MySQL und Migrationen:** reproduzierbares `npm ci`, Syntaxprüfung, Security-Audit ab Schweregrad `high`, geschützter Test-Reset, Migration + Migration-Status, Migration Doctor, Legacy-Backup-Regression, volle Backend-Suite (inkl. MinIO-gestützter Off-host-Backup-Tests und Multi-Instance-Rate-Limit-Tests) und Coverage;
+- **Frontend-Tests und Produktionsbuild:** reproduzierbares `npm ci`, Security-Audit, Frontend-Tests, Produktionsbuild;
+- **Chromium-E2E und Accessibility:** Backend+Frontend reproduzierbar installiert, Playwright-Chromium installiert, vollständige E2E-/Axe-Matrix.
 
-Der Produktionsablauf, die Migrationsregeln, Healthchecks und Rollback-Grenzen stehen in `docs/DEPLOYMENT.md`. Der genaue Umfang und die bekannten Grenzen von Stufe 0A stehen in `docs/STAGE_0A.md`.
+Der Produktionsablauf, die Migrationsregeln, Healthchecks und Rollback-Grenzen stehen in `docs/DEPLOYMENT.md`. Ein vollständiger, lokal nachvollziehbarer Demo-/Pilotablauf steht in `docs/LOCAL_PILOT_RUNBOOK.md`. Der aktuelle Gesamtstand nach der lokalen Abnahme (Stage 4A) steht in `docs/STAGE_4A_FINAL_LOCAL_ACCEPTANCE.md`; der genaue Umfang und die bekannten Grenzen der ersten Stufe stehen weiterhin in `docs/STAGE_0A.md`.
 
 ## Projekt
 

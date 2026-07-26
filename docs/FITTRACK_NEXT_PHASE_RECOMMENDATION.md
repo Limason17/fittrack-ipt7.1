@@ -118,6 +118,31 @@
 > ausschliesslich Stage 4A — Final Local Acceptance.**
 >
 > ---
+>
+> **Nachtrag (2026-07-26, Stage 4A Final Local Acceptance):** Stage 4A
+> (siehe `STAGE_4A_FINAL_LOCAL_ACCEPTANCE.md`) ist abgeschlossen — eine
+> reine Abnahme-/Stabilitätsphase ohne neue Funktion, Rolle, Migration oder
+> Konfigurationsvariable. Clean-Room-Installation, frische und bestehende
+> Datenbank, vollständige Rollen-/Tenant-/Auth-/Session-/Einladungs-/
+> Programm-/Workout-/Account-/Rate-Limit-/CORS-Regression, ein realer
+> Backup-/Restore-Drill, dreifacher Chromium-E2E-Lauf und ein 20-facher
+> Cross-Tab-Zieltest liefen ohne offenen Blocker und ohne Flake. Ein
+> während der Regression reproduzierter, bereits Ende Stage 3D behobener
+> Lock-Order-Deadlock blieb stabil behoben — kein neuer Code-Fix nötig.
+> `README.md` wurde aktualisiert (war seit dem frühen Stage-1B.2B1-Stand
+> veraltet); ein neues `docs/LOCAL_PILOT_RUNBOOK.md` beschreibt einen
+> vollständigen, tatsächlich ausgeführten lokalen Pilotablauf. **Damit gilt
+> FitTrack als lokal vollständig abgeschlossen (local product development
+> complete) — keine Aussage zu einem Produktions-Deployment, keine weitere
+> lokale Entwicklungsphase folgt.** Alle in den vorherigen Nachträgen
+> genannten offenen Punkte (toter Policy-Code, 2FA/Passkeys/Social
+> Login/Passwort-Reset/Kontolöschung, Abrechnung, neue Trainingsfunktionen,
+> Monitoring-Plattform) bleiben unverändert ausserhalb des Scopes. Stage
+> 2B2B bleibt weiterhin **Deferred until first customer / production
+> deployment**; es wurde auch für Stage 4A keine Cloud-Infrastruktur
+> eingerichtet.
+>
+> ---
 
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-

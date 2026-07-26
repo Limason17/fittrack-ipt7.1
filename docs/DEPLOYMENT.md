@@ -1056,3 +1056,51 @@ geteilt.
       `415 UNSUPPORTED_MEDIA_TYPE`
 - [ ] vollständige bestehende Test-/E2E-Suite bleibt grün, einschliesslich
       der neuen Browser-CORS- und Rate-Limit-E2E-Tests
+
+## Ergänzung für Stufe 4A
+
+Stufe 4A führt keine neue Funktion, keine neue Migration und keine neue
+Konfigurationsvariable ein — es ist eine reine Abnahme-/Stabilitätsphase
+(vollständige Regression, Clean-Room-Installation, Backup-/Restore-Drill,
+Flake-Analyse, dreifacher E2E-Lauf, 20-facher Cross-Tab-Zieltest,
+synthetischer Production-Config-Smoke-Test, Dokumentationsabgleich). Details
+und alle Ergebnisse in `STAGE_4A_FINAL_LOCAL_ACCEPTANCE.md` sowie im neuen
+`LOCAL_PILOT_RUNBOOK.md` (Schritt-für-Schritt-Anleitung für einen
+vollständigen lokalen Pilotbetrieb).
+
+**Ein während der Regression gefundener und behobener Fehler** (ausserhalb
+des ursprünglichen Stage-3D-Scopes, aber notwendig für eine ehrlich grüne
+Regression): ein vorbestehender, seltener MySQL-Deadlock zwischen
+`POST /api/auth/refresh` und einer gleichzeitigen Passwort-/E-Mail-Änderung
+für denselben Nutzer, verursacht durch eine uneinheitliche Sperrreihenfolge
+zwischen `sessionService.js` und `accountService.js`. Bereits vor Stufe 4A
+in `feature/stage-3d-security-hardening` behoben (Commit "Fix refresh vs
+account-mutation lock-order deadlock") — hier nur zur Vollständigkeit
+erwähnt, da der Fund während der für Stufe 4A wiederholten vollständigen
+Regression gemacht wurde.
+
+**Bekannte, bereits vor Stufe 4A bestehende und durch Stufe 4A nicht
+veränderte lokale Einschränkung:** `docker-compose.yml`s fester
+`container_name: fittrack_mysql` erlaubt keine zwei gleichzeitig
+laufenden FitTrack-Checkouts (z. B. ein zusätzlicher Git-Worktree) auf
+derselben Maschine — für den normalen Ein-Checkout-Betrieb (Entwicklung
+wie Produktion) folgenlos, siehe `LOCAL_PILOT_RUNBOOK.md` Abschnitt 4.
+
+### Zusätzliche Release-Checks
+
+- [ ] Clean-Room-Installation (frischer Worktree/Klon, keine
+      `node_modules`, keine `.env`, keine Datenbank) folgt `README.md`
+      und `LOCAL_PILOT_RUNBOOK.md` ohne undokumentierte Schritte
+- [ ] volle Backend- und Frontend-Regression zweimal (bzw. E2E dreimal)
+      hintereinander sauber, ohne Retries als versteckte Stabilitätslösung
+- [ ] Cross-Tab-Zieltest (`authSession.spec.js`, "two tabs of the same
+      browser context") 20-mal wiederholt sauber
+- [ ] realer verschlüsselter Backup-/Restore-Drill gegen einen
+      realistischen, mehrere Rollen/Studios/Programme/Workouts/Feedback/
+      Audit-Events umfassenden Datenbestand erfolgreich, Quelldatenbank
+      dabei unverändert
+- [ ] synthetischer Production-Config-Smoke-Test (starke, unterschiedliche
+      Secrets, HTTPS-Origin, expliziter Trust-Proxy-Modus) sowie alle
+      erwarteten Startfehler-Szenarien (schwaches/identisches Secret,
+      HTTP-/localhost-/Wildcard-Origin, ungültiger Proxy-Modus, unsichere
+      Cookie-Konfiguration, ungültige Request-Limits) verifiziert
