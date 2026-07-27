@@ -18,6 +18,19 @@ async function expectNoSeriousAxeViolations(page) {
   expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([])
 }
 
+// A toast's enter transition only animates opacity/transform (ToastHost.vue),
+// but axe's color-contrast check measures the actually-composited pixel
+// color, so scanning while a toast is still mid-fade-in can observe a
+// transiently blended, non-representative color rather than the toast's real
+// steady-state one (which is a compliant ~8:1 - verified separately). Vue
+// removes the `*-enter-active` class itself the instant the transition
+// genuinely finishes, so polling for that class to be gone is a real,
+// event-backed signal - not a blind wait - and resolves immediately if no
+// toast is present at all.
+async function waitForToastsToSettle(page) {
+  await expect(page.locator('.toast-enter-active')).toHaveCount(0, { timeout: 2000 })
+}
+
 test('Kernseiten haben keine schweren oder kritischen Axe-Verstöße', async ({ page, request }) => {
   // Stage 3D: this test does 17 back-to-back hard reloads, each with its own
   // silent-refresh bootstrap and a full axe-core analysis. Refresh now does a
@@ -261,6 +274,7 @@ test('Stage-5A2-Kalender: Desktop, mobil, gefüllt und alle drei Dialoge haben k
   await page.getByLabel('Datum').fill(futureStr)
   await page.getByRole('button', { name: 'Speichern' }).click()
   await expect(page.getByText('Training wurde eingetragen.')).toBeVisible()
+  await waitForToastsToSettle(page)
 
   // ---- Filled calendar, desktop ----
   await expectNoSeriousAxeViolations(page)
@@ -362,6 +376,7 @@ test('Stage-5A3-Zeitplan: leer, Formular, gefüllt, Bearbeiten, Deaktivieren-Dia
   await dialog.getByLabel('Startdatum', { exact: true }).fill(new Date().toISOString().slice(0, 10))
   await dialog.getByRole('button', { name: 'Regel erstellen' }).click()
   await expect(page.getByText('Die Terminierungsregel wurde erstellt.')).toBeVisible()
+  await waitForToastsToSettle(page)
 
   // ---- 3: Filled rule list, desktop ----
   await expectNoSeriousAxeViolations(page)
