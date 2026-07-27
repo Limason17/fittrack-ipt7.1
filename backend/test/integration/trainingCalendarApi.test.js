@@ -368,6 +368,102 @@ test("starting the workout session flips the linked occurrence to IN_PROGRESS an
     assert.ok(completedEvent);
 });
 
+// Regression test for the Stage 5A3 fix (workoutSessionService.js#startSession):
+// "today" for the session-start calendar link must come from the studio's
+// own default_timezone (todayInTimezone), never the database server's own
+// system timezone (this MySQL instance runs as UTC - see @@system_time_zone -
+// which is exactly the value a bare CURDATE() would have returned before the
+// fix). Rather than relying on the suite happening to run during the
+// ~1-2-hour daily window where Europe/Zurich and UTC actually disagree, this
+// deliberately picks whichever of two fixed, non-DST, opposite-extreme
+// offsets (UTC+14 and UTC-12 - together they cover all 24 hours of the day)
+// is *currently* diverging from UTC's calendar date, computed the same way
+// production code does. That makes the divergence - and this test's ability
+// to catch a regression back to CURDATE() - independent of when the suite
+// happens to run.
+test("a studio whose local day differs from the database server's UTC day still links the correct calendar occurrence", async () => {
+    const utcToday = todayInTimezone("UTC");
+    const divergentZone = ["Pacific/Kiritimati", "Etc/GMT+12"].find((zone) => todayInTimezone(zone) !== utcToday);
+    assert.ok(divergentZone, "at least one of the two extreme-offset zones must diverge from UTC's date at any real instant");
+    const studioLocalToday = todayInTimezone(divergentZone);
+    assert.notEqual(studioLocalToday, utcToday, "the whole point of this test is a genuine day mismatch");
+
+    const studioCreated = await api("/api/v1/studios", {
+        method: "POST", token: accounts.ownerA.token,
+        body: {
+            name: `Timezone Studio ${runId}`, slug: `tz-studio-${runId}`,
+            defaultLocale: "de", defaultTimezone: divergentZone, defaultWeightUnit: "kg"
+        }
+    });
+    assert.equal(studioCreated.response.status, 201, JSON.stringify(studioCreated.data));
+    const studioTZ = studioCreated.data.studio;
+
+    const memberMembership = await inviteAndAccept(accounts.ownerA, studioTZ.id, accounts.memberB, "member");
+    const relResultTZ = await api(`/api/v1/studios/${studioTZ.id}/coaching-relationships`, {
+        method: "POST", token: accounts.ownerA.token,
+        body: { coachMembershipId: studioTZ.membership.id, memberMembershipId: memberMembership.id }
+    });
+    assert.equal(relResultTZ.response.status, 201, JSON.stringify(relResultTZ.data));
+
+    const built = await buildAssignment(
+        studioTZ, accounts.ownerA, accounts.ownerA.token,
+        studioTZ.membership.id, memberMembership.id, relResultTZ.data.coachingRelationship.id
+    );
+
+    const ruleResult = await api(
+        `/api/v1/studios/${studioTZ.id}/program-assignments/${built.assignment.id}/schedule-rules`,
+        {
+            method: "POST", token: accounts.ownerA.token,
+            body: {
+                programDayId: built.programDay.id, weekday: isoWeekdayOf(studioLocalToday),
+                anchorDate: studioLocalToday, activeFrom: studioLocalToday
+            }
+        }
+    );
+    assert.equal(ruleResult.response.status, 201, JSON.stringify(ruleResult.data));
+
+    const startResult = await api(
+        `/api/v1/studios/${studioTZ.id}/program-assignments/${built.assignment.id}/workout-sessions`,
+        {
+            method: "POST", token: accounts.memberB.token,
+            body: { programDayId: built.programDay.id, clientStartKey: `cal-tz-start-${runId}` }
+        }
+    );
+    assert.equal(startResult.response.status, 201, JSON.stringify(startResult.data));
+    const sessionId = startResult.data.workoutSession.id;
+
+    // The occurrence for the studio's own local "today" must be linked and
+    // IN_PROGRESS - proving the link used the studio timezone, not UTC.
+    const calAtStudioToday = await api(
+        `/api/v1/training-calendar?from=${studioLocalToday}&to=${studioLocalToday}`,
+        { token: accounts.memberB.token }
+    );
+    const linkedEntry = calAtStudioToday.data.entries.find(
+        (e) => e.sourceType === "studio" && e.linkedWorkoutPublicId === sessionId
+    );
+    assert.ok(linkedEntry, "the occurrence on the studio's own local day was linked to the new session");
+    assert.equal(linkedEntry.persistedStatus, "IN_PROGRESS");
+    assert.equal(linkedEntry.scheduledDate, studioLocalToday);
+
+    // No occurrence was ever created/linked on the (wrong) UTC day instead -
+    // proof there is no stray previous-/next-day entry from a server-timezone
+    // computation.
+    const calAtUtcToday = await api(
+        `/api/v1/training-calendar?from=${utcToday}&to=${utcToday}`,
+        { token: accounts.memberB.token }
+    );
+    const wrongDayEntry = calAtUtcToday.data.entries.find((e) => e.sourceType === "studio");
+    assert.equal(wrongDayEntry, undefined, "no studio occurrence was materialized/linked on the database server's UTC day");
+
+    const [[row]] = await pool.query(
+        `SELECT DATE_FORMAT(scheduled_date, '%Y-%m-%d') AS scheduled_date, status FROM training_calendar_entries
+         WHERE studio_workout_session_id = (SELECT id FROM studio_workout_sessions WHERE public_id = ?)`,
+        [sessionId]
+    );
+    assert.ok(row, "exactly one calendar entry is linked to this session");
+    assert.equal(row.scheduled_date, studioLocalToday, "the linked row's own scheduled_date is the studio's local day, not the UTC day");
+});
+
 // Stage 5A2 contract fix: starting a studio workout session requires the
 // assignment's public id in the URL (POST .../program-assignments/:assignmentId/
 // workout-sessions), but the calendar entry response never exposed it even
