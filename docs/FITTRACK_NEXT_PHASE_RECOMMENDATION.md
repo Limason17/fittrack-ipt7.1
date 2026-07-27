@@ -185,6 +185,33 @@
 > Stage 5A2 keine Cloud-Infrastruktur eingerichtet.
 >
 > ---
+>
+> **Nachtrag (2026-07-27, Stage 5A3 Coach Scheduling UI):** Die in Stage
+> 5A2 empfohlene unmittelbar nächste Phase ist jetzt abgeschlossen: eine
+> Coach-/Admin-Oberfläche (siehe `STAGE_5A3_COACH_SCHEDULING_UI.md`) macht
+> die in Stage 5A1 bereits bestehenden, zuvor nur über die API
+> erreichbaren Terminierungsregeln nutzbar — Regelübersicht mit lesbarer
+> Zusammenfassung, Erstellen/Bearbeiten/Deaktivieren, optionale
+> Terminvorschau, vollständige DE/EN-Übersetzung und Barrierefreiheit,
+> verbunden mit dem in Stage 5A2 gebauten persönlichen Kalender. Ein
+> echter, von dieser Phase unabhängiger Zeitzonen-Blocker in der
+> bestehenden Workout-Session-Kalenderverknüpfung wurde gefunden und
+> minimal behoben (Details im Stage-5A3-Bericht). **Damit ist die in
+> Stage 5A1 begonnene Trainingskalender-Linie (Backend → persönliche
+> Oberfläche → Coach-Terminierung) inhaltlich vollständig.** Kein neuer,
+> unmittelbar zwingender nächster Schritt wird von dieser Phase aus
+> empfohlen; alle in den vorherigen Nachträgen genannten offenen Punkte
+> (insbesondere Stage 2B2B, echter externer Cloud-Bucket) bleiben
+> unverändert offen und ausserhalb des Scopes dieser Phase. Ein
+> vorbestehender, von Stage 5A3 unabhängiger Flaky-Test im persönlichen
+> Kalender-Verschiebe-Ablauf wurde entdeckt und dokumentiert (siehe
+> Stage-5A3-Bericht Abschnitt 19) — dessen Behebung wäre ein sinnvoller,
+> kleiner nächster Schritt, sofern eine weitere Phase gewünscht wird.
+> Stage 2B2B bleibt weiterhin **Deferred until first customer / production
+> deployment**; es wurde für Stage 5A3 keine Cloud-Infrastruktur
+> eingerichtet.
+>
+> ---
 
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-

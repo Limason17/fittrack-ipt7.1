@@ -82,6 +82,15 @@ export function assignmentStatusTone(status) {
   return ASSIGNMENT_STATUS_TONES[status] || 'neutral'
 }
 
+const SCHEDULE_RULE_STATUS_TONES = {
+  active: 'success',
+  disabled: 'neutral',
+}
+
+export function scheduleRuleStatusTone(status) {
+  return SCHEDULE_RULE_STATUS_TONES[status] || 'neutral'
+}
+
 export function workoutSessionStatusTone(status) {
   return WORKOUT_SESSION_STATUS_TONES[status] || 'neutral'
 }

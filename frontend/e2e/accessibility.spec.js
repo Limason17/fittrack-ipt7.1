@@ -18,6 +18,19 @@ async function expectNoSeriousAxeViolations(page) {
   expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([])
 }
 
+// A toast's enter transition only animates opacity/transform (ToastHost.vue),
+// but axe's color-contrast check measures the actually-composited pixel
+// color, so scanning while a toast is still mid-fade-in can observe a
+// transiently blended, non-representative color rather than the toast's real
+// steady-state one (which is a compliant ~8:1 - verified separately). Vue
+// removes the `*-enter-active` class itself the instant the transition
+// genuinely finishes, so polling for that class to be gone is a real,
+// event-backed signal - not a blind wait - and resolves immediately if no
+// toast is present at all.
+async function waitForToastsToSettle(page) {
+  await expect(page.locator('.toast-enter-active')).toHaveCount(0, { timeout: 2000 })
+}
+
 test('Kernseiten haben keine schweren oder kritischen Axe-Verstöße', async ({ page, request }) => {
   // Stage 3D: this test does 17 back-to-back hard reloads, each with its own
   // silent-refresh bootstrap and a full axe-core analysis. Refresh now does a
@@ -261,6 +274,7 @@ test('Stage-5A2-Kalender: Desktop, mobil, gefüllt und alle drei Dialoge haben k
   await page.getByLabel('Datum').fill(futureStr)
   await page.getByRole('button', { name: 'Speichern' }).click()
   await expect(page.getByText('Training wurde eingetragen.')).toBeVisible()
+  await waitForToastsToSettle(page)
 
   // ---- Filled calendar, desktop ----
   await expectNoSeriousAxeViolations(page)
@@ -286,4 +300,118 @@ test('Stage-5A2-Kalender: Desktop, mobil, gefüllt und alle drei Dialoge haben k
     viewportWidth: document.documentElement.clientWidth,
   }))
   expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewportWidth)
+})
+
+test('Stage-5A3-Zeitplan: leer, Formular, gefüllt, Bearbeiten, Deaktivieren-Dialog und mobil/1440 haben keine schweren oder kritischen Axe-Verstöße', async ({ page, request }) => {
+  test.setTimeout(120_000)
+  const owner = userFixture('a11y-schedule')
+  const ownerAuth = await authenticate(page, request, owner)
+
+  const studioResponse = await request.post('/api/v1/studios', {
+    headers: { Authorization: `Bearer ${ownerAuth.token}` },
+    data: { name: `A11y Schedule ${owner.username}`, slug: `a11y-sched-${owner.username}`, defaultLocale: 'de', defaultTimezone: 'Europe/Zurich', defaultWeightUnit: 'kg' },
+  })
+  expect(studioResponse.status()).toBe(201)
+  const studio = (await studioResponse.json()).studio
+
+  const member = userFixture('a11y-schedule-member')
+  const invitationResponse = await request.post(`/api/v1/studios/${studio.id}/invitations`, {
+    headers: { Authorization: `Bearer ${ownerAuth.token}` }, data: { email: member.email, role: 'member' },
+  })
+  const acceptUrl = (await invitationResponse.json()).delivery.acceptUrl
+  const token = decodeURIComponent(new URL(acceptUrl).pathname.split('/').pop())
+  await request.post('/api/users/register', {
+    data: { username: member.username, email: member.email, password: member.password, language_preference: 'de', weight_unit: 'kg', distance_unit: 'km' },
+  })
+  const memberAuth = await loginApi(request, member)
+  await request.post(`/api/v1/invitations/${token}/accept`, { headers: { Authorization: `Bearer ${memberAuth.token}` } })
+
+  const memberships = (await (await request.get(`/api/v1/studios/${studio.id}/memberships?limit=50`, {
+    headers: { Authorization: `Bearer ${ownerAuth.token}` },
+  })).json()).memberships
+  const ownerMembership = memberships.find((m) => m.user.username === owner.username)
+  const memberMembership = memberships.find((m) => m.user.username === member.username)
+  const relationshipResponse = await request.post(`/api/v1/studios/${studio.id}/coaching-relationships`, {
+    headers: { Authorization: `Bearer ${ownerAuth.token}` },
+    data: { coachMembershipId: ownerMembership.id, memberMembershipId: memberMembership.id },
+  })
+  const relationship = (await relationshipResponse.json()).coachingRelationship
+
+  const programResponse = await request.post(`/api/v1/studios/${studio.id}/training-programs`, {
+    headers: { Authorization: `Bearer ${ownerAuth.token}` }, data: { name: 'A11y Schedule Programm' },
+  })
+  const program = (await programResponse.json()).trainingProgram
+  const versionResponse = await request.post(`/api/v1/studios/${studio.id}/training-programs/${program.id}/versions`, {
+    headers: { Authorization: `Bearer ${ownerAuth.token}` }, data: {},
+  })
+  const version = (await versionResponse.json()).programVersion
+  const dayResponse = await request.post(
+    `/api/v1/studios/${studio.id}/training-programs/${program.id}/versions/${version.id}/days`,
+    { headers: { Authorization: `Bearer ${ownerAuth.token}` }, data: { name: 'A11y Day' } }
+  )
+  const day = (await dayResponse.json()).programDay
+  await request.post(
+    `/api/v1/studios/${studio.id}/training-programs/${program.id}/versions/${version.id}/publish`,
+    { headers: { Authorization: `Bearer ${ownerAuth.token}` } }
+  )
+  const assignmentResponse = await request.post(`/api/v1/studios/${studio.id}/program-assignments`, {
+    headers: { Authorization: `Bearer ${ownerAuth.token}` },
+    data: { programVersionId: version.id, memberMembershipId: memberMembership.id, coachingRelationshipId: relationship.id },
+  })
+  const assignment = (await assignmentResponse.json()).programAssignment
+  const scheduleUrl = `/studios/${studio.id}/program-assignments/${assignment.id}/schedule`
+
+  // ---- 1: Empty state, desktop ----
+  await page.goto(scheduleUrl)
+  await expect(page.getByText('Für diese Zuweisung sind noch keine Trainingstage terminiert.')).toBeVisible()
+  await expectNoSeriousAxeViolations(page)
+
+  // ---- 2: Create dialog ----
+  await page.getByRole('button', { name: 'Trainingstag planen' }).first().click()
+  await expect(page.getByRole('dialog')).toBeVisible()
+  await expectNoSeriousAxeViolations(page)
+  const dialog = page.getByRole('dialog')
+  const dayValue = await dialog.getByLabel('Trainingstag', { exact: true }).locator('option', { hasText: 'A11y Day' }).getAttribute('value')
+  await dialog.getByLabel('Trainingstag', { exact: true }).selectOption(dayValue)
+  await dialog.getByLabel('Startdatum', { exact: true }).fill(new Date().toISOString().slice(0, 10))
+  await dialog.getByRole('button', { name: 'Regel erstellen' }).click()
+  await expect(page.getByText('Die Terminierungsregel wurde erstellt.')).toBeVisible()
+  await waitForToastsToSettle(page)
+
+  // ---- 3: Filled rule list, desktop ----
+  await expectNoSeriousAxeViolations(page)
+
+  // ---- 4: Edit dialog, with the required pre-save warning ----
+  await page.getByRole('button', { name: /Bearbeiten A11y Day/ }).click()
+  const editDialog = page.getByRole('dialog')
+  await expect(editDialog).toBeVisible()
+  await expectNoSeriousAxeViolations(page)
+  await editDialog.getByRole('button', { name: 'Abbrechen' }).click()
+  await expect(editDialog).toBeHidden()
+
+  // ---- 5: Disable confirm dialog ----
+  await page.getByRole('button', { name: /Deaktivieren A11y Day/ }).click()
+  const disableDialog = page.getByRole('dialog')
+  await expect(disableDialog.getByText('Diese Regel wird deaktiviert')).toBeVisible()
+  await expectNoSeriousAxeViolations(page)
+  await disableDialog.getByRole('button', { name: 'Abbrechen' }).click()
+  await expect(disableDialog).toBeHidden()
+
+  // ---- 6: Mobile viewport, filled list ----
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoSeriousAxeViolations(page)
+  const mobileDimensions = await page.evaluate(() => ({
+    documentWidth: document.documentElement.scrollWidth,
+    viewportWidth: document.documentElement.clientWidth,
+  }))
+  expect(mobileDimensions.documentWidth).toBeLessThanOrEqual(mobileDimensions.viewportWidth)
+
+  // ---- 7: Desktop 1440 viewport, filled list, long member/program names wrap without overflow ----
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await expectNoSeriousAxeViolations(page)
+  const desktopDimensions = await page.evaluate(() => ({
+    documentWidth: document.documentElement.scrollWidth,
+    viewportWidth: document.documentElement.clientWidth,
+  }))
+  expect(desktopDimensions.documentWidth).toBeLessThanOrEqual(desktopDimensions.viewportWidth)
 })

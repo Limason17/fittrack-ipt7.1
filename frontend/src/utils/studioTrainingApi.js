@@ -183,9 +183,40 @@ export function createProgramAssignment(studioId, body, options) {
   )
 }
 
+export function getProgramAssignment(studioId, assignmentId, options) {
+  return apiRequest(
+    `/v1/studios/${sid(studioId)}/program-assignments/${publicId(assignmentId, 'Assignment id')}`,
+    authenticated(options)
+  )
+}
+
 export function updateProgramAssignment(studioId, assignmentId, body, options) {
   return apiRequest(
     `/v1/studios/${sid(studioId)}/program-assignments/${publicId(assignmentId, 'Assignment id')}`,
+    authenticated({ ...options, method: 'PATCH', body })
+  )
+}
+
+// ---- Assignment schedule rules ----
+
+function scheduleRulesPath(studioId, assignmentId) {
+  return `/v1/studios/${sid(studioId)}/program-assignments/${publicId(assignmentId, 'Assignment id')}/schedule-rules`
+}
+
+export function listScheduleRules(studioId, assignmentId, options) {
+  return apiRequest(scheduleRulesPath(studioId, assignmentId), authenticated(options))
+}
+
+export function createScheduleRule(studioId, assignmentId, body, options) {
+  return apiRequest(
+    scheduleRulesPath(studioId, assignmentId),
+    authenticated({ ...options, method: 'POST', body })
+  )
+}
+
+export function updateScheduleRule(studioId, assignmentId, ruleId, body, options) {
+  return apiRequest(
+    `${scheduleRulesPath(studioId, assignmentId)}/${publicId(ruleId, 'Rule id')}`,
     authenticated({ ...options, method: 'PATCH', body })
   )
 }

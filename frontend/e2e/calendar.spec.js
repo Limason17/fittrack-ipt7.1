@@ -172,7 +172,28 @@ test('Persönlicher Ablauf: erstellen, verschieben, bestätigen, verknüpftes Wo
   const rescheduled = addDays(future, 2)
   const rescheduledStr = isoDateOnly(rescheduled)
   await page.getByRole('dialog').locator('input[type="date"]').fill(rescheduledStr)
+  // handleRescheduleSubmit shows the success toast synchronously and only
+  // *then* awaits the calendar refetch (CalendarView.vue) - a perfectly
+  // reasonable "optimistic toast, background resync" order, but it means
+  // the toast becoming visible is not proof the grid already reflects the
+  // new date. The rescheduled date here deliberately lands outside the
+  // currently loaded month range (it moves the entry into the next
+  // calendar month's grid), so the *correct* eventual state is for this
+  // exact button to disappear from the current view entirely. Racing
+  // ahead to findEvent() on the toast alone can grab the still-mounted,
+  // about-to-be-removed pre-reschedule button, click it, and then lose it
+  // mid-click when the real refetch lands - hanging forever, since a bare
+  // click() (unlike findEvent()'s own bounded month-navigation retry)
+  // never tries the next month. Waiting for the actual refetch response
+  // - the real signal the grid is about to update - closes that race
+  // without a blind timeout, an extra retry, or a weakened assertion.
+  const refetchAfterReschedule = page.waitForResponse((response) =>
+    response.request().method() === 'GET' &&
+    response.url().includes('/api/v1/training-calendar?') &&
+    response.ok()
+  )
   await page.getByRole('dialog').getByRole('button', { name: 'Verschieben' }).click()
+  await refetchAfterReschedule
   await expect(page.getByText('Training wurde verschoben.')).toBeVisible()
 
   // ---- Confirm as completed ----
