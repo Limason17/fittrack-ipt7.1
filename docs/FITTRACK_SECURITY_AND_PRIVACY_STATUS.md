@@ -19,6 +19,28 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um
 > **Nachtrag (2026-07-26, Stage 5A2 Personal Calendar UI):** Reine Frontend-Phase, keine neue Sicherheitsklasse und kein geändertes Berechtigungsmodell. `availableActions` aus der Backend-Antwort bleibt die alleinige Grundlage für angezeigte Aktionen — die Oberfläche schaltet nie eine Aktion allein anhand des Datums oder einer selbst gebauten Statusmatrix frei, und jede Mutation wird serverseitig erneut mit derselben Autorisierung wie zuvor geprüft (keine UI-Berechtigungslogik als alleinige Schutzschicht). Die beiden während der Vertragsverifikation gefundenen Backend-Lücken (`revision`, `assignmentId` fehlten in der Kalenderantwort, siehe `STAGE_5A2_PERSONAL_CALENDAR_UI.md` Abschnitt 1) sind rein additive Response-Erweiterungen ohne Sicherheitsauswirkung — kein zusätzliches Datenfeld wird über die bereits bestehende `user_id`-Isolation hinaus offengelegt, keine neue Angriffsfläche. Konfliktbehandlung (409) lädt bei Bedarf serverseitig aktuelle Daten neu, statt lokal einen falschen Erfolg vorzutäuschen. Keine neue Konfigurationsvariable, keine neue Abhängigkeit. Volle Details siehe `STAGE_5A2_PERSONAL_CALENDAR_UI.md`. Keine neue offene Sicherheitslücke gefunden.
 >
 > **Nachtrag (2026-07-27, Stage 5A3 Coach Scheduling UI):** Neue Fläche (Coach-Terminierungsregel-Verwaltung), aber kein geändertes Berechtigungsmodell — die neue Route ist zusätzlich clientseitig auf `owner`/`admin`/`trainer` beschränkt, das Backend bleibt in jedem Fall die eigentliche Schutzschicht (`SCHEDULE_RULE_READ`/`MANAGE`, pro-Trainer-Coaching-Beziehung serverseitig geprüft). Eine manipulierte Zuweisungs-ID liefert für Trainer wie für Owner/Admin durchgängig `404`, nie eine unterscheidbare `403` oder eine Existenz-Preisgabe — per E2E mit einem zweiten, absichtlich nicht coachenden Trainer bewiesen (`e2e/coachScheduling.spec.js`). Kein Coach-Name wird angezeigt, da der zugrundeliegende Zuweisungs-Endpunkt keine Coaching-Beziehungsdaten liefert — keine Zusammensetzung aus anderen Endpunkten. Die einzige Backend-Änderung dieser Phase betrifft **keine** Berechtigungslogik: `workoutSessionService.js#startSession()` bestimmte "heute" für die bereits bestehende Kalenderverknüpfung über die Zeitzone des Datenbankservers statt der Studio-Zeitzone (siehe `STAGE_5A3_COACH_SCHEDULING_UI.md` Abschnitt 1) — ein Korrektheits-, kein Zugriffskontrollfehler; behoben durch Wiederverwendung der bereits vorhandenen, getesteten `todayInTimezone()`-Funktion, keine neue Konfigurationsvariable, keine neue Abhängigkeit, keine geänderte Antwortstruktur. Keine neue offene Sicherheitslücke gefunden.
+>
+> **Nachtrag (2026-07-27, Stage 5B Product & Pilot Readiness Audit):** Ein
+> vollständiges Audit (kein neuer Code) hat zwei Punkte der untenstehenden
+> Lückenliste als **Dokumentationsfehler** identifiziert: Punkt 7 (CORS
+> ungetestet) und Punkt 8 (Rate Limiter pro Prozess) waren trotz der oben
+> bereits seit Stage 3D (2026-07-26) dokumentierten Behebung nicht
+> durchgestrichen — inzwischen in diesem Dokument korrigiert. Alle übrigen
+> Punkte der Lückenliste (einzelne DB-Rolle, Audit-Append-only nur
+> Konvention, kein Löschungs-/Anonymisierungspfad, totes
+> `coachActionEligibility`) wurden gegen den aktuellen Code erneut bestätigt
+> und sind weiterhin real offen — keiner davon ist neu. **Neu eingestuft:**
+> Punkt 10 (kein Löschungs-/Anonymisierungspfad) gilt seit diesem Audit
+> explizit als **P1-Befund vor Aufnahme echter Pilotteilnehmer:innen**
+> (bislang nur als generelles „vor Produktion offen“ geführt) — nicht, weil
+> sich der technische Zustand geändert hätte, sondern weil ein realer
+> Pilotbetrieb mit echten, nicht-anonymen Personen (statt interner
+> Testkonten) tatsächlich geplant ist und Schweizer Datenschutzrecht dafür
+> unabhängig vom „Pilot“-Status gilt. Empfehlung: vor Pilotstart mindestens
+> einen manuellen, dokumentierten Löschprozess definieren (kein
+> automatisierter Self-Service nötig, siehe
+> `STAGE_5B_PRODUCT_PILOT_READINESS_AUDIT.md` Befund P1-1). Volle Details
+> und die vollständige, real ausgeführte Regression siehe dort.
 
 ## Auth
 
@@ -151,8 +173,8 @@ Release-Gate-Härtung ausnahmslos gesperrt (siehe „Backups" oben).
 4. ~~Timing-Seitenkanal bei Login-Enumeration~~ — seit Stage 3B2 behoben: ein zentraler, einmalig bei Modul-Load vorab erzeugter Dummy-Bcrypt-Hash (nie pro Anfrage neu erzeugt) sorgt dafür, dass ein unbekanntes Konto denselben strukturellen `bcrypt.compare`-Aufwand verursacht wie ein falsches Passwort für ein echtes Konto, siehe `STAGE_3B2_SESSION_HARDENING.md` Abschnitt 6.
 5. Audit-Append-only ist reine Anwendungskonvention, nicht DB-erzwungen.
 6. ~~Kein Produktions-E-Mail-Provider verdrahtet~~ — seit Stage 2A behoben: validierter, opt-in SMTP-Adapter vorhanden (siehe oben). Weiterhin offen: kein Bounce-/Complaint-Handling, keine Zustell-Warteschlange, und ein echter Versand wurde in dieser Umgebung mangels Zugangsdaten nicht real nachgewiesen.
-7. CORS-Konfiguration ungetestet.
-8. Rate Limiter ist pro Prozess, nicht zentral (Skalierungsgrenze).
+7. ~~CORS-Konfiguration ungetestet~~ — seit Stage 3D behoben: `CORS_ALLOWED_ORIGINS` wird als exakte Origin-Allowlist validiert und sowohl per HTTP-Test (`corsHeaders.test.js`) als auch echt im Browser (`corsSecurity.spec.js`) geprüft. Diese Zeile war bis zum Stage-5B-Audit (2026-07-27) versehentlich nicht durchgestrichen worden, obwohl der Stage-3D-Nachtrag oben die Behebung bereits beschreibt — ein reiner Dokumentationsfehler (Liste nicht mit eigenem Nachtrag synchronisiert), kein fortbestehender Produktmangel; siehe `STAGE_5B_PRODUCT_PILOT_READINESS_AUDIT.md` Abschnitt 3.
+8. ~~Rate Limiter ist pro Prozess, nicht zentral~~ — seit Stage 3D behoben: ein gemeinsamer, atomarer MySQL-Store (Migration 011, `security_rate_limit_buckets`) wird von jeder Anwendungsinstanz geteilt. Gleicher Korrekturhinweis wie Punkt 7 — bis zum Stage-5B-Audit nicht durchgestrichen, siehe dort Abschnitt 3.
 9. ~~Kein abgeschlossener/nachgewiesener Restore-Drill~~ — seit Stage 2B1 behoben: automatisierter Drill (`db:backup:drill`) und ein manueller Lauf mit synthetischem Schlüssel, beide gegen die lokale MySQL-Instanz, siehe oben.
-10. Kein Recht-auf-Löschung-/Anonymisierungspfad für Benutzerdaten.
+10. Kein Recht-auf-Löschung-/Anonymisierungspfad für Benutzerdaten — seit Stage 5B (2026-07-27) als **P1 vor Pilotstart mit echten Personen** eingestuft (siehe Nachtrag oben), nicht nur „vor Produktion offen".
 11. `coachActionEligibility` ist toter Code mit irreführender Bypass-Semantik (Drift-Risiko).

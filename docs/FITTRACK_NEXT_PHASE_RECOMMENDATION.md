@@ -212,6 +212,40 @@
 > eingerichtet.
 >
 > ---
+>
+> **Nachtrag (2026-07-27, Stage 5B Product & Pilot Readiness Audit):** Der
+> oben zuletzt genannte Flaky-Test ist inzwischen behoben (siehe die
+> Merge-Readiness-Nachbereitung von Stage 5A3) — diese konkrete
+> Handlungsempfehlung ist damit gegenstandslos. Ein vollständiges,
+> evidenzbasiertes Produkt- und Pilot-Readiness-Audit wurde auf einem
+> eigenen, nicht gemergten Branch durchgeführt (siehe
+> `STAGE_5B_PRODUCT_PILOT_READINESS_AUDIT.md`): **0 P0-Blocker**, ein
+> P1-Befund (kein Lösch-/Anonymisierungsprozess für echte Personendaten —
+> organisatorisch, keine Code-Phase) und drei P2-Befunde. **Diese Empfehlung
+> wird durch Stage 5B wie folgt aktualisiert:** Anders als nach 5A1/5A2 gibt
+> es diesmal keine offene P0/P1-Funktionslücke, die eine weitere
+> Trainings-/Kalenderfunktion rechtfertigen würde. Die mit Abstand
+> konsistenteste Erkenntnis des Audits ist eine **operative** Lücke: Die
+> Studio-Übersicht liefert für Owner/Admin/Trainer keine aggregierte
+> Tagessicht (keine überfälligen Trainings, keine neuen Ergebnisse, keine
+> inaktiven Mitglieder, keine offenen Einladungen als Kennzahl) — durch
+> Vergleich zweier Screenshots vor und nach vollständiger Studio-Nutzung als
+> inhaltlich identisch belegt. **Empfehlung für die unmittelbar nächste
+> Phase: Stage 5C — Studio Operations Dashboard** (rein lesende
+> Aggregations-Endpunkte über bereits existierende Daten, keine neue
+> Migration, plus eine kleine Audit-Log-Übersetzungsergänzung für die
+> Stage-5A1/5A3-Ereignistypen und eine minimale Rollen-Kurzerklärung im
+> Einladungsdialog). Details, Scope-Abgrenzung und Akzeptanzkriterien in
+> Abschnitt 32 des Audit-Dokuments. Die weiterhin weiter oben in diesem
+> Dokument gelisteten operativen Backup-/DB-Härtungspunkte (Stage 2B2B,
+> getrennte DB-Rollen, Backup-Scheduler/Key-Rotation) bleiben unverändert
+> offen und unabhängig von dieser Empfehlung. Stage 2B2B bleibt weiterhin
+> **Deferred until first customer / production deployment**; es wurde für
+> Stage 5B keine Cloud-Infrastruktur eingerichtet und keine neue
+> Entwicklungsphase begonnen — dieses Audit selbst ist keine
+> Implementierung.
+>
+> ---
 
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-
