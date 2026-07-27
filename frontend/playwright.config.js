@@ -29,7 +29,17 @@ const sharedBackendEnvironment = {
   // the real default used in development/production.
   AUTH_LOGIN_RATE_LIMIT_MAX: '6',
   AUTH_LOGIN_RATE_LIMIT_WINDOW_MS: '8000',
-  AUTH_REGISTRATION_RATE_LIMIT_MAX: '100',
+  // IP-keyed with a 60-minute window (see rateLimitPolicies.js) - every spec
+  // file in this suite shares one loopback IP and one backend instance for
+  // the whole run, and each file registers its own fresh fixture users, so
+  // the accumulated total across all ~59 tests in a single run legitimately
+  // exceeds the real production default (5/60min) many times over. Sized
+  // generously like the other limits below rather than tightly to the
+  // current test count, since that count only grows as more E2E coverage is
+  // added (this exact ceiling was hit, and raised, once the suite's own
+  // registration count grew past 100 - see Stage 5A3's merge-readiness
+  // report for the reproduction).
+  AUTH_REGISTRATION_RATE_LIMIT_MAX: '1000',
   // Refresh (IP-keyed) and logout-all (user-keyed) had no limiter at all
   // before Stage 3D; every spec file in this suite shares one loopback IP
   // and the cross-tab tests alone repeat-each their reload up to 20 times,
