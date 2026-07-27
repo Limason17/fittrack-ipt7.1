@@ -1,7 +1,11 @@
 # ADR 004: Personal data deletion and retention (Stage 5C)
 
 - Status: Accepted (design only — no implementation in this phase)
-- Date: 2026-07-27
+- Date: 2026-07-27 (revised same day: four design blockers resolved before
+  merge — running workout sessions, assignment/calendar terminal states,
+  free-text honesty, and restore reconciliation; see the additions below
+  and `docs/STAGE_5C_PERSONAL_DATA_LIFECYCLE_DESIGN.md`'s "Aufgelöste
+  Designblocker" section)
 - Stage: 5C
 
 ## Context
@@ -94,42 +98,96 @@ password re-entry plus a typed confirmation phrase, is the smallest design
 consistent with the project's existing infrastructure and its own
 previously stated scope boundary.
 
-### Historical studio data is never rewritten, only its author becomes unidentifiable
+### A running workout session is aborted, not left dangling or used to block deletion
+
+A member with an `in_progress` studio workout session at the moment of
+deletion gets that session atomically set to `aborted` within the same
+transaction — reusing the existing, precondition-free `in_progress →
+aborted` transition ADR 003 already defined ("abort exists precisely for
+'I'm stopping now, whatever state this is in'"). No new transition, no new
+status value, and no blocker: the session simply reaches the terminal state
+it was always allowed to reach on demand. Its linked calendar entry follows
+the existing `IN_PROGRESS → PLANNED` integration effect already documented
+in `trainingCalendarDomain.js`, then gets swept up by the calendar
+cancellation rule below.
+
+### Assignments, schedule rules, and calendar entries reach one consistent terminal state, not a mix of live and stale
+
+The first draft of this design left an active assignment `active` while its
+coaching relationship ended and its schedule rules were disabled — an
+inconsistent middle state. The corrected rule: an assignment where the
+deleted account is the **member** is atomically `cancelled` (reusing the
+existing `active → cancelled` transition); a schedule rule the deleted
+account **created** is `disabled` regardless of which member it serves
+(verified against `trainingCalendarService.js`: materialization never
+re-checks the coaching relationship's live status, so leaving a departed
+coach's rule active would generate future training days nobody is
+coaching); a future `PLANNED` studio calendar entry belonging to the
+deleted account becomes `CANCELLED` (the existing, verified
+`PLANNED → CANCELLED` transition — `IN_PROGRESS → CANCELLED` does not
+exist, which is exactly why sessions are aborted first, reverting their
+entry to `PLANNED`, before this rule runs). Assignments the deleted account
+merely created *for another, non-deleted member* are left untouched — that
+member's own training plan is not this account's data to cancel.
+
+### Historical studio data is never rewritten, and free-text fields are left alone rather than falsely presented as scrubbed
 
 Completed workout sessions, sets, exercises, assignments, program versions,
 and feedback are not touched by a deletion beyond what anonymizing the
-`users` row already achieves indirectly. The one explicit exception is the
-free-text `member_note` field on session/set rows, which is cleared (set to
-`NULL`, not replaced) because it is unstructured, potentially PII-bearing
-text with no equivalent fact-preservation requirement — unlike the numeric
-results and timestamps around it. `studio_workout_session_feedback.body` is
-never touched at all; it has no update path today and this design adds
-none.
+`users` row already achieves indirectly. The first draft of this ADR
+additionally cleared the free-text `member_note` field on session/set rows
+— that created an internal contradiction with the design document's own
+Section 5, which already classified `member_note` and feedback `body` as
+possible indirect identifiers while simultaneously claiming no PII survives
+in history. Corrected position: **all free text is left completely
+unchanged** — `member_note` and `studio_workout_session_feedback.body` may
+still carry personal content after a deletion, tenant/role-scoped access to
+them is unchanged, and this document does not claim otherwise. A more
+thorough free-text redaction feature is explicitly out of scope for this
+phase (see below).
 
-### A restore from before a deletion is a documented operational reconciliation step, not a database ledger row
+### A restore from before a deletion is reconciled against an external, integrity-protected receipt — not a database ledger row and not a log line alone
 
 A ledger table recording "this account was deleted at time T" would live in
 the same database snapshot as the anonymized `users` row itself — a backup
-taken before the deletion contains neither. It cannot solve the problem it
-would be built for. Instead, deletion completion is recorded as a
-structured application log event (`account_deletion_completed`, internal
-ID only, no direct identifiers) — durable independently of the database's
-own backup/restore cycle — and `docs/STAGE_5C_PERSONAL_DATA_LIFECYCLE_DESIGN.md`
-Section 21 defines a manual runbook step: after any restore whose backup
-predates a logged deletion, an operator re-runs that deletion, idempotently,
-against the restored database before returning it to service.
+taken before the deletion contains neither, so a DB-internal ledger cannot
+solve the problem it would be built for. A plain structured log line alone
+is also insufficient (not transactional with the DB commit, may have
+expired or been dropped by the time it's needed, has no guaranteed
+availability independent of the database). The resolved design instead
+writes one append-only, HMAC-integrity-protected **Deletion Receipt** file
+per completed deletion, to a directory outside both the git repository and
+the database's own backup directory — `users.lifecycle_status` remains the
+fast, transactional source of truth for normal operation (login, auth
+middleware), while the external receipt exists specifically to survive a
+restore that the database's own state cannot. A "Deletion Receipt Doctor"
+consistency check — extending the same fail-closed pattern the existing
+Migration Doctor already uses on `/api/health/ready` — runs on every
+application start and is a mandatory step after any restore: it detects a
+restored row that shows `active` despite a valid receipt saying otherwise,
+and re-applies the deletion idempotently; it also self-heals the rarer case
+of a receipt that never got written after a real DB commit (reconstructible
+purely from the already-anonymized row); and it fails closed, refusing to
+report the app as ready, on any receipt whose integrity check does not
+verify. See `docs/STAGE_5C_PERSONAL_DATA_LIFECYCLE_DESIGN.md` Section 21
+for the full mechanism and runbook.
 
 ## What this phase does not build
 
 - Any of the above as running code, API endpoints, UI, or a migration.
 - An automated, delayed/two-phase deletion flow.
 - A personal-data export ("data portability") feature.
-- An admin/support-initiated deletion of someone else's account (the
-  `deletion_reason='admin_initiated'` value is reserved in the design but
-  has no accompanying flow in this phase).
+- An admin/support-initiated deletion of someone else's account — deliberately
+  no reserved column for this exists in the migration draft either (see
+  Consequences: a speculative `deletion_reason` column was removed after
+  critical review, since exactly one trigger for deletion exists in this
+  phase's actual scope).
 - Automatic studio-ownership transfer.
 - A generic, cross-studio audit log system.
-- A new retention-ledger database table.
+- A new retention-ledger database table (the external Deletion Receipt is
+  deliberately file-based, not a database object).
+- A more thorough, standalone free-text redaction/anonymization feature for
+  `member_note`/feedback bodies.
 
 See the design document's Section 32/33 for the complete in-scope/out-of-scope
 list.
@@ -154,16 +212,40 @@ list.
 - **A delayed, cancellable two-phase deletion:** rejected for this phase —
   requires recurring-job infrastructure that does not exist and is
   explicitly out of the project's current scope.
-- **A new `account_deletion_receipts`/retention-ledger table:** rejected —
-  subject to the exact same backup/restore point-in-time limitation as the
-  anonymized row itself; a structured log event outside the database's own
-  backup cycle actually solves the reconciliation problem this would only
-  appear to solve.
+- **A new `account_deletion_receipts`/retention-ledger *database* table:**
+  rejected — subject to the exact same backup/restore point-in-time
+  limitation as the anonymized row itself (a table row written at deletion
+  time is absent from any backup taken before that time, exactly like the
+  anonymized `users` row it would be meant to back up).
+- **A plain structured log line as the sole restore-safety mechanism (the
+  first draft's approach):** rejected on reflection — not transactional
+  with the DB commit, subject to shorter log retention than backup
+  retention, not guaranteed available/undamaged independent of the
+  database, and an unacceptable single point of failure for an irreversible
+  action. Replaced with the external, integrity-protected Deletion Receipt
+  plus `users.lifecycle_status` combination described above.
 - **Reusing a brand-new membership status instead of the existing `left`:**
   rejected — `left` already carries the correct semantics ("no longer a
   member, rejoin requires a fresh invitation") for both administrative
   removal and self-removal; a second status would be an unjustified schema
   addition.
+- **Blocking account deletion while any workout session is `in_progress`:**
+  rejected — the existing `in_progress → aborted` transition already exists
+  precisely for this situation and has no preconditions; requiring the
+  member to first manually abort or complete a session before they're even
+  allowed to request deletion adds friction without any corresponding
+  safety benefit.
+- **Leaving cancelled/disabled assignments' calendar entries as `PLANNED`
+  instead of cancelling them:** rejected — would leave the member's own
+  calendar showing training days for a program they're no longer assigned
+  to, a confusing and unnecessary inconsistency given the underlying
+  assignment is already terminal.
+- **Clearing `member_note` (the first draft's approach):** rejected — see
+  the free-text section above; clearing one specific field while claiming
+  full PII removal was itself the internal contradiction this revision
+  fixes, and clearing it while *not* claiming full removal would still be
+  an arbitrary half-measure with no clear stopping point (why only this
+  field, not others).
 
 ## Consequences
 
@@ -172,12 +254,25 @@ list.
   anonymize-indirectly, or retain-unchanged) — no automatic mechanism
   enforces this, only migration-review discipline.
 - The smallest possible schema change is required for this decision:
-  three additive columns on `users`, no new table.
-- A future admin-initiated deletion flow, or a data-export feature, can be
-  layered on top of this design later without revisiting the core
-  anonymize-vs-hard-delete decision — the `lifecycle_status`/`deleted_at`/
-  `deletion_reason` columns are designed with that extensibility in mind
-  (`deletion_reason='admin_initiated'` is already reserved).
-- Restore-from-backup operations gain a new mandatory manual step
-  (reconciliation) that did not exist before this design; this is a real,
-  ongoing operational cost, not a one-time implementation cost.
+  **two** additive columns on `users` (`lifecycle_status`, `deleted_at`),
+  no new table. A third column, `deletion_reason`, was drafted and then
+  removed after critical review: this phase has exactly one deletion
+  trigger (self-service), so a column that would hold the same constant
+  value on every row it ever applies to serves no purpose yet. A future
+  admin-initiated deletion phase should design whatever it actually needs
+  at that time, not inherit an untested guess made before that flow exists.
+- Every completed deletion now also writes one external file (the Deletion
+  Receipt) outside the database and its backup path — a new operational
+  artifact this project did not have before, with its own (independent)
+  backup discipline requirement.
+- Restore-from-backup operations gain a new mandatory step — the Deletion
+  Receipt Doctor consistency check — that did not exist before this
+  design; it runs automatically on every application start in addition to
+  being a mandatory manual step after any restore, so the ongoing
+  operational cost is mostly automated, not purely manual.
+- Assignment, schedule-rule, and calendar-entry terminalization on deletion
+  now touches more rows per deletion than the first draft did (previously
+  only membership status and coaching-relationship status changed) — a
+  larger, but still single, atomic transaction; the security analysis
+  (design document Section 24) adds corresponding scope-boundary tests to
+  ensure this never reaches another member's own assignments or calendar.

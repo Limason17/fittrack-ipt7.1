@@ -1,6 +1,7 @@
 # Stage 5C: Personal Data Deletion & Retention — Design Gate
 
-> **Stand:** 2026-07-27 · Branch `design/stage-5c-personal-data-lifecycle` · Basis: `main`
+> **Stand:** 2026-07-27 (Revision 2 — vier Designblocker aufgelöst) · Branch
+> `design/stage-5c-personal-data-lifecycle` · Basis: `main`
 > Merge-Commit `f87d0b6` (PR #24, Stage 5B Product & Pilot Readiness Audit).
 >
 > **Diese Phase ist ausschliesslich Analyse, Architektur und Dokumentation.**
@@ -16,6 +17,51 @@
 > keine externe rechtliche Prüfung (Schweizer Datenschutzrecht, ggf. DSGVO
 > bei EU-Bezug) vor einem echten Produktionsbetrieb mit echten
 > Endkund:innen.
+
+## Aufgelöste Designblocker (Revision 2)
+
+Die erste Fassung dieses Design Gates enthielt vier offene Designblocker,
+die vor einem Merge eindeutig aufgelöst werden mussten. Diese Revision löst
+alle vier auf:
+
+1. **Restore-Reconciliation war unzureichend spezifiziert** (reines
+   strukturiertes Log als einzige Quelle). **Aufgelöst:** Kombination aus
+   dem bestehenden `users.lifecycle_status` (schnelle, transaktionale
+   Quelle für den laufenden Betrieb) **und** einem neuen, externen,
+   integritätsgeschützten „Deletion Receipt" pro Löschvorgang — als Datei
+   ausserhalb des Repositories und ausserhalb des Datenbank-Backup-
+   Verzeichnisses gespeichert, damit ein Restore diese Information nicht
+   miterfasst. Siehe Abschnitt 21 (vollständig neu) und Abschnitt 15.5.
+2. **Laufende Workout Sessions blieben unentschieden** (`in_progress`
+   unverändert lassen war nicht akzeptabel). **Aufgelöst:** Laufende
+   Sessions werden innerhalb derselben Löschtransaktion atomar auf
+   `aborted` gesetzt — unter Wiederverwendung der bereits bestehenden,
+   präzedenzlosen `in_progress → aborted`-Transition (ADR 003), die exakt
+   für „Session sofort beenden, Zustand einfrieren" existiert. Siehe
+   Abschnitt 12/18.
+3. **Aktive Assignments/Termine waren inkonsistent** (Coaching-Beziehung
+   endet, Termine deaktiviert, Zuweisung bleibt `active`). **Aufgelöst:**
+   ein konsistenter, exakt definierter Satz terminaler Zustände — aktive
+   Zuweisungen des zu löschenden Mitglieds werden `cancelled`,
+   Terminierungsregeln des zu löschenden Erstellers werden `disabled`
+   (unabhängig davon, für wen), zukünftige Studio-Kalendereinträge des
+   Kontos werden `CANCELLED`, zukünftige persönliche Einträge weiterhin
+   hart gelöscht, abgeschlossene/historische Einträge bleiben unverändert.
+   Siehe Abschnitt 7/12/18.
+4. **Freitext-Aussagen widersprachen sich** (Freitext bleibt unverändert,
+   gleichzeitig „keine PII in Historie"). **Aufgelöst:** ehrliche Policy —
+   fachhistorischer Freitext (`member_note`, Feedback-`body`) bleibt
+   **vollständig unverändert** (nicht geleert), kann weiterhin
+   personenbezogene Inhalte enthalten, Zugriff bleibt streng tenant-/
+   rollenbegrenzt; das Abnahmekriterium wurde entsprechend korrigiert.
+   Siehe Abschnitt 13/30.
+
+Als direkte Folge wurde zusätzlich **Migration-013-Entwurf verkleinert**
+(`deletion_reason` entfernt, Abschnitt 19) und die **API-Preview erweitert**
+(Abschnitt 15.1) sowie das **Transaktionsmodell neu strukturiert**
+(Abschnitt 18) inklusive eines expliziten Cross-Resource-Ausfallsicherheits-
+Protokolls für die Datenbank-Transaktion und das externe Receipt
+(Abschnitt 18.3).
 
 ## Inhaltsverzeichnis
 
@@ -100,8 +146,12 @@ Studio-Historie (Programme, Zuweisungen, Workout-Ergebnisse, Feedback,
 Audit-Ereignisse) bleibt vollständig erhalten, aber ohne direkten
 Identifikator zur gelöschten Person rückführbar.
 
-Migration 013 (Entwurf, **nicht erstellt**) benötigt dafür lediglich drei
-neue Spalten auf `users` — keine neue Tabelle.
+Migration 013 (Entwurf, **nicht erstellt**) benötigt dafür lediglich **zwei**
+neue Spalten auf `users` (`lifecycle_status`, `deleted_at` — `deletion_reason`
+wurde nach kritischer Prüfung aus dem Entwurf entfernt, Abschnitt 19) — keine
+neue Tabelle. Die Restore-Sicherheit dieser Anonymisierung wird durch ein
+zusätzliches, externes, dateibasiertes „Deletion Receipt" ergänzt
+(Abschnitt 21) — ebenfalls keine neue Datenbanktabelle.
 
 ---
 
@@ -181,17 +231,17 @@ Migrationsdateien verifiziert (nicht aus einer früheren Zusammenfassung
 | `studio_training_program_versions` | Versionierter Programminhalt | ja | nein | keine | `created_by_user_id` | Ersteller:in | `created_by_user_id → users` `RESTRICT`; `program_id → studio_training_programs` `CASCADE` | veröffentlichte Version unveränderlich (Produktinvariante) | hoch | nie löschen | unbegrenzt | gering | keine |
 | `studio_training_program_days` | Trainingstag je Version | ja | nein | keine | keine | — | `program_version_id → …` `CASCADE` | folgt Version | hoch | nie löschen | unbegrenzt | gering | keine |
 | `studio_training_program_exercises` | Übung je Trainingstag | ja | nein | keine | keine | — | `program_day_id → …` `CASCADE` | folgt Tag | hoch | nie löschen | unbegrenzt | gering | keine |
-| `studio_program_assignments` | Zuweisung Version↔Mitglied | ja | Ja | keine eigenen | Zeitraum, Status | Mitglied, Ersteller:in | `member_membership_id → studio_memberships` `RESTRICT`; `assigned_by_user_id → users` `RESTRICT`; `coaching_relationship_id → …` `CASCADE` | bleibt bestehen | hoch (wer wurde wann was zugewiesen) | Statusänderung bereits möglich (`completed`/`cancelled`), nie Hard-Delete | bleibt bestehen | mittel (P2/P3-Klasse) | keine |
-| `studio_workout_sessions` | Trainingsausführung | ja | Ja (P4, höchste Schutzklasse) | keine eigenen (Notiz kann PII enthalten) | Zeitstempel, Ergebniswerte | Mitglied | `member_membership_id → studio_memberships` **`CASCADE`**; `studio_id`/`assignment_id`/`program_version_id`/`program_day_id`/`coaching_relationship_id → …` `CASCADE` | **Achtung:** würde bei Hard-Delete der Mitgliedschaft mitgelöscht — genau deshalb darf die Mitgliedschaft nie hart gelöscht werden | sehr hoch (Trainingsergebnisse) | **anonymisieren, nie löschen**: `member_note` leeren, Zeitstempel/Ergebniswerte bleiben (fachlich notwendig, siehe Abschnitt 13) | unbegrenzt | hoch (P4) | Umgang mit `member_note`-Freitext |
-| `studio_workout_session_exercises` | Übung je Ausführung | ja | Ja (P4) | keine eigenen | Ergebniswerte | — | `workout_session_id → …` `CASCADE` | folgt Session | sehr hoch | folgt Session | unbegrenzt | hoch (P4) | keine |
-| `studio_workout_session_sets` | Satzergebnis | ja | Ja (P4) | keine eigenen | `member_note`, Ist-Werte | — | `session_exercise_id → …` `CASCADE` | folgt Session | sehr hoch | `member_note` bei Anonymisierung leeren, Werte bleiben | unbegrenzt | hoch (P4) | keine |
+| `studio_program_assignments` | Zuweisung Version↔Mitglied | ja | Ja | keine eigenen | Zeitraum, Status | Mitglied, Ersteller:in | `member_membership_id → studio_memberships` `RESTRICT`; `assigned_by_user_id → users` `RESTRICT`; `coaching_relationship_id → …` `CASCADE` | bleibt bestehen | hoch (wer wurde wann was zugewiesen) | **Aktive Zuweisungen des zu löschenden Mitglieds werden `cancelled`** (Blocker 3, Abschnitt 7.5/12); bereits `completed`/`cancelled` bleiben unverändert; nie Hard-Delete | bleibt bestehen | mittel (P2/P3-Klasse) | keine (aufgelöst) |
+| `studio_workout_sessions` | Trainingsausführung | ja | Ja (P4, höchste Schutzklasse) | keine eigenen (Notiz kann PII enthalten) | Zeitstempel, Ergebniswerte | Mitglied | `member_membership_id → studio_memberships` **`CASCADE`**; `studio_id`/`assignment_id`/`program_version_id`/`program_day_id`/`coaching_relationship_id → …` `CASCADE` | **Achtung:** würde bei Hard-Delete der Mitgliedschaft mitgelöscht — genau deshalb darf die Mitgliedschaft nie hart gelöscht werden | sehr hoch (Trainingsergebnisse) | **`in_progress` wird atomar `aborted`** (bestehende, präzedenzlose Transition, Blocker 2, Abschnitt 12/18); `completed`/bereits `aborted` bleiben inhaltlich unverändert; `member_note` bleibt **unverändert** (Blocker 4, Abschnitt 13) | unbegrenzt | hoch (P4) | keine (aufgelöst) |
+| `studio_workout_session_exercises` | Übung je Ausführung | ja | Ja (P4) | keine eigenen | Ergebniswerte | — | `workout_session_id → …` `CASCADE` | folgt Session | sehr hoch | folgt Session (unverändert, auch bei Abbruch — ADR 003: Abbruch lässt jede Zeile exakt wie sie war) | unbegrenzt | hoch (P4) | keine |
+| `studio_workout_session_sets` | Satzergebnis | ja | Ja (P4) | keine eigenen | `member_note`, Ist-Werte | — | `session_exercise_id → …` `CASCADE` | folgt Session | sehr hoch | **`member_note` bleibt unverändert** (Blocker 4 — keine Anonymisierung von Freitext in dieser Phase, siehe Abschnitt 13) | unbegrenzt | hoch (P4) | keine (aufgelöst) |
 | `studio_workout_session_feedback` | Coach-Feedback (append-only) | ja | Ja (P4, beide Seiten) | `body` (Freitext, kann PII enthalten) | `author_user_id` | Coach (Autor), Mitglied (Adressat) | `author_user_id → users` `RESTRICT`; `coach_membership_id → studio_memberships` `CASCADE`; `workout_session_id → …` `CASCADE` | append-only, kein UPDATE/DELETE-Endpunkt existiert | sehr hoch (vertraulich, historisch) | **nie löschen, nie den Body verändern** — nur der Autorenbezug wird durch die Anonymisierung des `users`-Kontos indirekt entpersonalisiert (kein Name mehr auflösbar) | unbegrenzt | hoch (P4) | keine |
 | `user_email_change_requests` | Offene E-Mail-Änderung | keiner | Ja | `new_email_normalized` | Token-Hash | Kontoinhaber:in | `user_id → users` `CASCADE` | bereits korrekt | keine (operativ) | Hard-Delete bereits automatisch bei Kontolöschung | 60 Min TTL ohnehin | mittel | keine |
 | `user_auth_sessions` | Server-Sitzungen | keiner | Ja (mittelbar) | keine (nur `status`/Zeitstempel) | — | Kontoinhaber:in | `user_id → users` `CASCADE` | bereits korrekt | keine | alle aktiven Sitzungen bei Löschung sofort widerrufen | 7 Tage TTL ohnehin | mittel (Session-Hijack-Fenster) | keine |
 | `user_refresh_tokens` | Rotierende Refresh-Tokens | keiner | Ja (mittelbar) | `token_hash` (kein Klartext) | — | Kontoinhaber:in | `session_id → user_auth_sessions` `CASCADE` | bereits korrekt | keine | folgt Session | 7 Tage TTL ohnehin | mittel | keine |
 | `security_rate_limit_buckets` | Rate-Limit-Zustand | keiner | nein (nur HMAC-Hash) | keine (Schlüssel bereits HMAC-gehasht, nicht reversibel) | — | — | keine FK auf `users` | — | keine | keine Aktion nötig — enthält bereits keine reversiblen Identifikatoren | eigene TTL/Cleanup-Skript (`security:rate-limits:cleanup`) | gering | keine |
-| `studio_assignment_schedule_rules` | Wiederkehrende Terminierungsregel | ja | Ja (mittelbar) | keine eigenen | `created_by_user_id` | Ersteller:in (Coach) | `created_by_user_id → users` (kein explizites `ON DELETE`, MySQL-Default = faktisch `RESTRICT`); `assignment_id`/`studio_id`/`program_day_id → …` `CASCADE` | bleibt bestehen, Deaktivieren ist reiner Status-Flip | mittel | Statusänderung bereits vorhanden (`disabled`), nie Hard-Delete | bleibt bestehen | gering | keine |
-| `training_calendar_entries` | Vereinheitlichter Kalender | ja (nullable) | Ja | keine eigenen | `title_snapshot`, Datum | Kontoinhaber:in (`user_id`) | `user_id → users` **`CASCADE`**; `created_by_user_id → users` (Default = `RESTRICT`); `studio_id`/`program_assignment_id`/`program_day_id`/`schedule_rule_id → …` `CASCADE`; `personal_workout_id`/`studio_workout_session_id → …` `SET NULL` | **Achtung:** `user_id`-Cascade greift nur, wenn die `users`-Zeile hart gelöscht wird — bei Anonymisierung (empfohlener Regelfall) bleibt die Zeile und damit der Kalendereintrag automatisch erhalten | hoch (wer hat wann trainiert) | folgt der gewählten Strategie für den `user_id`-Eigentümer | unbegrenzt | mittel | keine |
+| `studio_assignment_schedule_rules` | Wiederkehrende Terminierungsregel | ja | Ja (mittelbar) | keine eigenen | `created_by_user_id` | Ersteller:in (Coach) | `created_by_user_id → users` (kein explizites `ON DELETE`, MySQL-Default = faktisch `RESTRICT`); `assignment_id`/`studio_id`/`program_day_id → …` `CASCADE` | bleibt bestehen, Deaktivieren ist reiner Status-Flip | mittel | **Alle vom zu löschenden Konto erstellten aktiven Regeln werden `disabled`** — bewusst nach Ersteller:in, nicht nach betroffenem Mitglied gescopt (Blocker 3, Abschnitt 7.6: verhindert, dass ein Mitglied nach Löschung seines Coaches weiterhin unbeaufsichtigt neue Termine materialisiert bekommt — die Materialisierung prüft die Coaching-Beziehung nicht) | bleibt bestehen | gering | keine (aufgelöst) |
+| `training_calendar_entries` | Vereinheitlichter Kalender | ja (nullable) | Ja | keine eigenen | `title_snapshot`, Datum | Kontoinhaber:in (`user_id`) | `user_id → users` **`CASCADE`**; `created_by_user_id → users` (Default = `RESTRICT`); `studio_id`/`program_assignment_id`/`program_day_id`/`schedule_rule_id → …` `CASCADE`; `personal_workout_id`/`studio_workout_session_id → …` `SET NULL` | **Achtung:** `user_id`-Cascade greift nur, wenn die `users`-Zeile hart gelöscht wird — bei Anonymisierung (empfohlener Regelfall) bleibt die Zeile und damit der Kalendereintrag automatisch erhalten | hoch (wer hat wann trainiert) | **`PLANNED`-Studio-Einträge des Kontos werden `CANCELLED`; `COMPLETED`/`SKIPPED`/bereits `CANCELLED` bleiben unverändert; persönliche `PLANNED`-Einträge werden hart gelöscht** (Blocker 3, Abschnitt 12/18 — inkl. der Sonderregel, dass ein per Session-Abbruch von `IN_PROGRESS` auf `PLANNED` zurückgesetzter Eintrag anschliessend von derselben `CANCELLED`-Regel erfasst wird) | unbegrenzt | mittel | keine (aufgelöst) |
 | `schema_migrations` (Runner-Ledger, kein eigenes Migrationsfile) | Migrations-Nachvollziehbarkeit | keiner | nein | keine | keine | — | keine FK auf `users` | — | Betriebsinfrastruktur, keine Personendaten | keine Aktion nötig | unbegrenzt | keine | keine |
 | *(Backup-Metadaten)* | — | — | — | — | — | — | — | — | — | — | — | — | **Es existiert keine Backup-Metadaten-Tabelle in der Datenbank** — Backups sind externe `.ftbackup`-Dateien, siehe Abschnitt 20 |
 | *(Development-E-Mail-Outbox)* | — | — | — | — | — | — | — | — | — | — | — | — | **Nicht persistent** — der Dev-Modus liefert den Annahme-/Bestätigungslink direkt in der HTTP-Antwort zurück, es existiert keine Outbox-Tabelle/-Datei, siehe Abschnitt 22 |
@@ -354,27 +404,102 @@ Zuweisungen, die über diese Beziehung liefen, bleiben unverändert bestehen
 (ADR 002: Zuweisungen sind historische Fakten, keine live-abhängige
 Berechtigung).
 
-**7.5 Aktive Zuweisungen.** Bleiben bestehen (Status `active` wird **nicht**
-automatisch auf `cancelled` gesetzt) — die Zuweisung ist eine historische
-Tatsache „diese Version wurde diesem Mitglied an diesem Datum zugewiesen",
-unabhängig vom aktuellen Kontostatus des Mitglieds. Ein noch offener,
-zukünftiger Trainingsplan für ein gelöschtes Konto ist für niemanden mehr
-erreichbar (die Mitgliedschaft ist `left`, der Zugriff ist damit ohnehin
-gesperrt) — ein aktives Setzen auf `cancelled` würde zusätzlich fälschlich
-suggerieren, ein Coach habe die Zuweisung bewusst storniert.
+**7.5 Aktive Zuweisungen — REVIDIERT (Blocker 3).** Die ursprüngliche
+Entscheidung (Zuweisung bleibt `active`, während die zugehörige
+Coaching-Beziehung bereits `ended` ist und Terminierungsregeln bereits
+`disabled` sind) erzeugte einen inkonsistenten Zwischenzustand: eine
+„aktive" Zuweisung ohne aktive Beziehung und ohne laufende Terminierung ist
+weder eindeutig „läuft weiter" noch eindeutig „beendet". **Neue,
+verbindliche Regel:** Jede **aktive** Zuweisung, bei der das zu löschende
+Konto das **Mitglied** ist (`member_membership_id` gehört zum Konto), wird
+in derselben Transaktion atomar auf `status='cancelled'`, `cancelled_at=NOW()`
+gesetzt — unter Wiederverwendung des bereits bestehenden
+`active→cancelled`-Übergangs (Migration 006: `chk_program_assignments_status
+CHECK (status IN ('active','completed','cancelled'))`, bereits heute über
+den bestehenden Zuweisungs-Aktualisierungs-Endpunkt erreichbar, z. B. der
+in `ProgramAssignmentsView.vue` bereits vorhandene „Abschliessen"/
+„Stornieren"-Mechanismus). Bereits `completed` oder bereits `cancelled`
+Zuweisungen bleiben **unverändert** (Update-Guard `WHERE status='active'`
+macht dies idempotent). **Wichtige Abgrenzung:** Diese Regel betrifft
+ausschliesslich Zuweisungen, bei denen das gelöschte Konto **Mitglied** ist
+— nicht Zuweisungen, die das gelöschte Konto als Trainer:in **erstellt**
+hat (`assigned_by_user_id`) für ein anderes, nicht zu löschendes Mitglied.
+Der Trainingsplan eines fremden, weiterhin aktiven Mitglieds wird durch die
+Löschung des ursprünglich zuweisenden Coaches **nicht** storniert — das
+wäre ein unangemessener, überraschender Nebeneffekt für eine Person, deren
+eigenes Konto gar nicht gelöscht wird.
 
-**7.6 Aktive Terminierungsregeln.** Werden auf `status='disabled'` gesetzt
-(bestehender Mechanismus) — verhindert weitere Materialisierung künftiger
-Kalendertermine für ein Konto, das nicht mehr darauf zugreifen kann.
+**7.6 Aktive Terminierungsregeln — REVIDIERT (Blocker 3).** Jede aktive
+Terminierungsregel, die das zu löschende Konto **erstellt** hat
+(`created_by_user_id`), wird auf `status='disabled'` gesetzt — **unabhängig
+davon, für welches Mitglied die Regel gilt**, bewusst anders gescopt als
+7.5. Grund: `backend/services/trainingCalendarService.js` prüft beim
+Materialisieren künftiger Kalendertermine **nicht** den Live-Status der
+zugrundeliegenden Coaching-Beziehung (verifiziert: kein Verweis auf
+`coaching_relationship` in dieser Datei) — würde die Regel eines
+gelöschten Coaches aktiv bleiben, generierte sie für ein fremdes, weiterhin
+aktives Mitglied unbeaufsichtigt neue Trainingstage, ohne dass irgendein
+Coach diese je betreut. Das Deaktivieren verhindert genau dieses „Phantom-
+Coach"-Szenario. Bereits abgeschlossene/materialisierte Kalendereinträge
+bleiben davon unberührt (bestehendes Prinzip: Deaktivieren ist ein reiner
+Status-Flip, kein Löschen, Abschnitt 6.4/8).
 
-**7.7 Zukünftige Kalendereinträge.** Werden **nicht** einzeln gelöscht — sie
-bleiben als `PLANNED`-Zeilen in `training_calendar_entries` bestehen (kein
-FK-Zwang, keine fachliche Notwendigkeit, sie zu entfernen, da sie mit der
-anonymisierten `users`-Zeile weiterhin referentiell konsistent sind). Sie
-sind für niemanden mehr sichtbar/erreichbar, da der Kontozugriff selbst
-gesperrt ist (siehe Abschnitt 14).
+**7.7 Zukünftige Kalendereinträge — REVIDIERT (Blocker 3).** Der
+tatsächliche Statusübergangs-Vertrag
+(`backend/domain/trainingCalendarDomain.js`, `ALLOWED_TRANSITIONS`) wurde
+gegen den Code verifiziert: `PLANNED → CANCELLED` ist ein bestehender,
+erlaubter Übergang; `IN_PROGRESS → CANCELLED` ist es **nicht**
+(`IN_PROGRESS` erlaubt nur `→ COMPLETED` oder `→ PLANNED`). Die neue,
+konsistente Regel:
 
-**7.8 Persönliche Workouts/Progress-Daten.** Werden **hart gelöscht** als
+- **Zukünftige Studio-Kalendereinträge** (`source_type='studio'`,
+  `status='PLANNED'`, `user_id`=Konto): werden auf `status='CANCELLED'`
+  gesetzt.
+- **`IN_PROGRESS`-Studio-Kalendereinträge:** werden **nicht** direkt
+  „cancelled" — sie folgen der Session-Regel (Abschnitt 7.8/12): das
+  Abbrechen der zugehörigen `in_progress`-Workout-Session löst — über die
+  bereits bestehende, in `trainingCalendarDomain.js` dokumentierte
+  Integration („IN_PROGRESS → PLANNED modelliert einen Session-Abbruch, der
+  ein Vorkommnis wieder plangültig macht") — automatisch den bestehenden
+  Übergang `IN_PROGRESS → PLANNED` aus. Der so entstandene `PLANNED`-Eintrag
+  wird danach, in derselben Transaktion, von der obigen
+  `PLANNED → CANCELLED`-Regel mit erfasst. Kein neuer, bisher nicht
+  existierender Übergang wird eingeführt.
+- **`COMPLETED`/`SKIPPED`/bereits `CANCELLED`-Einträge:** bleiben
+  unverändert (kein erlaubter Übergang existiert dafür, und keiner wäre
+  fachlich gewollt — historische Tatsache).
+- **Zukünftige persönliche Kalendereinträge** (`source_type='personal'`):
+  weiterhin hart gelöscht, unverändert gegenüber der ursprünglichen
+  Fassung (Abschnitt 7.9).
+
+**7.8 Laufende Workout-Sessions — NEU (Blocker 2).** Verbindliche
+Entscheidung zwischen „Löschung blockieren, solange eine Session
+`in_progress` ist" und „Session atomar als `aborted` beenden": **Session
+atomar beenden.** Geprüft gegen ADR 003 (`docs/adr/003-studio-workout-execution-and-results.md`):
+der Übergang `in_progress → aborted` ist bereits heute **präzedenzlos**
+(„abort exists precisely for 'I'm stopping now, whatever state this is
+in,'" — keine Vorbedingungen, im Gegensatz zu `in_progress → completed",
+das ein vollständiges Ausfüllen aller Sätze voraussetzt) und lässt „jede
+Zeile exakt wie sie war" — Migration 007 bestätigt dies schema-seitig
+(`chk_workout_sessions_aborted_at CHECK ((status='aborted' AND aborted_at
+IS NOT NULL) OR (status<>'aborted' AND aborted_at IS NULL))`). Jede
+`in_progress`-Session, bei der `member_membership_id` zum zu löschenden
+Konto gehört, wird daher in derselben Transaktion auf `status='aborted'`,
+`aborted_at=NOW()` gesetzt — unter Wiederverwendung genau dieser
+bestehenden, bereits vollständig spezifizierten Transition, kein neuer
+Übergang. Die verknüpften `studio_workout_session_exercises`/`_sets`
+bleiben dabei unverändert (ADR 003: Abbruch verändert keine bereits
+protokollierten Werte). Der bereits bestehende, in
+`trainingCalendarDomain.js` dokumentierte Integrationseffekt
+(`IN_PROGRESS → PLANNED` auf dem verknüpften Kalendereintrag) tritt
+automatisch ein und wird in Abschnitt 7.7 weiterverarbeitet. Bereits
+`completed` oder bereits `aborted` Sessions bleiben unverändert
+(Update-Guard `WHERE status='in_progress'`). Ein eigener, stabiler
+Lösch-Blocker-Fehlercode ist damit **nicht** erforderlich — die Preview
+(Abschnitt 15.1) weist die betroffene Anzahl trotzdem transparent als
+Auswirkung aus, nicht als Blocker.
+
+**7.9 Persönliche Workouts/Progress-Daten.** Werden **hart gelöscht** als
 Teil derselben Transaktion — hierfür ist keine Anonymisierung nötig oder
 sinnvoll, da diese Daten laut ADR-Philosophie ausschliesslich der Person
 selbst gehören und keine Drittinteressen (anderer Studio-Mitglieder,
@@ -386,21 +511,28 @@ da die empfohlene Strategie aber **Anonymisierung, nicht Hard-Delete** der
 eigener Schritt der Löschtransaktion erfolgen (nicht implizit über einen
 `users`-`DELETE`, der ja gerade nicht stattfindet).
 
-**7.9 Abgeschlossene Studiohistorie.** Bleibt vollständig erhalten, aber
+**7.10 Abgeschlossene Studiohistorie.** Bleibt vollständig erhalten, aber
 ohne direkten Identifikator zur Person (siehe Abschnitt 13).
 
-**7.10 Feedback.** Bleibt unverändert im Wortlaut bestehen (append-only,
+**7.11 Feedback.** Bleibt unverändert im Wortlaut bestehen (append-only,
 kein Schreibzugriff auf `body` vorgesehen) — sowohl als Autor:in als auch
 als Adressat:in eines Feedbacks entpersonalisiert sich der Bezug indirekt
 durch die Anonymisierung der `users`-Zeile des Autors/Adressaten, nicht
-durch eine Änderung an der Feedback-Zeile selbst.
+durch eine Änderung an der Feedback-Zeile selbst. **Enthält weiterhin
+möglicherweise personenbezogenen Freitext** (Blocker 4, Abschnitt 13) — das
+wird hier bewusst nicht relativiert.
 
-**7.11 Audit Events.** Bleiben vollständig erhalten (`actor_user_id` fällt
+**7.12 Audit Events.** Bleiben vollständig erhalten (`actor_user_id` fällt
 bei einer etwaigen zukünftigen Hard-Delete-Situation ohnehin auf `NULL`,
 bei der empfohlenen Anonymisierung bleibt die Referenz sogar technisch
-gültig, zeigt aber auf eine anonymisierte Zeile).
+gültig, zeigt aber auf eine anonymisierte Zeile). Neu hinzu kommen, pro
+betroffener Zeile, die bereits bestehenden Ereignistypen
+`training_program_assignment.cancelled` (7.5) und
+`assignment.schedule_rule.disabled` (7.6) sowie `workout_session.aborted`
+(7.8) — alle drei existieren bereits im Ereigniskatalog, keine
+Erweiterung nötig (Abschnitt 17).
 
-**7.12 Einladungen.** Offene, noch nicht angenommene Einladungen, die das zu
+**7.13 Einladungen.** Offene, noch nicht angenommene Einladungen, die das zu
 löschende Konto ausgesprochen hat (`invited_by_user_id`), bleiben bestehen
 (`SET NULL` bereits vorbereitet, aber bei Anonymisierung nicht nötig — die
 Einladung bleibt funktional gültig, der Einladende ist nur nicht mehr
@@ -409,21 +541,21 @@ löschenden Kontos (`studio_invitations.email_normalized`) wird beim
 Anonymisieren der E-Mail-Adresse funktional verwaist (niemand kann sie mehr
 annehmen) — dies ist unkritisch, da sie ohnehin nach 7 Tagen abläuft.
 
-**7.13 Sessions.** Alle aktiven `user_auth_sessions`/`user_refresh_tokens`
+**7.14 Sessions.** Alle aktiven `user_auth_sessions`/`user_refresh_tokens`
 werden in derselben Transaktion widerrufen (Abschnitt 14).
 
-**7.14 E-Mail-Änderungen.** Ein offener `user_email_change_requests`-Eintrag
+**7.15 E-Mail-Änderungen.** Ein offener `user_email_change_requests`-Eintrag
 wird hart gelöscht (`CASCADE` von `user_id`, funktional bereits korrekt
-vorbereitet — muss aber wie 7.8 explizit ausgeführt werden, da kein
+vorbereitet — muss aber wie 7.9 explizit ausgeführt werden, da kein
 `users`-`DELETE` stattfindet).
 
-**7.15 Wiederverwendung der bisherigen E-Mail-Adresse.** Wird durch die
+**7.16 Wiederverwendung der bisherigen E-Mail-Adresse.** Wird durch die
 Anonymisierung automatisch möglich: Sobald `users.email` auf einen
 Platzhalterwert überschrieben ist, ist die ursprüngliche Adresse im
 bestehenden `UNIQUE`-Index frei — ohne zusätzlichen Mechanismus. Empfehlung:
 **sofortige** Freigabe, kein Sperrfenster (siehe Abschnitt 9 Begründung).
 
-**7.16 Wiederregistrierung nach Löschung.** Ist damit ab dem Moment der
+**7.17 Wiederregistrierung nach Löschung.** Ist damit ab dem Moment der
 Löschung technisch identisch zu einer Erstregistrierung mit dieser E-Mail —
 es entsteht ein komplett neues `users`-Konto ohne jede Verbindung zum
 anonymisierten alten Konto (kein gemeinsamer Schlüssel, kein
@@ -512,12 +644,16 @@ ADR-001-bis-003-Prinzipien konsistente Lösung.
 ## 10. User Lifecycle
 
 Neuer Zustand auf `users`, entworfen (nicht implementiert) in Migration 013
-(Abschnitt 19):
+(Abschnitt 19). **Revidiert (Blocker 5):** `deletion_reason` wurde nach
+kritischer Prüfung aus dem Entwurf entfernt — siehe Abschnitt 19 für die
+Begründung (in dieser Phase gibt es genau einen Auslöser für
+`lifecycle_status='deleted'`, sodass eine dritte Spalte für einen stets
+konstanten Wert keinen Zweck erfüllt; kein freier Löschgrund wurde je
+vorgesehen).
 
 ```
 lifecycle_status: 'active' | 'deleted'   (VARCHAR(16) NOT NULL DEFAULT 'active', CHECK)
 deleted_at:       TIMESTAMP(3) NULL
-deletion_reason:  'self_service' | 'admin_initiated' | NULL   (VARCHAR(32) NULL, CHECK)
 ```
 
 Übergang ist **einmalig und irreversibel**: `active → deleted`. Kein
@@ -628,14 +764,19 @@ vorgenommen.
 
 | Zustand | Verhalten bei Kontolöschung | Begründung |
 |---|---|---|
-| Laufende Workout Session (`in_progress`) | **wird nicht automatisch beendet** — bleibt `in_progress`, aber unerreichbar (Konto gesperrt) | Ein automatisches „Abschliessen" würde falsche, nie tatsächlich absolvierte Ergebniswerte erzeugen (Zielwerte ≠ Ist-Werte) — schlimmer als ein ehrlich unvollendeter Zustand. Ein automatisches „Abbrechen" (`aborted`) wäre vertretbar, ist aber keine Notwendigkeit: die Session ist ohnehin für niemanden mehr erreichbar. |
-| Aktive Programmzuweisung | **bleibt `active`** (kein automatisches `cancelled`) | Historische Tatsache, kein Live-Zustand; siehe 7.5 |
+| Laufende Workout Session (`in_progress`, Konto ist Mitglied) | **REVIDIERT (Blocker 2): wird atomar auf `aborted` gesetzt** (`aborted_at=NOW()`), verknüpfte Sätze/Übungen bleiben unverändert | Bereits bestehende, präzedenzlose `in_progress→aborted`-Transition (ADR 003) — keine Vorbedingungen, verändert keine protokollierten Werte. Löst zusätzlich den bestehenden Kalender-Integrationseffekt `IN_PROGRESS→PLANNED` aus. Siehe 7.8. |
+| Bereits `completed`/bereits `aborted` Session | **bleibt unverändert** | Terminal, historische Tatsache |
+| Aktive Programmzuweisung (Konto ist Mitglied) | **REVIDIERT (Blocker 3): wird atomar auf `cancelled` gesetzt** (`cancelled_at=NOW()`) | Bestehender `active→cancelled`-Übergang (Migration 006); vermeidet den inkonsistenten Zwischenzustand „aktive Zuweisung ohne aktive Beziehung/Terminierung". Siehe 7.5. |
+| Bereits `completed`/bereits `cancelled` Zuweisung | **bleibt unverändert** | Terminal, historische Tatsache |
+| Zuweisung, die das Konto als Trainer:in für ein **anderes** Mitglied erstellt hat | **bleibt unverändert** (`active` bleibt `active`) | Das fremde Mitglied ist nicht Gegenstand dieser Löschung; ein Nebeneffekt auf dessen Trainingsplan wäre unangemessen (Abschnitt 7.5) |
 | Aktive Coaching-Beziehung | **automatisch auf `ended` gesetzt** | Eine Beziehung setzt zwei aktive Parteien voraus — mit einer gelöschten Partei ist sie fachlich nicht mehr „aktiv" führbar; bestehender Mechanismus (`endCoachingRelationship`) wird innerhalb der Löschtransaktion aufgerufen |
-| Aktive Terminierungsregel | **automatisch auf `disabled` gesetzt** | Verhindert sinnlose weitere Materialisierung künftiger Termine für ein gesperrtes Konto; bereits abgeschlossene Kalendereinträge bleiben unangetastet (bestehendes Verhalten, Abschnitt 6.4 Stage-5A1-Prinzip) |
-| Zukünftiger Studio-Kalendereintrag (`PLANNED`) | **bleibt bestehen, unverändert** | Kein FK-Zwang, keine fachliche Notwendigkeit zu löschen; für niemanden mehr sichtbar |
-| Zukünftiger persönlicher Kalendereintrag | **wird gelöscht** (Teil der harten Löschung persönlicher Daten, Abschnitt 7.8 — ein persönlicher Kalendereintrag ist konzeptionell wie ein persönliches Workout zu behandeln) | Rein persönlich, kein Drittinteresse |
+| Aktive Terminierungsregel, vom Konto **erstellt** (unabhängig vom betroffenen Mitglied) | **automatisch auf `disabled` gesetzt** | Verhindert, dass ein fremdes Mitglied nach Löschung seines Coaches unbeaufsichtigt weiter neue Termine materialisiert bekommt — die Materialisierung prüft die Coaching-Beziehung nicht (verifiziert gegen `trainingCalendarService.js`). Siehe 7.6. |
+| Zukünftiger Studio-Kalendereintrag (`PLANNED`, Konto ist `user_id`) | **REVIDIERT (Blocker 3): wird auf `CANCELLED` gesetzt** | Bestehender `PLANNED→CANCELLED`-Übergang (`trainingCalendarDomain.js`); konsistent mit terminalisierter Zuweisung/Regel. Siehe 7.7. |
+| Studio-Kalendereintrag, der durch Session-Abbruch von `IN_PROGRESS` auf `PLANNED` zurückfällt | **wird danach ebenfalls `CANCELLED`** (von derselben Regel erfasst) | Kein neuer Übergang nötig — `IN_PROGRESS→CANCELLED` existiert nicht, `IN_PROGRESS→PLANNED→CANCELLED` nutzt zwei bestehende Übergänge nacheinander |
+| `COMPLETED`/`SKIPPED`/bereits `CANCELLED` Kalendereintrag | **bleibt unverändert** | Terminal, historische Tatsache, kein Übergang dafür vorgesehen |
+| Zukünftiger persönlicher Kalendereintrag | **wird gelöscht** (Teil der harten Löschung persönlicher Daten, Abschnitt 7.9 — ein persönlicher Kalendereintrag ist konzeptionell wie ein persönliches Workout zu behandeln) | Rein persönlich, kein Drittinteresse |
 | Offene Einladung (ausgesprochen vom zu löschenden Konto) | **bleibt bestehen**, `invited_by_user_id` bleibt technisch gültig (zeigt auf anonymisiertes Konto) | Kein fachlicher Grund, eine bereits verschickte Einladung ungültig zu machen; läuft ohnehin nach 7 Tagen ab |
-| Offene E-Mail-Änderung | **wird hart gelöscht** | Rein operativ, kein historischer Wert (Abschnitt 7.14) |
+| Offene E-Mail-Änderung | **wird hart gelöscht** | Rein operativ, kein historischer Wert (Abschnitt 7.15) |
 | Aktive Auth-Sitzung | **sofort widerrufen** | Zwingend, Abschnitt 14 |
 | Ausstehender Refresh Token | **sofort widerrufen** | Zwingend, Abschnitt 14 |
 | Rate-Limit-Zustand | **unverändert belassen** | Enthält keinen reversiblen Personenbezug (HMAC-Hash), läuft über eigene TTL aus; ein Zurücksetzen wäre sogar unerwünscht (könnte als Umgehung eines Limits missbraucht werden) |
@@ -651,11 +792,8 @@ Aktion verletzt**:
 - Abgeschlossene Workouts/Ergebnisse (`studio_workout_sessions`,
   `_exercises`, `_sets`) werden **inhaltlich nicht verändert** —
   Zielwerte, Ist-Werte, Zeitstempel, Status bleiben exakt wie protokolliert.
-  Einzige Ausnahme: das freitextliche `member_note`-Feld wird bei
-  Kontolöschung geleert (nicht anonymisiert-ersetzt, sondern auf `NULL`
-  gesetzt) — es ist reiner, potenziell PII-tragender Freitext ohne
-  fachliche Notwendigkeit für Dritte, im Gegensatz zu den numerischen
-  Trainingsergebnissen selbst.
+  Eine abgebrochene Session (Abschnitt 7.8) ist ebenfalls ein terminaler,
+  historisch korrekter Zustand, keine Verfälschung.
 - Programm-Snapshots (`studio_training_program_*`) werden nicht berührt —
   sie gehören dem Studio, nicht der gelöschten Person (ADR 002).
 - Regeländerungen betreffen weiterhin nie abgeschlossene Historie (bereits
@@ -678,12 +816,56 @@ Aktion verletzt**:
   „Ownership-Transfer", der hier explizit **nicht** automatisch geschieht,
   Abschnitt 11.5).
 
+### 13.1 Freitext-Policy — REVIDIERT (Blocker 4)
+
+Die ursprüngliche Fassung dieses Dokuments enthielt einen inneren
+Widerspruch: Abschnitt 5 stufte `member_note` und Feedback-`body` explizit
+als mögliche **indirekte Identifikatoren** ein, behauptete an anderer
+Stelle aber gleichzeitig, Freitext bleibe „wortwörtlich unverändert" **und**
+es bleibe „keine PII in der Historie". Beides gleichzeitig ist nicht
+haltbar, sobald Freitext personenbezogene Inhalte tragen kann.
+
+**Ehrliche, verbindliche Policy für Stage 5C:**
+
+- Strukturierte **direkte** Account-Identifikatoren (`users.username`,
+  `users.email`, `users.password_hash`) werden irreversibel anonymisiert
+  — unverändert gegenüber der ursprünglichen Fassung.
+- **Fachhistorischer Freitext** (`studio_workout_sessions.member_note`,
+  `studio_workout_session_sets.member_note`,
+  `studio_workout_session_feedback.body`, `workouts.notes` — Letzteres
+  ohnehin Teil der harten Löschung persönlicher Daten, Abschnitt 7.9)
+  bleibt **vollständig unverändert** — er wird **nicht** geleert, **nicht**
+  überschrieben, **nicht** durchsucht oder automatisch bereinigt. Dies ist
+  eine bewusste Umkehr der ursprünglichen Fassung (die `member_note` bei
+  Workout-Sessions/-Sets leeren wollte).
+- Dieser Freitext **kann weiterhin personenbezogene Inhalte enthalten**
+  (z. B. wenn ein Mitglied den eigenen Namen in einer Notiz erwähnt, oder
+  ein Coach im Feedback auf eine gesundheitliche Einschränkung eingeht).
+  Dieses Dokument behauptet das **nicht** als gelöst.
+- Zugriff auf diesen Freitext bleibt **unverändert streng tenant- und
+  rollenbegrenzt** — dieselben Regeln wie heute (ADR 003: kein
+  Owner/Admin-Bypass auf Ergebnisse/Feedback, nur die eigene aktive
+  Coaching-Beziehung berechtigt zum Lesen; das Mitglied selbst sieht immer
+  nur die eigenen Daten). Die Anonymisierung des Autor:innen-Kontos ändert
+  an diesem Zugriffsmodell nichts.
+- Eine spätere, weitergehende manuelle oder automatisierte
+  Freitextbereinigung (z. B. eine Anfrage „bitte entferne meinen Namen auch
+  aus meinen historischen Notizen") ist **ausdrücklich Out of Scope**
+  dieser Phase (Abschnitt 33) — sie wäre ein eigenständiges, deutlich
+  aufwändigeres Feature (Freitext-Erkennung/-Redaktion) ohne den
+  RESTRICT-erzwungenen Charakter der übrigen Entscheidungen dieses
+  Dokuments.
+- Die Dokumentation behauptet **nicht**, dass sämtliche historische Inhalte
+  nach einer Kontolöschung PII-frei sind — nur, dass keine **strukturierten
+  direkten Account-Identifikatoren** mehr über die anonymisierte
+  `users`-Projektion auflösbar sind (korrigiertes Abnahmekriterium,
+  Abschnitt 30).
+
 **Felder, die anonymisiert werden dürfen, ohne fachhistorische Inhalte zu
 verändern:** ausschliesslich `users.username`, `users.email`,
-`users.password_hash`, sowie das freitextliche `member_note`-Feld auf
-Workout-Sessions/-Sets (siehe oben). **Nichts sonst** — insbesondere keine
-Zeitstempel, keine Ergebniswerte, keine Statuswerte, kein
-Feedback-`body`, keine Programminhalte.
+`users.password_hash`. **Nichts sonst** — insbesondere keine Zeitstempel,
+keine Ergebniswerte, keine Statuswerte, kein Feedback-`body`, kein
+`member_note`, keine Programminhalte.
 
 ---
 
@@ -745,10 +927,16 @@ Mount-Punkt konsistent mit dem bestehenden `/api/account/*`-Router
 (folgt der bestehenden Konvention: Konto-Selbstverwaltung ist unversioniert
 und global, nicht studio-spezifisch).
 
-### 15.1 `GET /api/account/deletion-preview`
+### 15.1 `GET /api/account/deletion-preview` — ERWEITERT (Blocker 6)
 
 Liefert dem Benutzer vor der Bestätigung eine Vorschau, **ohne** etwas zu
-verändern.
+verändern. **Preview und Execute teilen sich dieselbe serverseitige
+Planungsfunktion** — entworfen als `planAccountDeletion(connection, userId)`
+(Abschnitt 18.1) —, sodass die angezeigte Vorschau nie von der tatsächlichen
+Ausführung abweichen kann: Beide Endpunkte rufen exakt dieselbe Funktion für
+Blocker-Erkennung und Auswirkungs-Zählung auf; der einzige Unterschied ist,
+dass die Preview sie schreibgeschützt (ohne `FOR UPDATE`) und die Ausführung
+sie als ersten Teil der mutierenden Transaktion (mit `FOR UPDATE`) aufruft.
 
 ```
 Auth: erforderlich (bestehende authenticate-Middleware)
@@ -764,19 +952,38 @@ Rate-Limit: keiner nötig (rein lesend, kein destruktiver Nebeneffekt)
     "blockers": [
       { "code": "ACCOUNT_DELETION_STUDIO_OWNERSHIP_REQUIRED", "studioIds": ["…"] }
     ],
+    "impact": {
+      "runningWorkoutSessions": 1,
+      "activeAssignments": 2,
+      "activeCoachingRelationships": 1,
+      "activeScheduleRules": 3,
+      "futurePersonalCalendarEntries": 4,
+      "futureStudioCalendarEntries": 6
+    },
     "personalDataCounts": { "workouts": 12, "progressEntries": 48, "personalExercises": 3 },
     "preservedHistoryCounts": { "studioWorkoutSessions": 20, "programAssignments": 4,
                                   "coachFeedbackReceived": 6, "coachFeedbackAuthored": 0 },
     "activeSessionCount": 2,
-    "backupRetentionNotice": "Encrypted backups created before this request may retain your data
-                               for up to the documented retention window; see Abschnitt 20."
+    "notices": {
+      "freeTextRetention": "Free-text notes and coach feedback tied to your historical training
+                             records are not deleted or altered — only your account's own name and
+                             e-mail address become unidentifiable. See Abschnitt 13.1.",
+      "backupRetention": "Encrypted backups created before this request may retain your data
+                          for up to the documented retention window; see Abschnitt 20."
+    }
   }
 }
 ```
 
-Keine internen IDs (Auto-Increment-`id`), keine SQL-Details, keine Daten
-Dritter (z. B. keine Namen von Mitgliedern, denen ein zu löschender Coach
-Feedback gab).
+`impact` ist neu (Blocker 6) und macht alle in Abschnitt 12 tabellierten
+Auswirkungen für den Benutzer sichtbar, **bevor** er bestätigt — nicht nur
+harte Blocker, sondern auch nicht-blockierende, aber wirksame Änderungen
+(Session-Abbruch, Zuweisungs-/Regel-Terminalisierung, Kalender-Stornierung).
+`notices.freeTextRetention` ist neu (Blocker 4) und macht die in Abschnitt
+13.1 festgelegte, ehrliche Freitext-Policy für den Benutzer transparent,
+statt sie zu verschweigen. Keine internen IDs (Auto-Increment-`id`), keine
+SQL-Details, keine Daten Dritter (z. B. keine Namen von Mitgliedern, denen
+ein zu löschender Coach Feedback gab).
 
 ### 15.2 `POST /api/account/deletion-request`
 
@@ -794,7 +1001,11 @@ Body: {
 Erfolgsfall: 200 OK, sofortiger Abschluss (kein zweistufiger, verzögerter
 Ablauf — Begründung Abschnitt 9/23), Antwort:
 { "accountDeletion": { "completedAt": "…", "studiosAffected": <n> } }
-plus Cookie-Löschung wie in Abschnitt 14.
+plus Cookie-Löschung wie in Abschnitt 14. Serverseitig läuft nach dem
+`COMMIT` zusätzlich die Erzeugung des externen Deletion Receipts
+(Abschnitt 18.3, 21) — ein Fehlschlag **dieses** Schritts allein lässt die
+HTTP-Antwort nicht scheitern (die Löschung selbst ist bereits wirksam),
+löst aber ein gesondertes, lautes Fehler-Log aus.
 
 Fehlerfälle:
 401 CURRENT_PASSWORD_INVALID          (bestehender Fehlercode, wiederverwendet)
@@ -845,6 +1056,28 @@ Ein paralleler Login/Refresh während der Löschung sieht entweder den
 Alt-Zustand (Sitzung noch gültig, Löschung noch nicht committet) oder den
 Neu-Zustand (Sitzung widerrufen) — nie einen Mischzustand, da beides
 dieselbe Transaktion und dieselben Zeilen sperrt.
+
+### 15.5 „Deletion Receipt Doctor“ — NEU (Blocker 1, Betriebswerkzeug)
+
+Kein Benutzer-API-Endpunkt, sondern ein Betriebs-/Operator-Werkzeug (Entwurf,
+analog zu `npm run db:migrate:doctor`, s. Abschnitt 21.3): ein
+schreibgeschützter Konsistenz-Check, der bei jedem Anwendungsstart **und**
+zwingend nach jedem Restore läuft, und in beide Richtungen prüft:
+
+1. Jede `users`-Zeile mit `lifecycle_status='deleted'`, für die **kein**
+   gültiges Deletion Receipt existiert → Receipt aus der bereits
+   anonymisierten Zeile selbst deterministisch neu erzeugen (Absturz-
+   Wiederherstellung, Abschnitt 18.3) — unkritisch, da die Zeile schon
+   korrekt anonymisiert ist.
+2. Jedes gültige Deletion Receipt, dessen `accountRef` auf eine `users`-Zeile
+   mit `lifecycle_status='active'` zeigt → Inkonsistenz (ein Restore hat
+   einen Vor-Löschungs-Stand zurückgebracht) → Löschtransaktion erneut,
+   idempotent, gegen diese Zeile ausführen (Reconciliation, Abschnitt 21.2).
+3. Jedes Receipt, dessen Integritätsprüfung (HMAC) fehlschlägt → **fail-closed**,
+   kein automatisches Verhalten, Anwendung meldet sich nicht als `ready`
+   (Erweiterung des bestehenden `/api/health/ready`-Verhaltens, das schon
+   heute Migrationsstatus mitprüft), manuelle Untersuchung zwingend
+   erforderlich (Abschnitt 21.4).
 
 ---
 
@@ -922,16 +1155,29 @@ einzelnes globales Ereignis.
   Kontolöschung) — konsistent mit dem bestehenden Muster, dass
   `membershipChangeAuditEvents()` bereits pro Statuswechsel ein Ereignis
   erzeugt.
+- **Neu (Blocker 2/3):** für jede in derselben Transaktion terminalisierte
+  Zeile je ein bereits bestehendes, unverändertes Audit-Ereignis:
+  `workout_session.aborted` (pro abgebrochener Session, Abschnitt 7.8),
+  `training_program_assignment.cancelled` (pro stornierter Zuweisung,
+  Abschnitt 7.5), `assignment.schedule_rule.disabled` (pro deaktivierter
+  Regel, Abschnitt 7.6) — alle drei existieren bereits im
+  `SAFE_DETAIL_KEYS`-Katalog (`studioAudit.js`), keine Erweiterung des
+  Ereigniskatalogs nötig. Kalender-Stornierungen selbst erzeugen bewusst
+  **kein** eigenes Ereignis — sie sind eine reine Folge der
+  Zuweisungs-/Regel-Terminalisierung, kein eigenständiger fachlicher
+  Vorgang, und ein zusätzliches Ereignis pro Kalendertag wäre
+  unverhältnismässig granular gegenüber dem bestehenden Ereigniskatalog.
 - Für die **globale** Kontolöschung selbst (nicht studio-gebunden): **kein**
-  neuer DB-Datensatz, sondern ein strukturiertes Log-Ereignis über die
-  bestehende Logging-Infrastruktur (`startup/logger.js`) —
-  `event: "account_deletion_completed"`, Felder ausschliesslich
-  `{ userId (intern), requestId, studiosAffected, deletionReason }`, **keine**
-  E-Mail, **kein** Benutzername (beide zu diesem Zeitpunkt bereits
-  überschrieben, könnten also ohnehin nicht mehr geloggt werden). Diese
-  Wahl (Log statt neue Tabelle) ist bewusst: siehe Abschnitt 21 für die
-  Begründung, warum ein DB-Ledger-Eintrag das Restore-Problem nicht löst,
-  ein externes Log-Ereignis aber schon.
+  neuer DB-Datensatz. **Revidiert (Blocker 1):** Statt eines reinen
+  strukturierten Log-Ereignisses als einzige Quelle entsteht jetzt ein
+  externes, integritätsgeschütztes **Deletion Receipt** (Abschnitt 21) —
+  die eigentliche, restore-sichere Quelle. Ein strukturiertes Log-Ereignis
+  (`event: "account_deletion_completed"`, Felder ausschliesslich
+  `{ userId (intern), requestId, studiosAffected }`, **keine** E-Mail,
+  **kein** Benutzername) wird zusätzlich weiterhin emittiert — als
+  operative Sichtbarkeit/Alarmierung im laufenden Betrieb, **nicht** mehr
+  als alleinige Restore-Sicherheitsquelle (die frühere Begründung „ein Log
+  allein genügt" war unzureichend, s. Abschnitt 21).
 - `account.deletion_blocked` wird **nicht** als Audit-/Log-Ereignis
   benötigt — ein abgelehnter Versuch (Sole-Owner-Blocker) verändert nichts
   und ist über die normale API-Fehlerantwort bereits für den Nutzer selbst
@@ -953,92 +1199,181 @@ identifizieren.
 
 ---
 
-## 18. Transaktionsmodell
+## 18. Transaktionsmodell — REVIDIERT (Blocker 1/2/3/5)
 
-Eine einzige atomare Transaktion (Entwurf):
+### 18.1 Geteilte Planungsfunktion
+
+`planAccountDeletion(connection, userId, { forUpdate })` (Entwurf) kapselt
+Schritte 1–4 unten (Laden + Blocker-Erkennung + Auswirkungs-Zählung) als
+**eine** Funktion, die sowohl von `GET .../deletion-preview` (`forUpdate:
+false`, keine Sperren, nur lesen) als auch von `POST .../deletion-request`
+(`forUpdate: true`, Sperren wie unten) aufgerufen wird — siehe Abschnitt
+15.1/15.2. Dies ist die Antwort auf Blocker 6: Es gibt keinen zweiten,
+unabhängig gepflegten Codepfad, der von der Vorschau abweichen könnte.
+
+### 18.2 Vollständige Sperr- und Mutationsreihenfolge (17 Schritte)
 
 ```
 BEGIN
   1. SELECT users WHERE id=? FOR UPDATE
-     -> wenn lifecycle_status='deleted': COMMIT (no-op), 409 ACCOUNT_ALREADY_DELETED
-  2. SELECT alle studio_memberships WHERE user_id=? FOR UPDATE
+  2. Lifecycle-Zustand prüfen
+     -> wenn lifecycle_status='deleted': ROLLBACK (no-op), 409 ACCOUNT_ALREADY_DELETED
+  3. SELECT alle studio_memberships WHERE user_id=? FOR UPDATE
      (sperrt zugleich implizit gegen einen parallelen zweiten
       Löschversuch, der dieselben Zeilen anfassen würde)
-  3. Owner-Schutzprüfung (Abschnitt 11) über die geladenen Mitgliedschaften
+  4. Sole-Owner-Prüfung (Abschnitt 11) über die geladenen Mitgliedschaften
      + je Studio ein SELECT active_owner_count ... FOR UPDATE
      -> bei Blocker: ROLLBACK, 409 ACCOUNT_DELETION_STUDIO_OWNERSHIP_REQUIRED
-  4. Passwort-/Bestätigungsphrasen-Prüfung bereits vor Transaktionsbeginn
-     erfolgt (kein DB-Zugriff nötig) - Reihenfolge: Preview/Validierung vor
-     Sperren, um Sperrzeit zu minimieren
-  5. Für jede aktive Coaching-Beziehung des Kontos (als Coach oder Member):
-     UPDATE studio_coaching_relationships SET status='ended', ended_at=NOW()
-  6. Für jede aktive Terminierungsregel, die das Konto erstellt hat:
-     UPDATE studio_assignment_schedule_rules SET status='disabled'
-  7. Für jede studio_memberships-Zeile: UPDATE status='left'
-     + je ein studio_audit_events-Eintrag 'membership.left' (Abschnitt 17)
-  8. DELETE FROM user_email_change_requests WHERE user_id=?
-  9. DELETE FROM training_calendar_entries WHERE user_id=? AND source_type='personal'
- 10. DELETE FROM progress_entries WHERE user_id=?
- 11. DELETE FROM workouts WHERE user_id=?  (workout_exercises kaskadiert)
- 12. UPDATE studio_workout_sessions/session_sets SET member_note=NULL
-     WHERE member_membership_id IN (<Mitgliedschaften des Kontos>)
- 13. revokeAllSessionsInTransaction(connection, userId, 'account_deletion')
+     (Passwort-/Bestätigungsphrasen-Prüfung erfolgt bereits vor
+     Transaktionsbeginn, kein DB-Zugriff nötig — Reihenfolge:
+     Validierung vor Sperren, um Sperrzeit zu minimieren)
+  5. Laufende Workout-Sessions (member_membership_id ∈ Konto, status='in_progress')
+     sperren (FOR UPDATE) und atomar auf status='aborted', aborted_at=NOW()
+     setzen (Blocker 2, Abschnitt 7.8) — löst den bestehenden
+     IN_PROGRESS→PLANNED-Kalender-Integrationseffekt aus
+  6. Assignments terminalisieren: UPDATE studio_program_assignments
+     SET status='cancelled', cancelled_at=NOW()
+     WHERE member_membership_id ∈ Konto AND status='active'
+     (Blocker 3, Abschnitt 7.5 — NICHT für Zuweisungen, die das Konto nur
+     als Trainer:in für andere erstellt hat)
+  7. Coaching Relationships beenden: UPDATE studio_coaching_relationships
+     SET status='ended', ended_at=NOW()
+     WHERE (coach_membership_id ∈ Konto OR member_membership_id ∈ Konto)
+       AND status='active'
+  8. Schedule Rules deaktivieren: UPDATE studio_assignment_schedule_rules
+     SET status='disabled'
+     WHERE created_by_user_id=? AND status='active'
+     (Blocker 3, Abschnitt 7.6 — nach Ersteller:in gescopt, nicht nach
+     Mitglied)
+  9. Zukünftige Calendar Entries behandeln:
+     9a. UPDATE training_calendar_entries SET status='CANCELLED'
+         WHERE user_id=? AND source_type='studio' AND status='PLANNED'
+         (erfasst auch die durch Schritt 5 von IN_PROGRESS auf PLANNED
+         zurückgefallenen Einträge, da diese Abfrage NACH Schritt 5 läuft)
+     9b. DELETE FROM training_calendar_entries
+         WHERE user_id=? AND source_type='personal'
+ 10. Persönliche Daten löschen:
+     DELETE FROM progress_entries WHERE user_id=?
+     DELETE FROM workouts WHERE user_id=?  (workout_exercises kaskadiert)
+ 11. Auth Sessions und E-Mail-Änderungen löschen/widerrufen:
+     DELETE FROM user_email_change_requests WHERE user_id=?
+     revokeAllSessionsInTransaction(connection, userId, 'account_deletion')
      (bestehende Funktion, Abschnitt 14)
- 14. UPDATE users SET
+ 12. Direkte Account-Identifikatoren anonymisieren:
+     UPDATE users SET
        lifecycle_status='deleted', deleted_at=NOW(),
-       deletion_reason='self_service',
        username=<neuer Zufallsplatzhalter>,
        email=<neuer Zufallsplatzhalter>,
-       password_hash=<neuer, nie kommunizierter Zufallshash>,
-       auth_version = auth_version + 1
+       password_hash=<neuer, nie kommunizierter Zufallshash>
      WHERE id=? AND lifecycle_status='active'
      -- WHERE-Klausel als zusätzliche CAS-Absicherung gegen ein Rennen,
         das Schritt 1 theoretisch überholt haben könnte
+ 13. auth_version erhöhen: Teil derselben UPDATE-Anweisung wie Schritt 12
+     (auth_version = auth_version + 1) — kein separater Schritt nötig,
+     hier nur zur expliziten Nachvollziehbarkeit gegenüber dem Auftrag
+     eigens aufgeführt
+ 14. Audit Events erzeugen (Abschnitt 17): je ein 'membership.left' pro
+     Studio, 'workout_session.aborted' pro Schritt-5-Session,
+     'training_program_assignment.cancelled' pro Schritt-6-Zuweisung,
+     'assignment.schedule_rule.disabled' pro Schritt-8-Regel
+ 15. Deletion Receipt vorbereiten (NICHT schreiben): receiptId (neue UUID),
+     accountRef=users.id, lifecycleAction='deleted', deletedAt=NOW() werden
+     bereits jetzt als in-memory-Werte festgelegt (deterministisch,
+     unabhängig vom Transaktionsausgang danach) — siehe Abschnitt 18.3
 COMMIT
-  -> strukturiertes Log-Ereignis account_deletion_completed (Abschnitt 17)
-     erst NACH erfolgreichem COMMIT emittieren, nie davor
+ 16. (nach erfolgreichem COMMIT) strukturiertes Log-Ereignis
+     account_deletion_completed emittieren (Abschnitt 17) — nie davor
+ 17. Externes Deletion Receipt atomar finalisieren (Abschnitt 18.3, 21) —
+     bestes Bemühen, mit Selbstheilung bei Fehlschlag
 ```
 
-**Sperrreihenfolge:** `users`-Zeile zuerst, dann
-`studio_memberships`-Zeilen, dann pro Studio die Owner-Zähl-Abfrage — exakt
-dieselbe Reihenfolge (Nutzer → Mitgliedschaft → Owner-Zählung), die
-`updateMembership()` bereits heute für die Einzel-Studio-Variante verwendet
-(Abschnitt 6.1), hier nur über alle Studios des Kontos hinweg wiederholt.
-Dies vermeidet die Art von Lock-Order-Deadlock, die in Stage 3B2/4A bereits
-einmal real auftrat und behoben wurde (Refresh vs. Passwort-/E-Mail-Änderung)
-— indem konsequent dieselbe Reihenfolge wie der bestehende, bereits
-deadlock-frei verifizierte Mitgliedschafts-Update-Pfad eingehalten wird.
+### 18.3 Cross-Resource-Ausfallsicherheit: DB-Transaktion und externes Receipt sind KEINE gemeinsame atomare Ressource — NEU (Blocker 1/7)
 
-**Kein Teilzustand möglich:** Jeder Fehler in Schritt 2–14 führt zu einem
-vollständigen `ROLLBACK` — es gibt keinen Zwischenzustand, in dem z. B.
-Sessions bereits widerrufen, die `users`-Zeile aber noch nicht anonymisiert
-ist (oder umgekehrt). Ein paralleler zweiter Löschaufruf wartet in Schritt 1
-auf die `FOR UPDATE`-Sperre und sieht danach entweder den bereits
-abgeschlossenen Zustand (No-op) oder — falls der erste Versuch
-zurückgerollt wurde — den unveränderten Ausgangszustand. Eine parallele
-Workout-Mutation auf eine der betroffenen `member_membership_id`-Zeilen
-wird durch die bestehende Zeilensperrung auf `studio_workout_sessions`
-serialisiert (kein neues Sperrverhalten nötig, bestehendes
-`revision`-CAS-Muster bleibt unverändert wirksam). Eine parallele
-Studio-Rollenänderung (z. B. ein Owner versucht gleichzeitig, das zu
-löschende Konto zu befördern) wird durch dieselbe
+Die Datenbanktransaktion (Schritte 1–13) und das externe Deletion-Receipt-
+Dateisystem (Schritt 17) sind zwei getrennte Ressourcen ohne
+Zwei-Phasen-Commit zwischen ihnen. **Dieses Dokument behauptet an keiner
+Stelle vollständige Atomizität über beide Ressourcen hinweg** — stattdessen
+wird das Problem durch eine Eigenschaft der Daten selbst gelöst, nicht durch
+verteilte Transaktionslogik:
+
+- **Der Receipt-Inhalt ist eine reine, deterministische Funktion des
+  bereits committeten `users`-Zustands** (`accountRef=users.id`,
+  `deletedAt=users.deleted_at`) — er enthält keine Information, die nicht
+  auch aus der anonymisierten Zeile selbst rekonstruierbar wäre.
+- **Absturzfenster A — Absturz zwischen COMMIT (Schritt 13) und
+  Receipt-Schreiben (Schritt 17):** Zu diesem Zeitpunkt ist die Löschung
+  bereits vollständig und korrekt wirksam (die `users`-Zeile ist bereits
+  anonymisiert) — nur das externe Receipt fehlt noch. **Selbstheilung:**
+  Der „Deletion Receipt Doctor" (Abschnitt 15.5/21.3), der bei jedem
+  Anwendungsstart läuft, erkennt jede `lifecycle_status='deleted'`-Zeile
+  ohne zugehöriges Receipt und **erzeugt das fehlende Receipt aus dem
+  bereits korrekten DB-Zustand neu** — unkritisch, da keine Deletion
+  erneut ausgeführt werden muss, nur ihre externe Bestätigung nachgeholt
+  wird.
+- **Absturzfenster B — Restore eines Backups von vor der Löschung:** Hier
+  hilft Fenster-A-Selbstheilung **nicht**, weil die `users`-Zeile nach dem
+  Restore wieder `active` zeigt. Dies ist der eigentliche Fall, für den das
+  externe Receipt überhaupt existiert — siehe Abschnitt 21 (Reconciliation:
+  Receipt vorhanden, aber DB zeigt `active` → Löschung erneut ausführen).
+- **Wenn das synchrone Receipt-Schreiben in Schritt 17 fehlschlägt** (z. B.
+  Datenträger voll), **schlägt die HTTP-Antwort an den Benutzer NICHT
+  fehl** — die Löschung ist bereits wirksam und korrekt; stattdessen wird
+  ein gesondertes, hochprioritäres Fehler-Log emittiert (`event:
+  "account_deletion_receipt_write_failed"`), das einen Operator zum
+  manuellen Ausführen des Deletion Receipt Doctor auffordert, statt auf den
+  nächsten normalen Anwendungsstart zu warten.
+
+**Sperrreihenfolge (unverändert von der Vorgängerfassung):** `users`-Zeile
+zuerst, dann `studio_memberships`-Zeilen, dann pro Studio die
+Owner-Zähl-Abfrage, dann `studio_workout_sessions` — exakt dieselbe
+Grundreihenfolge, die `updateMembership()` bereits heute für die
+Einzel-Studio-Variante verwendet (Abschnitt 6.1), hier über alle Studios
+und zusätzlich über laufende Sessions des Kontos hinweg erweitert. Dies
+vermeidet die Art von Lock-Order-Deadlock, die in Stage 3B2/4A bereits
+einmal real auftrat und behoben wurde.
+
+**Kein Teilzustand innerhalb der DB-Transaktion möglich:** Jeder Fehler in
+Schritt 3–15 führt zu einem vollständigen `ROLLBACK`. Ein paralleler
+zweiter Löschaufruf wartet in Schritt 1 auf die `FOR UPDATE`-Sperre und
+sieht danach entweder den bereits abgeschlossenen Zustand (No-op) oder —
+falls der erste Versuch zurückgerollt wurde — den unveränderten
+Ausgangszustand. Eine parallele Workout-Mutation auf eine der betroffenen
+`member_membership_id`-Zeilen wird durch die bestehende Zeilensperrung auf
+`studio_workout_sessions`/`studio_program_assignments` serialisiert
+(bestehendes `revision`-CAS-Muster bzw. `FOR UPDATE` bleibt unverändert
+wirksam). Eine parallele Studio-Rollenänderung wird durch dieselbe
 `studio_memberships FOR UPDATE`-Sperre serialisiert wie zwei konkurrierende
 `updateMembership()`-Aufrufe es heute bereits sind.
 
 ---
 
-## 19. Migration-013-Entwurf
+## 19. Migration-013-Entwurf — REVIDIERT (Blocker 5)
 
 **Nicht erstellt — reiner Entwurf für eine spätere Implementierungsphase.**
 Bevorzugt das kleinste belastbare Schema: **eine** Tabellenänderung, **keine**
 neue Tabelle.
 
+**Kritische Prüfung von `deletion_reason` (Auftrag Abschnitt 5):** Die
+ursprüngliche Fassung sah eine dritte Spalte `deletion_reason` mit den
+Werten `'self_service'`/`'admin_initiated'` vor. Bei kritischer Prüfung:
+Diese Phase entwirft **ausschliesslich** den Selbstlöschungs-Ablauf
+(Abschnitt 33, Out of Scope: „Eine Admin-/Support-initiierte
+Zwangslöschung... wird in dieser Phase nicht entworfen"). Für jede Zeile,
+die in dieser Phase je `lifecycle_status='deleted'` erreicht, wäre der Wert
+von `deletion_reason` **immer und ausschliesslich** `'self_service'` — eine
+Spalte, die für jede existierende Zeile denselben konstanten Wert trägt,
+erfüllt keinen Zweck und ist reine spekulative Vorratsschema-Erweiterung
+für ein Feature, das noch nicht entworfen ist. **Entscheidung: entfernt.**
+Eine künftige Phase, die tatsächlich eine Admin-/Support-Löschung entwirft,
+soll zu diesem Zeitpunkt selbst entscheiden, welche Information sie dafür
+tatsächlich braucht (möglicherweise mehr als ein einzelnes Enum-Feld, z. B.
+ein Support-Ticket-Verweis) — nicht heute, ohne konkrete Anforderung,
+vorweggenommen werden.
+
 | Spalte | Zweck | Typ | Nullable | Default | Index | Constraint | Backfill | Bestehende Daten | Rollback-Risiko | Datenschutzwirkung |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `users.lifecycle_status` | Unterscheidet aktive von gelöschten Konten | `VARCHAR(16)` | `NOT NULL` | `'active'` | `INDEX idx_users_lifecycle_status (lifecycle_status)` (für künftige Bereinigungs-/Reporting-Abfragen) | `CHECK (lifecycle_status IN ('active','deleted'))` | alle bestehenden Zeilen erhalten automatisch `'active'` über den Spalten-Default, kein UPDATE nötig | unverändert (Default deckt alle ab) | gering — additive Spalte, kein bestehender Code liest sie, Entfernen in einem Rollback ist verlustfrei möglich, solange keine Zeile bereits `'deleted'` trägt | keine (Statuswert selbst ist kein Personenbezug) |
-| `users.deleted_at` | Zeitpunkt der Löschung, für Retention-Reporting | `TIMESTAMP(3)` | `NULL` | kein Default | kein eigener Index nötig (immer in Kombination mit `lifecycle_status` abgefragt) | keiner zusätzlich nötig (impliziert durch `lifecycle_status`, siehe Backfill-Konsistenzprüfung unten) | `NULL` für alle bestehenden Zeilen | unverändert | gering | gering (Zeitstempel allein re-identifiziert niemanden) |
-| `users.deletion_reason` | Unterscheidet Selbstlöschung von einer künftigen, hier nicht implementierten Support-/Admin-Löschung | `VARCHAR(32)` | `NULL` | kein Default | keiner | `CHECK (deletion_reason IN ('self_service','admin_initiated') OR deletion_reason IS NULL)` | `NULL` für alle bestehenden Zeilen | unverändert | gering | keine |
-| *(zusätzlich, konsistenzsichernd)* | — | — | — | — | — | `CHECK ((lifecycle_status='deleted' AND deleted_at IS NOT NULL) OR (lifecycle_status='active' AND deleted_at IS NULL))` — exakt demselben Muster wie die bestehenden `chk_*_completed_at`-Constraints (z. B. Migration 007) folgend | — | — | gering | — |
+| `users.lifecycle_status` | Unterscheidet aktive von gelöschten Konten | `VARCHAR(16)` | `NOT NULL` | `'active'` | `INDEX idx_users_lifecycle_status (lifecycle_status)` (für künftige Bereinigungs-/Reporting-Abfragen, auch vom Deletion Receipt Doctor genutzt, Abschnitt 15.5) | `CHECK (lifecycle_status IN ('active','deleted'))` | alle bestehenden Zeilen erhalten automatisch `'active'` über den Spalten-Default, kein UPDATE nötig | unverändert (Default deckt alle ab) | gering — additive Spalte, kein bestehender Code liest sie, Entfernen in einem Rollback ist verlustfrei möglich, solange keine Zeile bereits `'deleted'` trägt | keine (Statuswert selbst ist kein Personenbezug) |
+| `users.deleted_at` | Zeitpunkt der Löschung, für Retention-Reporting **und** als Inhalt des externen Deletion Receipts (Abschnitt 21) | `TIMESTAMP(3)` | `NULL` | kein Default | kein eigener Index nötig (immer in Kombination mit `lifecycle_status` abgefragt) | `CHECK ((lifecycle_status='deleted' AND deleted_at IS NOT NULL) OR (lifecycle_status='active' AND deleted_at IS NULL))` — exakt demselben Muster wie die bestehenden `chk_*_completed_at`-Constraints (z. B. Migration 007) folgend | `NULL` für alle bestehenden Zeilen | unverändert | gering | gering (Zeitstempel allein re-identifiziert niemanden) |
 
 **Zusätzlich (kein Schema, reine Code-Konvention):** die bestehende
 `CHECK`-Wertemenge auf `user_auth_sessions.revocation_reason` müsste um den
@@ -1048,14 +1383,20 @@ dies gehört technisch ebenfalls in Migration 013, ist aber keine neue
 Spalte, sondern eine Erweiterung einer bestehenden Wertemenge.
 
 **Bewusst nicht vorgeschlagen:** keine neue `account_deletion_receipts`-
-oder Retention-Ledger-Tabelle (Begründung Abschnitt 17/21 — ein
-strukturiertes Log-Ereignis erfüllt denselben Zweck robuster gegenüber
-einem Restore-Szenario, da es ausserhalb des von Backups erfassten
-DB-Zustands existiert); keine neue Spalte auf `studio_memberships`
-(`left`-Status und bestehendes `updated_at` genügen, Abschnitt 6.5); kein
-neuer Statuswert auf irgendeiner anderen Tabelle.
+oder Retention-Ledger-**Datenbanktabelle** — das externe Deletion Receipt
+(Abschnitt 21) ist bewusst **kein** Datenbankobjekt, sondern eine Datei
+ausserhalb der Datenbank, gerade weil ein DB-internes Ledger dem
+Restore-Problem nicht standhält (Abschnitt 21.1); keine neue Spalte auf
+`studio_memberships` (`left`-Status und bestehendes `updated_at` genügen,
+Abschnitt 6.5); kein neuer Statuswert auf irgendeiner anderen Tabelle
+ausser den bereits bestehenden, wiederverwendeten Übergängen
+(`studio_program_assignments.status='cancelled'`,
+`studio_assignment_schedule_rules.status='disabled'`,
+`training_calendar_entries.status='CANCELLED'`,
+`studio_workout_sessions.status='aborted'` — alle vier existieren bereits
+heute).
 
-**Rollback-Gesamtrisiko:** gering. Alle drei neuen Spalten sind additiv mit
+**Rollback-Gesamtrisiko:** gering. Beide neuen Spalten sind additiv mit
 Default/`NULL`, keine bestehende Abfrage liest sie vor der eigentlichen
 Implementierung. Ein Rollback dieser Migration wäre nur dann riskant, wenn
 zwischen ihrer Anwendung und einem Rollback bereits ein echtes
@@ -1086,59 +1427,217 @@ Designs. Zentral für diese Phase:
   Pilot-Consent zu kommunizierende Tatsache, keine Design-Lücke — sie ist
   aus dem GFS-Prinzip selbst inhärent unvermeidbar, ohne die
   Wiederherstellbarkeit älterer Backups komplett aufzugeben.
-- **Restore kann alte Daten technisch wieder einführen.** Siehe Abschnitt 21.
-
-**Entwurf für eine Löschungs-Receipt/pseudonyme Löschmarkierung:** Wie in
-Abschnitt 17 begründet, wird **keine** neue DB-Tabelle für diesen Zweck
-vorgeschlagen. Stattdessen: das strukturierte Log-Ereignis
-`account_deletion_completed` (Zeitstempel, interne Nutzer-ID, keine
-direkten Identifikatoren) **ist** die Löschungs-Receipt — es entsteht zum
-Zeitpunkt der Löschung, unabhängig vom Datenbank-Backup-Zyklus, und bleibt
-in der ohnehin vom Datenbank-Restore getrennten Log-Infrastruktur erhalten.
+- **Restore kann alte Daten technisch wieder einführen.** Siehe Abschnitt 21
+  — **REVIDIERT (Blocker 1):** ein reines strukturiertes Log genügt dafür
+  **nicht** als alleinige Quelle (Begründung unten); die tatsächliche
+  Lösung ist das externe Deletion Receipt.
 
 ---
 
-## 21. Restore-Reconciliation
+## 21. Restore-Reconciliation — VOLLSTÄNDIG NEU (Blocker 1)
 
-**Das eigentliche Problem:** Ein Restore aus einem `.ftbackup`, dessen
-Zeitstempel **vor** einer Kontolöschung liegt, bringt die zu diesem
-Zeitpunkt noch nicht anonymisierte `users`-Zeile unverändert zurück — inklusive
-Original-E-Mail, Benutzername und (gehashtem) Passwort. Ein Datenbank-internes
-Ledger würde dieses Problem **nicht** lösen: ein Ledger-Eintrag, der zum
-Zeitpunkt der Löschung geschrieben wurde, liegt im selben logischen
-Datenbankzustand wie die anonymisierte `users`-Zeile — beide werden von
-einem Backup vor diesem Zeitpunkt gleichermassen **nicht** erfasst. Ein
-DB-internes Ledger täuscht also nur eine Lösung vor, löst das eigentliche
-Problem aber nicht.
+### 21.0 Warum ein reines strukturiertes Log nicht genügt
 
-**Entwurf des Reconciliation-Runbooks** (analog zur bestehenden
-Struktur von `docs/MIGRATION_RECOVERY.md`, für eine spätere
-Implementierungsphase, hier nur als Prozessbeschreibung, kein Code):
+Die ursprüngliche Fassung dieses Dokuments schlug vor, ein strukturiertes
+Log-Ereignis als alleinige Restore-Sicherheitsquelle zu verwenden. Das ist
+unzureichend, aus genau den Gründen, die der Auftrag benennt:
 
-1. Nach jedem Restore einer Datenbank, die potenziell wieder in Betrieb
-   genommen wird (nicht nur ein Wegwerf-Testrestore), prüft ein Operator
-   das Wiederherstellungsdatum des Backups gegen das strukturierte
-   Log (Abschnitt 20) auf `account_deletion_completed`-Ereignisse, die
-   **nach** diesem Zeitpunkt liegen.
-2. Für jedes so gefundene Ereignis (identifiziert über die interne
-   Nutzer-ID, die im Log-Ereignis enthalten ist) wird der
-   Löschvorgang (Abschnitt 18) **erneut**, idempotent, gegen die
-   wiederhergestellte Datenbank ausgeführt — dieselbe Transaktion, kein
-   separater „Reparaturpfad“. Idempotenz ist bereits durch Schritt 1 der
-   Transaktion (`lifecycle_status`-Prüfung) gegeben.
-3. Erst nach erfolgreicher Reconciliation aller betroffenen Konten wird die
-   wiederhergestellte Datenbank für den regulären Betrieb freigegeben —
-   dies ist ein manueller, dokumentierter operativer Schritt, kein
-   automatisierter Mechanismus (konsistent mit dem bestehenden, bewusst
-   manuellen Charakter von `MIGRATION_RECOVERY.md`).
-4. Ein Restore in eine **disposable** Test-/Restore-Datenbank (wie es
-   `db:backup:drill`/`db:restore:test` bereits heute ausschliesslich tun,
-   nie direkt gegen eine produktiv genutzte Datenbank) benötigt **keine**
-   Reconciliation, da diese Datenbank nie in Betrieb genommen wird.
+- **Nicht transaktional:** ein Log-Schreibvorgang ist nicht an den
+  Datenbank-Commit gekoppelt — es gibt kein eingebautes Verfahren, das
+  beide Ressourcen atomar zusammenhält.
+- **Möglicherweise abgelaufen:** Log-Retention (Abschnitt 22, empfohlen
+  30–90 Tage) ist typischerweise **kürzer** als Backup-Retention (GFS mit
+  monatlichen Generationen) — ein Log-Ereignis kann längst rotiert/gelöscht
+  sein, während das zugehörige, viel ältere Backup noch existiert und
+  restauriert werden könnte.
+- **Möglicherweise unvollständig:** Logging-Infrastruktur ist typischerweise
+  auf Durchsatz/Verfügbarkeit optimiert, nicht auf garantierte Zustellung
+  (z. B. gepufferte Log-Shipper, die bei einem Absturz Zeilen verlieren
+  können).
+- **Nicht garantiert nach Restore verfügbar:** ein Log-System ist oft eine
+  eigene, separate Infrastruktur mit eigenem Backup-/Verfügbarkeitsmodell
+  — es gibt keine bestehende Garantie, dass es zum Zeitpunkt einer
+  Datenbank-Wiederherstellung überhaupt erreichbar oder konsistent ist.
+- **Ungeeignet als alleinige Quelle für irreversible Löschungen:** die
+  Konsequenz eines fehlenden/verlorenen Log-Eintrags wäre, dass eine
+  bereits gelöschte Person nach einem Restore dauerhaft reaktiviert bleibt,
+  ohne dass irgendein Mechanismus das je erkennt.
+
+### 21.1 Bewertung der vier vorgeschlagenen Optionen
+
+- **A — separate Deletion-Receipt-Datei ausserhalb des Repositorys und
+  ausserhalb des Backup-Verzeichnisses:** Einfach, keine neue
+  Infrastruktur (kein neuer Serverprozess, keine neue Datenbank), durch
+  freie Verzeichniswahl trivial vom DB-Backup-Zyklus entkoppelbar, für
+  einen lokalen Piloten (wenige Löschungen, kleine Dateien) uneingeschränkt
+  praktikabel.
+- **B — separate operative Deletion-Ledger-Datenbank:** Verworfen. Eine
+  zweite Datenbank ist echte neue Infrastruktur (Installation, Konfiguration,
+  eigener Betrieb) — unverhältnismässig für einen lokalen Piloten. Ausserdem
+  löst sie das Grundproblem nicht wirklich: eine zweite Datenbank braucht
+  **ihrerseits** eine Backup-/Restore-Strategie, und ohne besondere Sorgfalt
+  entsteht exakt dasselbe Restore-Kopplungsproblem eine Ebene tiefer.
+- **C — append-only/signierte Receipts:** Keine eigenständige
+  Speicherort-Alternative, sondern eine **Eigenschaft**, die auf Option A
+  angewendet wird (siehe unten: eine Datei pro Ereignis, einmal geschrieben,
+  nie verändert, mit Integritätsschutz).
+- **D — Kombination aus DB-Status und externem Receipt:** **Gewählt.**
+  `users.lifecycle_status` bleibt die schnelle, transaktionale Quelle für
+  den laufenden Betrieb (Login, Auth-Middleware, Abschnitt 10/14) — das
+  externe Receipt ist **kein Ersatz** dafür, sondern eine zusätzliche,
+  restore-unabhängige Bestätigung, die ausschliesslich für die
+  Reconciliation nach einem Restore konsultiert wird.
+
+**Designentscheidung: D, umgesetzt mit den Speichermechaniken aus A und den
+Integritätseigenschaften aus C.**
+
+### 21.2 Deletion-Receipt-Format
+
+Eine Datei pro Löschereignis (Entwurf, JSON, einmal geschrieben, nie
+verändert):
+
+```json
+{
+  “schemaVersion”: 1,
+  “receiptId”: “<UUID v4, frisch pro Receipt erzeugt>”,
+  “accountRef”: <interne users.id, Ganzzahl>,
+  “lifecycleAction”: “deleted”,
+  “deletedAt”: “<ISO-8601 UTC, identisch zu users.deleted_at>”,
+  “integrity”: {
+    “algorithm”: “HMAC-SHA256”,
+    “keyId”: “<Schlüssel-Kennung, analog zur bestehenden
+               BACKUP_ENCRYPTION_KEY_ID-Konvention>”,
+    “signature”: “<Hex, HMAC über die kanonische JSON-Repräsentation
+                   der obigen Felder>”
+  }
+}
+```
+
+- **Receipt-ID:** frische, zufällige UUID v4 — dient ausschliesslich der
+  Dateibenennung/Eindeutigkeit, nicht der Zuordnung.
+- **Pseudonyme Account-Referenz (`accountRef`):** die interne, ohnehin
+  niemals extern über die API exponierte `users.id` — bewusst **kein**
+  neuer öffentlicher Identifikator. Sie ist die einzige stabile, in jedem
+  Backup/Restore unveränderte Grösse, gegen die eine Reconciliation
+  matchen kann; sie ist kein „direkter Identifikator” im Sinne des
+  Auftrags (keine E-Mail, kein Benutzername) und für sich genommen ohne
+  Datenbankzugriff bedeutungslos — genau wie jede andere interne
+  Fremdschlüsselreferenz in diesem Schema bereits heute.
+- **Löschzeitpunkt:** identisch zu `users.deleted_at`.
+- **Lifecycle-Aktion:** `'deleted'` (durch die Löschtransaktion) oder
+  `'reconciliation_reapplied'` (durch den Deletion Receipt Doctor bei einer
+  erneuten Anwendung nach einem Restore, Abschnitt 21.3) — letzteres macht
+  den Reconciliation-Vorgang selbst nachvollziehbar.
+- **Integritätsschutz:** HMAC-SHA256 über die kanonische (schlüsselsortierte)
+  JSON-Repräsentation der Inhaltsfelder, mit einem dedizierten Schlüssel
+  (`DELETION_RECEIPT_HMAC_KEY`, analog zur bestehenden Konvention, dass
+  `RATE_LIMIT_KEY_SECRET` nie `JWT_SECRET` wiederverwendet — auch dieser
+  Schlüssel darf keinen anderen Zweck teilen). Ein symmetrisches HMAC statt
+  einer asymmetrischen Signatur ist für den Bedrohungsrahmen dieser Phase
+  (Schutz vor Zufall/Beschädigung/versehentlicher Veränderung, nicht vor
+  einem raffinierten Innentäter mit Schlüsselzugriff) proportional und
+  ohne neue kryptografische Abhängigkeit umsetzbar — als Restrisiko in
+  Abschnitt 29 vermerkt.
+
+### 21.3 Speicherort, Retention, eigenes Backup
+
+- **Speicherort:** ein neues, dediziertes Verzeichnis, konfigurierbar über
+  eine neue Umgebungsvariable (Vorschlag: `DELETION_RECEIPT_DIR`, analog zur
+  bestehenden `FITTRACK_BACKUP_DIR`-Konvention) — **explizit ausserhalb**
+  sowohl des Git-Repositorys als auch von `FITTRACK_BACKUP_DIR`. Für einen
+  lokalen Piloten genügt ein einfaches lokales Verzeichnis auf demselben
+  Host, aber ausserhalb des Datenbank-Backup-Pfads.
+- **Retention:** Receipts werden **nicht** vor Ablauf der längsten
+  bestehenden Backup-Retention-Generation gelöscht — praktikabel, da jede
+  Datei nur wenige hundert Byte umfasst; einfachste sichere Policy:
+  Receipts werden gar nicht aktiv gelöscht (unbegrenzte Aufbewahrung).
+- **Backup des Receipt-Speicherorts selbst:** **muss unabhängig** von der
+  Datenbank-Backup-Pipeline erfolgen — würde man Receipts in denselben
+  `.ftbackup`-Zyklus einschliessen, entstünde exakt dasselbe
+  Restore-Kopplungsproblem, das dieser Mechanismus lösen soll. Für den
+  Piloten genügt eine einfache, unabhängige Kopie/Synchronisation an einen
+  zweiten Ort; für Produktion: Replikation über denselben S3-kompatiblen
+  Mechanismus wie Stage 2B2A, aber unter einem separaten Prefix/Ziel,
+  entkoppelt vom DB-Backup-Zeitplan.
+- **Produktionsübertragbarkeit:** identischer Mechanismus, zusätzlich mit
+  Schlüsselverwaltung/-rotation nach demselben Muster wie
+  `BACKUP_ENCRYPTION_KEY_B64`/`_KEY_ID`.
+
+### 21.4 Restore-Reconciliation-Ablauf (Runbook-Entwurf, analog zur
+Struktur von `docs/MIGRATION_RECOVERY.md`)
+
+1. Ein Restore erfolgt — wie bereits heute etabliert — nie direkt gegen
+   eine produktiv bediente Datenbank, sondern zunächst gegen eine
+   disposable Test-/Restore-Datenbank.
+2. **Bevor** eine wiederhergestellte Datenbank für den regulären Betrieb
+   freigegeben wird, läuft der „Deletion Receipt Doctor” (Abschnitt 15.5)
+   — automatisiert **und** als zwingender, dokumentierter Operator-Schritt:
+   - Für jedes Receipt: HMAC-Integrität prüfen. **Bei Fehlschlag:
+     fail-closed** — Freigabe blockieren, manuelle Untersuchung zwingend
+     (Abschnitt 21.5).
+   - Für jedes integritätsgeprüfte Receipt mit `lifecycleAction='deleted'`:
+     den aktuellen `lifecycle_status` der Zeile mit `id=accountRef` in der
+     wiederhergestellten Datenbank lesen.
+     - Zeigt sie `'deleted'`: konsistent, nichts zu tun.
+     - Zeigt sie `'active'` (der Restore hat einen Vor-Löschungs-Stand
+       zurückgebracht): **die vollständige Löschtransaktion (Abschnitt 18)
+       erneut, idempotent, gegen diese Zeile ausführen** — dieselbe
+       Funktion, kein separater „Reparaturpfad”. Zusätzlich ein neues
+       Receipt mit `lifecycleAction='reconciliation_reapplied'` erzeugen.
+3. Erst nach vollständiger, fehlerfreier Reconciliation aller betroffenen
+   Konten wird die wiederhergestellte Datenbank für den regulären Betrieb
+   freigegeben — manueller, dokumentierter Schritt, kein rein
+   automatisierter Mechanismus (konsistent mit dem bewusst manuellen
+   Charakter von `MIGRATION_RECOVERY.md`).
+4. Derselbe Check läuft **zusätzlich bei jedem normalen
+   Anwendungsstart** (nicht nur nach einem Restore) als
+   Verteidigung-in-der-Tiefe — güngstig, da die Anzahl der Receipts klein
+   bleibt, und deckt auch andere Ursachen für eine Inkonsistenz ab, nicht
+   nur einen Restore.
+5. Ein Restore in eine disposable Test-/Restore-Datenbank, die nie in
+   Betrieb genommen wird, benötigt keine Reconciliation.
+
+### 21.5 Verhalten bei fehlendem oder beschädigtem Receipt
+
+- **Fehlendes Receipt für eine bereits `deleted`-Zeile:** kein
+  Fail-Closed-Fall in dieser Richtung — die Zeile ist bereits korrekt
+  anonymisiert; dies wird als **Warnung** protokolliert („Receipt-Hygiene”-
+  Hinweis) und durch Selbstheilung (Abschnitt 18.3, Absturzfenster A)
+  automatisch behoben (Receipt wird aus dem bereits korrekten DB-Zustand
+  neu erzeugt).
+- **Beschädigtes/manipuliertes Receipt (HMAC ungültig):** **fail-closed** —
+  die Anwendung meldet sich nicht als betriebsbereit
+  (`/api/health/ready`-Erweiterung, analog zum bestehenden
+  Migration-Doctor-Verhalten, das schon heute bei Drift/unbekanntem Zustand
+  nicht „ready” meldet), bis ein Operator das Receipt manuell untersucht
+  hat. Es wird **nie** automatisch gelöscht, ignoriert oder als „wohl in
+  Ordnung” angenommen.
+
+### 21.6 Operator-Runbook (Kurzfassung)
+
+1. Restore nie direkt gegen eine produktiv bediente Datenbank.
+2. Vor Freigabe: Deletion Receipt Doctor laufen lassen.
+3. Jede Inkonsistenz (Receipt sagt gelöscht, DB zeigt aktiv): Löschung
+   erneut anwenden (automatisiert durch den Doctor, protokolliert).
+4. Jedes beschädigte Receipt: Freigabe stoppen, manuell untersuchen (ggf.
+   unbeschädigte Kopie aus der unabhängigen Receipt-Sicherung heranziehen).
+5. Erst nach 0 offenen Inkonsistenzen und 0 ungeklärten beschädigten
+   Receipts freigeben.
+
+### 21.7 Pilot- und Produktionsanforderungen
+
+- **Pilot:** lokales Verzeichnis ausserhalb von Repository und
+  Backup-Pfad genügt; manueller Operator-Schritt akzeptabel; geringes
+  Volumen (wenige Löschungen während eines kleinen Piloten) macht dies
+  trivial praktikabel.
+- **Produktion:** derselbe Mechanismus, zusätzlich: unabhängige Replikation
+  des Receipt-Speicherorts, automatisierter Check wird zu einem harten,
+  nicht umgehbaren Gate, Schlüsselverwaltung folgt derselben Disziplin wie
+  andere Produktionsgeheimnisse.
 
 **Lokale und künftige Remote-Retention:** Dieselbe Reconciliation-Pflicht
 gilt unverändert, sobald ein echter Off-host-Bucket (Stage 2B2B, weiterhin
-„Deferred until first customer") angebunden wird — das Runbook ist
+„Deferred until first customer”) angebunden wird — das Runbook ist
 retention-Ziel-unabhängig formuliert.
 
 ---
@@ -1202,8 +1701,12 @@ Infrastrukturkategorie einzuführen.
 | Audit-Leak | `SAFE_DETAIL_KEYS`-Allowlist verhindert PII in `membership.left`-Ereignissen unverändert | bestehender Mechanismus ausreichend |
 | Log-Leak | rekursive Redaktion (`startup/logger.js`) deckt auch das neue `account_deletion_completed`-Ereignis ab, da es ohnehin nur interne IDs enthält | Unit-Test: Log-Payload enthält nachweislich weder E-Mail noch Benutzername |
 | SQL-Fehler während Teilprozess | führt zu vollständigem `ROLLBACK` (Abschnitt 18) — keine Teillöschung möglich | Integrationstest: erzwungener Fehler in Schritt N lässt Schritt N-1 unwirksam werden (Transaktions-Rollback-Test, Muster bereits im Bestand für andere mehrschrittige Services) |
-| Restore nach Löschung | siehe Abschnitt 21 — gelöst über Reconciliation-Runbook, nicht über Code | operative Prüfliste, kein Code-Test |
+| Restore nach Löschung | **REVIDIERT (Blocker 1):** gelöst über das externe Deletion Receipt + Deletion Receipt Doctor (Abschnitt 21), nicht mehr über ein reines Log | Operative Prüfliste **plus** automatisierter Konsistenz-Check bei jedem Start; Integrationstest: Restore-Simulation (Zeile künstlich auf `active` zurückgesetzt, gültiges Receipt vorhanden) löst korrekte Re-Anwendung der Löschung aus |
+| Manipuliertes Deletion Receipt | HMAC-Integritätsprüfung schlägt fehl → fail-closed, kein automatisches Vertrauen (Abschnitt 21.5) | Unit-Test: veränderter Receipt-Inhalt liefert ungültige Signatur; Integrationstest: Deletion Receipt Doctor meldet die Anwendung bei ungültigem Receipt nicht als `ready` |
+| Fehlendes Deletion Receipt für ein bereits gelöschtes Konto | Selbstheilung: Receipt wird deterministisch aus dem bereits korrekten DB-Zustand neu erzeugt (Abschnitt 18.3/21.5) — kein Sicherheitsrisiko, da die zugrundeliegende Zeile bereits korrekt anonymisiert ist | Integrationstest: Start ohne vorhandenes Receipt für eine `deleted`-Zeile erzeugt genau ein neues, gültiges Receipt |
 | Löschung eines Sole Owners | vollständig blockiert vor jeder Mutation (Abschnitt 11) | Integrationstest: Sole-Owner-Löschversuch verändert **keine** Zeile (verifiziert per Vorher/Nachher-Snapshot) |
+| Zu weit gefasste Zuweisungs-/Regel-Terminalisierung (Blocker 3) | Zuweisungs-Cancel ist strikt auf `member_membership_id ∈ Konto` gescopt (nie auf `assigned_by_user_id`); Regel-Disable ist strikt auf `created_by_user_id=Konto` gescopt, unabhängig vom betroffenen Mitglied — beide Scopes bewusst unterschiedlich und in Abschnitt 7.5/7.6 begründet | Integrationstest: Löschung eines Trainer-Kontos verändert **nicht** die Zuweisungen fremder, weiterhin aktiver Mitglieder, deaktiviert aber deren vom Trainer erstellte Terminierungsregeln |
+| Unautorisierter Abbruch fremder Sessions über die Löschfunktion | Session-Abbruch ist strikt auf `member_membership_id ∈ Konto` gescopt — strukturell unmöglich, eine fremde Session zu treffen (dieselbe Argumentation wie „Benutzer löscht fremdes Konto" oben) | Integrationstest: Löschung verändert keine Session eines anderen Mitglieds |
 
 ---
 
@@ -1227,12 +1730,25 @@ Infrastrukturkategorie einzuführen.
   `classifyDeletionStrategy(table) → 'hard_delete'|'anonymize'|'retain_unchanged'`.
 - Fehlercodes: jede neue `AppError`-Subklasse liefert den in Abschnitt 15
   spezifizierten `status`/`code`.
-- Preview-Mapping: Rohdaten → Preview-DTO ohne interne IDs/Drittdaten.
-- Audit-Sanitizer: `membership.left` im Löschkontext bleibt innerhalb der
-  bestehenden `SAFE_DETAIL_KEYS`.
+- Preview-Mapping: Rohdaten → Preview-DTO ohne interne IDs/Drittdaten,
+  inklusive der neuen `impact`/`notices`-Felder (Abschnitt 15.1).
+- Audit-Sanitizer: `membership.left`/`workout_session.aborted`/
+  `training_program_assignment.cancelled`/`assignment.schedule_rule.disabled`
+  im Löschkontext bleiben innerhalb der bestehenden `SAFE_DETAIL_KEYS`.
 - Idempotenz: zweiter Aufruf der Löschfunktion auf ein bereits
   `deleted`-Konto ist ein No-op, kein Fehler im Sinne einer
   Datenveränderung.
+- **Neu (Blocker 2):** Session-Abbruch-Auswahl trifft nur `in_progress`-
+  Sessions des Kontos, lässt `completed`/`aborted` unverändert.
+- **Neu (Blocker 3):** Zuweisungs-Terminalisierung trifft nur Zuweisungen
+  mit `member_membership_id ∈ Konto`, nie Zuweisungen, die das Konto nur
+  für andere erstellt hat; Regel-Deaktivierung trifft nur
+  `created_by_user_id = Konto`, unabhängig vom betroffenen Mitglied.
+- **Neu (Blocker 1):** Deletion-Receipt-Erzeugung — deterministischer
+  Inhalt aus `{accountRef, deletedAt}`; HMAC-Signatur reproduzierbar bei
+  gleichem Schlüssel, ungültig bei jeder Inhaltsänderung; Receipt-Doctor-
+  Logik für beide Richtungen (fehlendes Receipt selbstheilend,
+  Inkonsistenz-Erkennung bei vorhandenem Receipt + `active`-Zeile).
 
 ### 25.2 Integration
 
@@ -1248,16 +1764,26 @@ Infrastrukturkategorie einzuführen.
 - Mehrerer Owner erlaubt → Löschung erfolgreich, verbleibender Owner
   unverändert aktiv.
 - Mehrere Studio-Mitgliedschaften → alle korrekt auf `left`.
+- **Laufende Workout-Session (Blocker 2)** → korrekt auf `aborted`,
+  `aborted_at` gesetzt, verknüpfte Sätze/Übungen unverändert, verknüpfter
+  Kalendereintrag korrekt `IN_PROGRESS→PLANNED→CANCELLED`.
 - Aktive Coaching-Beziehung → korrekt auf `ended`.
-- Aktives Assignment → bleibt `active`, unverändert (Negativtest: **kein**
-  automatisches `cancelled`).
-- Schedule Rules → korrekt auf `disabled`.
-- Zukünftige Calendar Entries (Studio) → bleiben bestehen, unverändert.
+- **Aktives Assignment des Mitglieds (Blocker 3)** → korrekt auf
+  `cancelled`, `cancelled_at` gesetzt.
+- **Assignment, das das Konto nur für ein anderes Mitglied erstellt hat
+  (Blocker 3)** → bleibt **unverändert** `active` (Negativtest).
+- **Schedule Rules, vom Konto erstellt (Blocker 3)** → korrekt auf
+  `disabled`, unabhängig vom betroffenen Mitglied.
+- **Zukünftige Calendar Entries (Studio, `PLANNED`, Blocker 3)** → korrekt
+  auf `CANCELLED`.
+- **Zukünftige Calendar Entries (Studio, bereits `COMPLETED`/`SKIPPED`)** →
+  bleiben unverändert (Negativtest).
 - Zukünftige Calendar Entries (persönlich) → werden gelöscht.
 - Persönliche Daten (`workouts`/`progress_entries`/`exercises`) → korrekt
   gelöscht/`SET NULL`.
-- Abgeschlossene Historie (Sessions/Sets/Exercises) → Werte unverändert,
-  `member_note` geleert.
+- **Abgeschlossene Historie (Sessions/Sets/Exercises, Blocker 4)** → Werte
+  **und** `member_note` bleiben vollständig unverändert (Negativtest: kein
+  Feld wird geleert/überschrieben).
 - Feedback → `body` unverändert, Autorenbezug nur indirekt entpersonalisiert.
 - Auth Sessions → alle widerrufen, `auth_version` erhöht.
 - E-Mail-Änderung (offen zum Löschzeitpunkt) → gelöscht.
@@ -1269,7 +1795,17 @@ Infrastrukturkategorie einzuführen.
   Zeile eines fremden Studios.
 - Erneute Registrierung mit der alten E-Mail-Adresse → erfolgreich, neues,
   unabhängiges Konto.
-- Migration Doctor → nach Anwendung von Migration 013:
+- **Deletion Receipt (Blocker 1)** → nach Ausführung existiert genau eine
+  gültige Receipt-Datei mit korrektem `accountRef`/`deletedAt` und gültiger
+  HMAC-Signatur.
+- **Reconciliation-Simulation (Blocker 1)** → `users`-Zeile künstlich auf
+  `active` zurückgesetzt (simuliert einen Restore), gültiges Receipt
+  vorhanden → Deletion Receipt Doctor wendet die Löschung erneut an,
+  erzeugt ein `reconciliation_reapplied`-Receipt.
+- **Beschädigtes Receipt (Blocker 1)** → Deletion Receipt Doctor meldet
+  die Anwendung nicht als `ready`.
+- Migration Doctor → nach Anwendung von Migration 013 (nur zwei Spalten,
+  Blocker 5):
   `ready:true, applied:13, pending:0, dirty:0, drift:0, unknown:0,
   schemaIssues:0, ledgerIssues:0`.
 
@@ -1388,6 +1924,28 @@ verifizierten Abdeckung neuerer Views.
   eine zu weit gefasste Implementierung könnte versehentlich weitere
   Selbstwirkungen (z. B. Selbst-Downgrade auf eine andere Rolle) freigeben,
   die nicht Teil dieses Entwurfs sind.
+- **Symmetrischer HMAC-Schlüssel für Deletion Receipts (Blocker 1):** schützt
+  gegen Zufall/Beschädigung/versehentliche Veränderung, aber nicht gegen
+  eine Person mit Zugriff auf sowohl den Receipt-Speicherort als auch den
+  HMAC-Schlüssel — Restrisiko, mitigiert durch getrennte Aufbewahrung von
+  Schlüssel und Receipts (wie andere Produktionsgeheimnisse), nicht durch
+  dieses Design vollständig eliminiert. Eine asymmetrische Signatur wäre
+  eine mögliche spätere Härtung, nicht für den Piloten erforderlich.
+- **Zu eng gefasster Terminalisierungs-Scope (Blocker 3):** die bewusst
+  unterschiedliche Scopeing-Regel (Zuweisungen nach Mitglied, Regeln nach
+  Ersteller:in) ist erklärungsbedürftig und muss in der Implementierung
+  exakt wie in Abschnitt 7.5/7.6 begründet umgesetzt werden — eine
+  versehentliche Vertauschung der beiden Scopes würde entweder fremde
+  Mitgliederdaten stornieren oder das „Phantom-Coach"-Szenario nicht
+  verhindern.
+- **Materialisierungsverhalten bei beendeter Coaching-Beziehung, aber
+  weiterhin aktiver Zuweisung:** aus dem Code verifiziert, dass
+  `trainingCalendarService.js` die Coaching-Beziehung beim Materialisieren
+  nicht prüft (Grundlage für die Regel-Deaktivierungs-Scope-Entscheidung in
+  7.6) — dieses bereits bestehende, von diesem Design nicht veränderte
+  Verhalten sollte in der Implementierungsphase durch einen eigenen Test
+  erneut bestätigt werden, um sicherzustellen, dass sich daran zwischen
+  Design und Implementierung nichts ändert.
 
 ---
 
@@ -1398,24 +1956,41 @@ selbst, das keinen Code liefert):
 
 - Kein P0-/P1-Befund aus Stage 5B bleibt durch diese Funktion unadressiert
   offen (P1-1 gilt als gelöst, sobald diese Funktion produktiv nutzbar ist).
-- Keine direkten Identifikatoren (E-Mail, Benutzername) in einer
-  anonymisierten `users`-Zeile oder in irgendeiner historisch erhaltenen
-  Studio-Zeile auffindbar.
+- **Korrigiert (Blocker 4).** Nicht: „keine PII in Historie" — sondern:
+  **„Keine strukturierten direkten Account-Identifikatoren (E-Mail,
+  Benutzername) bleiben über die anonymisierte User-Projektion zugänglich;
+  fachhistorische Freitexte (`member_note`, Coach-Feedback) unterliegen der
+  in Abschnitt 13.1 dokumentierten Retention- und Zugriffspolicy und werden
+  nicht als PII-frei behauptet."**
 - Keine aktiven Tokens (Access/Refresh/CSRF) nach abgeschlossener Löschung
   gültig.
 - Keine verwaisten Studios (jedes aktive Studio hat nach jeder Löschung
   weiterhin mindestens einen aktiven Owner).
 - Keine Teillöschung möglich (jeder Fehlerpfad führt zu vollständigem
   Rollback, verifiziert per erzwungenem Fehlertest).
-- Keine Veränderung abgeschlossener Trainingsdaten (Zielwerte, Ist-Werte,
-  Zeitstempel, Status) — einzige erlaubte Änderung: Leeren von
-  `member_note`.
+- Keine Veränderung abgeschlossener/terminaler Trainingsdaten (Zielwerte,
+  Ist-Werte, Zeitstempel, Status, Freitext) — **korrigiert (Blocker 4):
+  keine Ausnahme mehr für `member_note`**, dieses Feld bleibt ebenfalls
+  unverändert.
+- **Neu (Blocker 2/3):** Jede `in_progress`-Session des zu löschenden
+  Mitglieds erreicht nach der Löschung den terminalen Status `aborted`;
+  jede aktive Zuweisung des Mitglieds erreicht `cancelled`; jede vom Konto
+  erstellte aktive Regel erreicht `disabled`; jeder zukünftige,
+  `PLANNED`-Studio-Kalendereintrag des Kontos erreicht `CANCELLED` —
+  jeweils ohne Zuweisungen/Regeln fremder, nicht zu löschender Mitglieder
+  zu verändern (ausser der Regel-Deaktivierung, die bewusst nach
+  Ersteller:in gescopt ist, Abschnitt 7.6).
 - Keine Cross-Tenant-Leaks (Löschung eines Kontos verändert nachweislich
   keine Zeile eines Studios, dem es nie angehörte).
-- Preview (15.1) entspricht exakt der tatsächlichen Ausführung (kein
-  Unterschied zwischen angezeigter und tatsächlicher Auswirkung).
-- Alle Löschaktionen sind auditiert (pro Studio ein `membership.left`-Ereignis,
-  global ein strukturiertes Log-Ereignis).
+- Preview (15.1) entspricht exakt der tatsächlichen Ausführung — garantiert
+  dadurch, dass beide dieselbe Planungsfunktion aufrufen (Abschnitt 18.1,
+  Blocker 6).
+- Alle Löschaktionen sind auditiert (pro Studio/Session/Zuweisung/Regel ein
+  bestehender Audit-Event-Typ, global zusätzlich ein Log-Ereignis).
+- **Neu (Blocker 1):** Nach jeder Löschung existiert genau ein gültiges,
+  integritätsgeschütztes externes Deletion Receipt; der Deletion Receipt
+  Doctor meldet nach einer simulierten Restore-Reconciliation 0 offene
+  Inkonsistenzen.
 - Backups und Restore-Verhalten dokumentiert (dieses Dokument, Abschnitt
   20/21) und im Betriebs-Runbook nachgezogen.
 - Vollständige Regression grün (Backend Unit/Integration/Migrations,
@@ -1423,8 +1998,9 @@ selbst, das keinen Code liefert):
   um die neuen Tests aus Abschnitt 25.
 - Keine neuen Critical-/Serious-Axe-Funde.
 - Beide `npm audit`-Läufe (Backend/Frontend) weiterhin 0 Funde ≥ high.
-- Migration Doctor nach Migration 013: `ready:true, applied:13, pending:0,
-  dirty:0, drift:0, unknown:0, schemaIssues:0, ledgerIssues:0`.
+- Migration Doctor nach Migration 013 (zwei Spalten, Blocker 5):
+  `ready:true, applied:13, pending:0, dirty:0, drift:0, unknown:0,
+  schemaIssues:0, ledgerIssues:0`.
 
 ---
 
@@ -1432,30 +2008,40 @@ selbst, das keinen Code liefert):
 
 Für die **spätere** Phase (grobe Reihenfolge, kein Zeitplan):
 
-1. Migration 013 (Abschnitt 19) erstellen und gegen eine Kopie der
-   Entwicklungsdatenbank verifizieren (Migration Doctor `ready`).
+1. Migration 013 (Abschnitt 19, **zwei** Spalten) erstellen und gegen eine
+   Kopie der Entwicklungsdatenbank verifizieren (Migration Doctor `ready`).
 2. Domänenlogik: Anonymisierungsfunktion, Owner-Blocker-Prüfung über
-   mehrere Studios, Retention-Klassifikation als reine Funktionen mit
+   mehrere Studios, Session-Abbruch-/Zuweisungs-/Regel-Terminalisierungs-
+   Auswahl (Blocker 2/3), Retention-Klassifikation als reine Funktionen mit
    Unit-Tests (Abschnitt 25.1).
-3. Transaktionsservice (Abschnitt 18) inklusive
+3. **Neu:** Deletion-Receipt-Modul (Erzeugen, HMAC-Signieren/-Verifizieren,
+   Lesen/Schreiben im konfigurierten Verzeichnis) und der Deletion Receipt
+   Doctor (Abschnitt 15.5/21) — unabhängig von 1–2 entwickelbar und früh
+   testbar, da er nur eine deterministische Funktion des `users`-Zustands
+   ist.
+4. `planAccountDeletion()` (Abschnitt 18.1) und der vollständige
+   17-Schritte-Transaktionsservice (Abschnitt 18.2) inklusive
    `revokeAllSessionsInTransaction`-Wiederverwendung, mit
    Integrationstests (Abschnitt 25.2).
-4. API-Endpunkte (Abschnitt 15): zuerst `GET .../deletion-preview` (rein
-   lesend, risikoarm), danach `POST .../deletion-request`.
-5. Erweiterung von `membershipChangeDecision()` um die
-   Selbstentfernungs-Ausnahme (Abschnitt 6.4) — unabhängig von 1–4,
+5. API-Endpunkte (Abschnitt 15): zuerst `GET .../deletion-preview` (rein
+   lesend, risikoarm, ruft `planAccountDeletion()` schreibgeschützt auf),
+   danach `POST .../deletion-request`.
+6. Erweiterung von `membershipChangeDecision()` um die
+   Selbstentfernungs-Ausnahme (Abschnitt 6.4) — unabhängig von 1–5,
    parallelisierbar.
-6. Frontend: Danger-Zone-UI (Abschnitt 16.1), danach Erweiterung der
-   Studio-Mitgliederverwaltung (16.2).
-7. Neues `accountDeletion.spec.js` (Abschnitt 26) plus Erweiterung der
-   Audit-Log-Übersetzung um keine neuen Ereignistypen (da `membership.left`
-   bereits existiert).
-8. Vollständige Regression, Migration Doctor, zwei unabhängige
-   Chromium-E2E-Läufe (Muster aus Stage 5A3/5B übernommen).
-9. Dokumentation: `STAGE_5C_...`-Umsetzungsbericht (analog zu allen
-   bisherigen Stage-Dokumenten) sowie Aktualisierung der drei Statusdokumente
-   — **nicht** Teil dieses Design Gates.
-10. Restore-Reconciliation-Runbook (Abschnitt 21) in
+7. Frontend: Danger-Zone-UI mit der erweiterten Preview (Abschnitt 16.1),
+   danach Erweiterung der Studio-Mitgliederverwaltung (16.2).
+8. Neues `accountDeletion.spec.js` (Abschnitt 26) plus die neuen
+   Sicherheits-/Reconciliation-Integrationstests (Abschnitt 25.2) — keine
+   neuen Audit-Ereignistypen zu übersetzen, da alle vier verwendeten Typen
+   bereits existieren.
+9. Vollständige Regression, Migration Doctor, Deletion-Receipt-Doctor-
+   Selbsttest, zwei unabhängige Chromium-E2E-Läufe (Muster aus Stage
+   5A3/5B übernommen).
+10. Dokumentation: `STAGE_5C_...`-Umsetzungsbericht (analog zu allen
+    bisherigen Stage-Dokumenten) sowie Aktualisierung der drei
+    Statusdokumente — **nicht** Teil dieses Design Gates.
+11. Restore-Reconciliation-Runbook (Abschnitt 21.4/21.6) in
     `docs/MIGRATION_RECOVERY.md` oder einem neuen, verwandten
     Betriebsdokument ergänzen.
 
@@ -1478,14 +2064,19 @@ Für die **spätere** Phase (grobe Reihenfolge, kein Zeitplan):
 - Ein automatisierter, verzögerter/zweistufiger Löschablauf (Abschnitt 23).
 - Ein Datenexport-Feature (weiterhin explizit ausserhalb, unverändert seit
   Stage 3B1).
-- Eine Admin-/Support-initiierte Zwangslöschung eines fremden Kontos (der
-  `deletion_reason`-Wert `admin_initiated` ist im Migrationsentwurf
-  vorgesehen, aber kein zugehöriger API-Endpunkt wird in dieser Phase
-  entworfen — reine Erweiterbarkeitsreserve).
+- Eine Admin-/Support-initiierte Zwangslöschung eines fremden Kontos —
+  **REVIDIERT (Blocker 5):** das Migrationsschema trägt dafür bewusst
+  **keine** Reserve-Spalte mehr (`deletion_reason` wurde nach kritischer
+  Prüfung entfernt, Abschnitt 19); eine künftige Phase entwirft die dafür
+  nötige Datenstruktur bei Bedarf eigenständig.
 - Automatische Eigentumsübertragung eines Studios.
 - Ein generisches, globales (studio-übergreifendes) Audit-Log-System.
-- Eine neue Retention-Ledger-Tabelle (bewusst durch strukturiertes Logging
-  ersetzt, Abschnitt 17/21).
+- Eine neue Retention-Ledger-**Datenbanktabelle** (bewusst durch ein
+  dateibasiertes, ausserhalb der Datenbank liegendes Deletion Receipt
+  ersetzt, Abschnitt 21 — ein reines strukturiertes Log allein wurde als
+  unzureichend verworfen, Abschnitt 21.0).
+- Eine weitergehende, eigenständige Freitext-Redaktion/-Anonymisierung für
+  `member_note`/Feedback-Inhalte (Blocker 4, Abschnitt 13.1).
 - Echte Cloud-Infrastruktur, echter externer Bucket (Stage 2B2B,
   unverändert „Deferred until first customer").
 - Jede der in `FITTRACK_NEXT_PHASE_RECOMMENDATION.md` „Klare Grenze des
@@ -1514,11 +2105,12 @@ Explizit markiert, nicht stillschweigend entschieden:
 3. **Rate-Limit-Werte** für `account.deleteRequest` (Vorschlag 3/60min)
    sind eine Analogie zu bestehenden Policies, keine endgültig festgelegte
    Zahl.
-4. **`deletion_reason='admin_initiated'`** ist im Schema als Reserve
-   vorgesehen, aber kein zugehöriger Ablauf ist in dieser Phase entworfen
-   — offen, ob ein solcher je gebraucht wird (z. B. für einen
+4. **Eine künftige Admin-/Support-initiierte Löschung** (z. B. für einen
    Support-Fall, in dem eine Person keinen Kontozugriff mehr hat, aber
-   Löschung verlangt).
+   Löschung verlangt) ist in dieser Phase nicht entworfen — nach Blocker 5
+   trägt das Schema dafür bewusst **keine** Reserve-Spalte mehr; eine
+   künftige Phase entwirft die dafür nötige Datenstruktur bei Bedarf
+   eigenständig, nicht vorab spekulativ.
 5. **Retention-Dauer der Backups** (Anzahl Generationen) ist eine
    bestehende Betriebskonfiguration ausserhalb dieses Dokuments — die
    Reconciliation-Pflicht (Abschnitt 21) gilt unabhängig von der
@@ -1527,6 +2119,20 @@ Explizit markiert, nicht stillschweigend entschieden:
 6. **Ob eine künftige Phase einen echten Datenexport** (das Gegenstück zur
    Löschung, „Recht auf Datenübertragbarkeit") benötigt, ist nicht
    Gegenstand dieses Designs und bewusst offen gelassen.
+7. **Symmetrisches vs. asymmetrisches Signaturverfahren für Deletion
+   Receipts** (Abschnitt 21.2/29): dieses Dokument empfiehlt HMAC-SHA256
+   als proportionale Lösung für einen Piloten; ob eine spätere
+   Produktionsphase eine asymmetrische Signatur (z. B. Ed25519) für ein
+   stärkeres Bedrohungsmodell benötigt, ist offen.
+8. **Materialisierungsverhalten bei beendeter Coaching-Beziehung**
+   (Abschnitt 7.6/29): durch einen gezielten Code-Grep bestätigt, dass
+   `trainingCalendarService.js` die Coaching-Beziehung beim Materialisieren
+   nicht prüft — dies stützt die Scope-Entscheidung für die
+   Regel-Deaktivierung, sollte aber in der Implementierungsphase durch
+   einen dedizierten Test erneut, tiefergehend bestätigt werden.
+9. **Exaktes Format/Verzeichniskonvention von `DELETION_RECEIPT_DIR`**
+   (Abschnitt 21.3) ist ein in diesem Dokument begründeter Vorschlag,
+   keine endgültig fixierte Spezifikation.
 
 ---
 
@@ -1555,30 +2161,46 @@ vorher einen weiteren Owner ernennen.
 `revokeAllSessionsInTransaction`-Funktion plus `auth_version`-Erhöhung plus
 neue `lifecycle_status`-Prüfung — dreifach redundant abgesichert.
 
-**Aktive Assignments:** bleiben unverändert `active` (historische Tatsache,
-kein Live-Zustand).
+**Laufende Workout-Sessions (Blocker 2 — REVIDIERT):** werden atomar auf
+`aborted` gesetzt, unter Wiederverwendung der bestehenden, präzedenzlosen
+`in_progress→aborted`-Transition (ADR 003) — kein Löschblocker nötig.
+
+**Aktive Assignments (Blocker 3 — REVIDIERT):** Zuweisungen des zu
+löschenden **Mitglieds** werden atomar `cancelled`; Zuweisungen, die das
+Konto nur für andere Mitglieder erstellt hat, bleiben unverändert.
 
 **Coaching Relationships:** automatisch auf `ended`.
 
-**Schedule Rules:** automatisch auf `disabled`.
+**Schedule Rules (Blocker 3 — präzisiert):** automatisch auf `disabled`,
+gescopt nach **Ersteller:in** (nicht nach betroffenem Mitglied) — verhindert
+unbeaufsichtigte Weiter-Materialisierung nach Verlust des Coaches.
 
-**Calendar Entries:** Studio-Einträge bleiben bestehen (unerreichbar,
-historisch); persönliche Einträge werden gelöscht (Teil der persönlichen
-Datenlöschung).
+**Calendar Entries (Blocker 3 — REVIDIERT):** zukünftige `PLANNED`-Studio-
+Einträge werden `CANCELLED` (inklusive der durch einen Session-Abbruch von
+`IN_PROGRESS` auf `PLANNED` zurückgefallenen Einträge); `COMPLETED`/
+`SKIPPED`/bereits `CANCELLED` bleiben unverändert; persönliche Einträge
+werden weiterhin gelöscht.
 
 **Persönliche Workouts:** hart gelöscht (bereits korrekt kaskadierend
 vorbereitet).
 
 **Studiohistorie:** vollständig erhalten, Personenbezug nur indirekt über
-die `users`-Anonymisierung entfernt — keine Zeile in
-Programmen/Versionen/Zuweisungen/Sessions/Sets wird selbst verändert,
-ausser dem freitextlichen `member_note`-Feld (geleert).
+die `users`-Anonymisierung entfernt — **keine** Zeile in
+Programmen/Versionen/Zuweisungen/Sessions/Sets wird selbst verändert.
+
+**Freitext-Retention (Blocker 4 — REVIDIERT):** `member_note` und
+Feedback-`body` bleiben **vollständig unverändert**, nicht geleert. Dieses
+Dokument behauptet **nicht**, dass historische Freitexte PII-frei sind —
+nur, dass keine strukturierten direkten Account-Identifikatoren mehr über
+die anonymisierte `users`-Projektion auflösbar sind. Zugriff bleibt streng
+tenant-/rollenbegrenzt.
 
 **Feedback:** wortwörtlich unverändert (append-only, kein neuer
 Schreibpfad).
 
 **Audit Events:** unverändert, `actor_user_id` bleibt gültig, zeigt aber auf
-ein anonymisiertes Konto.
+ein anonymisiertes Konto; zusätzlich drei bereits bestehende Ereignistypen
+für Session-Abbruch/Zuweisungs-/Regel-Terminalisierung wiederverwendet.
 
 **E-Mail-Wiederverwendung:** sofort möglich, kein Sperrfenster — automatische
 Folge der Anonymisierung selbst.
@@ -1587,20 +2209,34 @@ Folge der Anonymisierung selbst.
 rückwirkende Bereinigung von Backup-Dateien; Kommunikationspflicht im
 Pilot-Consent.
 
-**Restore-Reconciliation:** manueller, dokumentierter Runbook-Prozess
-(Abschnitt 21), gestützt auf strukturierte Log-Ereignisse statt eines
-DB-internen Ledgers, da Letzteres das eigentliche Problem nicht lösen
-würde.
+**Restore-Reconciliation (Blocker 1 — VOLLSTÄNDIG NEU):** ein reines
+strukturiertes Log genügt **nicht**. Gewählter Mechanismus: Kombination (D)
+aus `users.lifecycle_status` (schnelle, transaktionale Quelle für den
+laufenden Betrieb) und einem externen, HMAC-integritätsgeschützten,
+append-only Deletion Receipt pro Löschvorgang (A+C), gespeichert ausserhalb
+von Repository und Datenbank-Backup-Verzeichnis, geprüft durch einen
+automatisierten „Deletion Receipt Doctor" bei jedem Start und zwingend nach
+jedem Restore, mit explizit definiertem, fail-closed Verhalten bei
+Beschädigung und Selbstheilung bei einem reinen Schreib-Absturz zwischen
+DB-Commit und Receipt-Erzeugung (Abschnitt 18.3, 21) — **keine** Behauptung
+vollständiger Zwei-Ressourcen-Atomizität.
 
-**Migration 013:** drei neue, additive Spalten auf `users`
-(`lifecycle_status`, `deleted_at`, `deletion_reason`) plus eine erweiterte
-CHECK-Wertemenge auf `user_auth_sessions.revocation_reason` — keine neue
-Tabelle.
+**Migration 013 (Blocker 5 — REVIDIERT):** **zwei** neue, additive Spalten
+auf `users` (`lifecycle_status`, `deleted_at` — `deletion_reason` nach
+kritischer Prüfung entfernt) plus eine erweiterte CHECK-Wertemenge auf
+`user_auth_sessions.revocation_reason` — keine neue Tabelle, auch nicht für
+das Deletion Receipt (das bewusst dateibasiert, nicht in der Datenbank
+liegt).
 
 **Implementierungsreihenfolge:** siehe Abschnitt 31.
 
 **Offene Unsicherheiten:** siehe Abschnitt 34 — explizit als offen markiert,
 nicht als entschieden ausgegeben.
+
+**Design-Mergebereitschaft:** Alle vier in der vorherigen Fassung offenen
+Designblocker sind in dieser Revision eindeutig, mit genau einer
+Entscheidung je Blocker (keine offen gelassenen Alternativen), aufgelöst —
+siehe die Übersicht direkt nach der Kopfzeile dieses Dokuments.
 
 Dieses Design Gate selbst endet hier. Es wurde **keine Implementierung
 begonnen**, keine Migration erstellt, keine Zeile Produktions- oder
