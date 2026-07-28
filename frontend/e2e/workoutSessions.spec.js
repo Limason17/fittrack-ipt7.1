@@ -3,8 +3,10 @@ import { expect, test } from '@playwright/test'
 import {
   attachAuth,
   authenticate,
+  formatDateOnlyDeCH,
   loginApi,
   registerApi,
+  todayInTimezone,
   userFixture,
 } from './helpers.js'
 
@@ -491,14 +493,19 @@ test('Der History-Statusfilter fragt serverseitig gefiltert ab, und Grenzdaten (
 
   // Boundary date: an assignment starting exactly today must be immediately
   // available (inclusive boundary) and must display "today", never a shifted
-  // neighboring calendar day, regardless of the server's local timezone.
-  const now = new Date()
-  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  // neighboring calendar day. "Today" here must be the studio's own
+  // Europe/Zurich day (todayInTimezone(), matching the backend's
+  // todayInTimezone() and startsOn eligibility check) - not the Node
+  // test-runner process's own local/UTC day, which disagrees with Zurich
+  // for the 1-2 hours around Zurich local midnight and would otherwise
+  // send a startsOn that is one day ahead of the studio's actual today,
+  // making the assignment wrongly appear not-yet-startable.
+  const today = todayInTimezone()
   const boundarySetup = await setupStudioWithAssignment(request, { idPrefix: 'boundary', startsOn: today })
 
   await attachAuth(page, boundarySetup.memberAuth)
   await page.goto(`/studios/${boundarySetup.studio.id}/my-training-plan`)
-  const expectedLabel = new Intl.DateTimeFormat('de-CH', { day: '2-digit', month: 'short', year: 'numeric' }).format(now)
+  const expectedLabel = formatDateOnlyDeCH(today)
   await expect(page.getByText(expectedLabel)).toBeVisible()
   await page.getByRole('button', { name: 'Details anzeigen' }).click()
   await expect(page.getByRole('button', { name: 'Training starten' })).toBeVisible()

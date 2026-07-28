@@ -1,6 +1,6 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test } from '@playwright/test'
-import { attachAuth, authenticate, loginApi, userFixture } from './helpers.js'
+import { addDaysToDateOnly, attachAuth, authenticate, loginApi, todayInTimezone, userFixture } from './helpers.js'
 
 test.describe.configure({ mode: 'serial' })
 const accessibilityUser = userFixture('a11y')
@@ -18,17 +18,27 @@ async function expectNoSeriousAxeViolations(page) {
   expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([])
 }
 
-// A toast's enter transition only animates opacity/transform (ToastHost.vue),
-// but axe's color-contrast check measures the actually-composited pixel
-// color, so scanning while a toast is still mid-fade-in can observe a
-// transiently blended, non-representative color rather than the toast's real
-// steady-state one (which is a compliant ~8:1 - verified separately). Vue
-// removes the `*-enter-active` class itself the instant the transition
-// genuinely finishes, so polling for that class to be gone is a real,
-// event-backed signal - not a blind wait - and resolves immediately if no
-// toast is present at all.
+// A toast's enter/leave transitions only animate opacity/transform
+// (ToastHost.vue), but axe's color-contrast check measures the
+// actually-composited pixel color, so scanning while a toast is mid-fade
+// can observe a transiently blended, non-representative color rather than
+// the toast's real steady-state one (which is a compliant ~8:1 - verified
+// separately). Toasts auto-dismiss after 5s (toast.js), which is enough
+// margin normally, but a slow axe scan under system load can push the
+// *next* scan past that window, so the leave transition starts on its own
+// mid-scan - waiting beforehand for a transition that hasn't started yet
+// can't catch that. Dismissing any visible toast ourselves, rather than
+// waiting out the timer, removes the auto-dismiss race entirely: the
+// transition now starts on our command, so waiting for it (and the toast
+// itself) to be fully gone is deterministic regardless of how long the
+// subsequent scan takes.
 async function waitForToastsToSettle(page) {
-  await expect(page.locator('.toast-enter-active')).toHaveCount(0, { timeout: 2000 })
+  const closeButtons = page.locator('.toast-close')
+  const openToasts = await closeButtons.count()
+  for (let i = 0; i < openToasts; i += 1) {
+    await closeButtons.first().click()
+  }
+  await expect(page.locator('.toast')).toHaveCount(0, { timeout: 2000 })
 }
 
 test('Kernseiten haben keine schweren oder kritischen Axe-Verstöße', async ({ page, request }) => {
@@ -259,9 +269,7 @@ test('Stage-5A2-Kalender: Desktop, mobil, gefüllt und alle drei Dialoge haben k
   const user = userFixture('a11y-calendar')
   await authenticate(page, request, user)
 
-  const future = new Date()
-  future.setDate(future.getDate() + 4)
-  const futureStr = future.toISOString().slice(0, 10)
+  const futureStr = addDaysToDateOnly(todayInTimezone(), 4)
 
   await page.goto('/calendar')
   await expectNoSeriousAxeViolations(page) // empty state, desktop
@@ -373,7 +381,7 @@ test('Stage-5A3-Zeitplan: leer, Formular, gefüllt, Bearbeiten, Deaktivieren-Dia
   const dialog = page.getByRole('dialog')
   const dayValue = await dialog.getByLabel('Trainingstag', { exact: true }).locator('option', { hasText: 'A11y Day' }).getAttribute('value')
   await dialog.getByLabel('Trainingstag', { exact: true }).selectOption(dayValue)
-  await dialog.getByLabel('Startdatum', { exact: true }).fill(new Date().toISOString().slice(0, 10))
+  await dialog.getByLabel('Startdatum', { exact: true }).fill(todayInTimezone())
   await dialog.getByRole('button', { name: 'Regel erstellen' }).click()
   await expect(page.getByText('Die Terminierungsregel wurde erstellt.')).toBeVisible()
   await waitForToastsToSettle(page)
