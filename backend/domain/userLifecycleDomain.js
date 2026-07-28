@@ -73,7 +73,13 @@ const DELETION_STRATEGY_BY_TABLE = Object.freeze({
     workouts: "hard_delete",
     workout_exercises: "hard_delete",
     progress_entries: "hard_delete",
-    exercises: "retain_unchanged",
+    // Personal (user_id = actor) rows only - global (user_id IS NULL) rows
+    // in this same table are never touched (Merge-gate finding #1: hard-
+    // deleting the account without first hard-deleting personal exercises
+    // would leak them into the global library via exercises.user_id's
+    // ON DELETE SET NULL, since GET /exercises treats every NULL-owner row
+    // as globally visible).
+    exercises: "hard_delete",
     user_auth_sessions: "hard_delete",
     user_refresh_tokens: "hard_delete",
     user_email_change_requests: "hard_delete",
