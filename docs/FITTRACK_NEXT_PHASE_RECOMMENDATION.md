@@ -287,6 +287,17 @@
 > aufbauend.
 >
 > ---
+>
+> **Nachtrag (2026-07-28, Receipt-first-Commit-Protokoll — Merge-Blocker-Fix):**
+> Ein weiterer, tieferliegender Merge-Blocker wurde danach gefunden und
+> behoben: ein Receipt-Schreibfehler nach einem erfolgreichen Hard Delete
+> hinterliess weder Kontenzeile noch Receipt — für den Doctor unsichtbar.
+> Korrigiert durch ein Receipt-first-Commit-Protokoll (Receipt wird vor,
+> nicht nach dem DB-Commit aufgelöst/publiziert), siehe
+> `STAGE_5C1_ACCOUNT_DELETION_BACKEND.md` Abschnitt 0b. Die Empfehlung
+> bleibt unverändert: **Stage 5C2 — Frontend-UI für Kontolöschung**.
+>
+> ---
 
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-

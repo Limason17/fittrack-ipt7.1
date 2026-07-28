@@ -30,6 +30,22 @@
 > behoben bzw. entschieden und getestet — vollständige Details in ADR 004s
 > Abschnitt „Amendment" und im genannten Backend-Dokument. Dieses Dokument
 > selbst wird **nicht** rückwirkend umgeschrieben.
+>
+> **Nachtrag (2026-07-28, Receipt-first-Commit-Protokoll — Merge-Blocker):**
+> Ein sechster, tieferliegender Befund wurde danach gefunden: Die
+> Implementierung committete die DB-Transaktion (Abschnitt 18.2 dieses
+> Dokuments), **bevor** das externe Deletion Receipt publiziert wurde (als
+> reiner Best-Effort-Schritt danach) — ein Receipt-Schreibfehler nach einem
+> erfolgreichen Hard Delete hinterliess weder eine `users`-Zeile noch ein
+> Receipt, live reproduziert und ein echter Merge-Blocker (nicht nur eine
+> akzeptierte Restriktion). Korrigiert durch Umkehrung der Reihenfolge:
+> Receipt-Auflösung/-Publikation geschieht jetzt **innerhalb** der noch
+> offenen Transaktion, vor `COMMIT` — genau umgekehrt zu Schritt 17 dieses
+> Dokuments („Externes Deletion Receipt atomar finalisieren ... bestes
+> Bemühen, mit Selbstheilung bei Fehlschlag", Abschnitt 18.2). Volle
+> Details, Fehlerverträge und Testabdeckung in ADR 004s „Amendment 2" und
+> `docs/STAGE_5C1_ACCOUNT_DELETION_BACKEND.md` Abschnitt 0b. Dieses
+> Dokument selbst wird weiterhin **nicht** rückwirkend umgeschrieben.
 
 ## Aufgelöste Designblocker (Revision 2)
 

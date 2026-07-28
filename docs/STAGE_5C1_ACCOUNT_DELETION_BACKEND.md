@@ -14,9 +14,21 @@ Vor dem für merge-bereit erklärten Zustand deckte eine gezielte Merge-Gate-Pr�
 2. **Terminierungsregel-Scope war unvollständig (behoben):** deaktivierte bisher nur Regeln, die das gelöschte Konto selbst erstellt hatte. Der endgültige Vertrag verlangt die Vereinigung aus Ersteller-Scope **und** Mitglied-Scope (aktive Regeln für Assignments, deren Member das gelöschte Konto ist) — behoben, keine Doppelzählung, Preview und Execute teilen dasselbe Prädikat (Abschnitt 5).
 3. **Persönliche Kalendereinträge wurden unbedingt gelöscht (behoben):** entgegen dem bereits korrekt gemergten Design (`persönliche PLANNED-Einträge werden hart gelöscht`) löschte die Transaktion **alle** persönlichen Einträge unabhängig vom Status. Korrigiert auf `status='PLANNED'`-only im Anonymisierungsfall; im Hard-Delete-Fall bleibt die Löschung **aller** persönlichen Einträge nötig (keine überlebende Zeile, an die eine Historie geknüpft werden könnte — `training_calendar_entries.user_id` ist `ON DELETE CASCADE`). Das Preview-Feld wurde von `futurePersonalCalendarEntries` zu `personalCalendarEntriesToDelete` umbenannt, da „future" im Hard-Delete-Fall keine ehrliche Beschreibung mehr wäre (Abschnitt 4/5/9).
 4. **CSRF-Vertrag explizit entschieden (Option B, No-CSRF):** verifiziert und getestet, dass `/api/account/deletion-request` niemals allein über Cookies authentifizierbar ist, fremde Origins keinen autorisierten Request erzeugen können (weder als „simple" Request noch über einen Authorization-erfordernden Preflight) und der Authorization-Header zwingend ist. In ADR 004 als endgültige Architekturentscheidung dokumentiert (Abschnitt 8).
-5. **Receipt-Ausfallsicherheit verschärft (behoben):** der Deletion Receipt Doctor behandelte ein fehlendes Receipt bisher als rein selbstheilend, nicht fail-closed. Jetzt meldet er `recovery_required`/`ready:false` sofort bei jedem fehlenden Receipt, exakt wie bei einem beschädigten — Reconciliation heilt weiterhin unverändert. **Bekannte Restriktion:** für hard-delete-fähige Konten bleibt ein Receipt-Schreibfehler strukturell unentdeckbar durch den Doctor (keine überlebende Zeile zum Prüfen) — nur das strukturierte Log bleibt dort das einzige Signal (Abschnitt 14.4/17).
+5. **Receipt-Ausfallsicherheit verschärft (behoben):** der Deletion Receipt Doctor behandelte ein fehlendes Receipt bisher als rein selbstheilend, nicht fail-closed. Jetzt meldet er `recovery_required`/`ready:false` sofort bei jedem fehlenden Receipt, exakt wie bei einem beschädigten — Reconciliation heilt weiterhin unverändert. Die hier ursprünglich vermerkte „bekannte, akzeptierte Restriktion" (Receipt-Schreibfehler beim Hard Delete sei strukturell unentdeckbar) hat sich als **echter Merge-Blocker** herausgestellt und wurde in einer eigenen, zweiten Merge-Gate-Runde behoben — siehe Abschnitt 0b.
 
 Alle fünf Befunde sind durch neue, gezielte Integrationstests abgesichert (`test/integration/accountDeletionApi.test.js`, siehe Abschnitt 18).
+
+---
+
+## 0b. Merge-Blocker-Review (2026-07-28) — Receipt-first Commit-Protokoll
+
+Die in Abschnitt 0/Befund 5 als „bekannte, akzeptierte Restriktion" eingestufte Lücke wurde bei genauerer Prüfung als **echter Merge-Blocker** erkannt und ist jetzt vollständig behoben.
+
+**Der Fehlerfall (reproduziert, vor der Korrektur):** Bei der ursprünglichen Reihenfolge — (1) DB-Transaktion, (2) **DB-Commit**, (3) Receipt-Publikation (Best-Effort, nach Commit), (4) HTTP-Antwort — führte ein Receipt-Schreibfehler nach einem erfolgreichen Hard Delete zu einem vollständig unrekonstruierbaren Zustand: die `users`-Zeile existiert nicht mehr (hart gelöscht), kein Receipt existiert (Schreiben fehlgeschlagen), und der Deletion Receipt Doctor meldet `ready:true`, da er nichts hat, wogegen er prüfen könnte. Ein späterer Restore eines älteren Backups hätte das Konto reaktivieren können, ohne dass irgendein Mechanismus dies je erkannt hätte. Live reproduziert gegen eine disponible Testdatenbank vor der Korrektur — siehe Abschnitt 14.3/19.
+
+**Die Korrektur — Receipt-first Commit-Protokoll:** Die Reihenfolge ist umgekehrt: (1) Request authentifizieren/validieren, (2) DB-Transaktion beginnen, (3) User + abhängige Datensätze sperren, (4) Deletion Plan/Blocker innerhalb der Transaktion erneut prüfen, (5) alle DB-Mutationen innerhalb der noch offenen, unklarcommitteten Transaktion vorbereiten, (6) Deletion Receipt auflösen (bestehendes gültiges Receipt für dieses Konto wiederverwenden, oder neu erzeugen), (7) Receipt atomar und dauerhaft publizieren, (8) **erst danach** die DB-Transaktion committen, (9) erst nach erfolgreichem Commit HTTP 200 zurückgeben. Details in Abschnitt 5/14.3.
+
+Vollständige Details zu Fehlerverträgen, Idempotenz-Verhalten bei bestehendem Receipt, Operator-Schritten und Tests: siehe Abschnitte 5, 10, 14.3-14.5, 17-19.
 
 ---
 
@@ -90,28 +102,30 @@ Die öffentliche Projektion (`publicDeletionPreview`) entfernt jede interne nume
 
 `executeDeletionTransaction(actorUserId, {requestId, lifecycleAction})` — der passwortlose Kern, der auch von der Restore-Reconciliation wiederverwendet wird (Abschnitt 12). `requestAccountDeletion` prüft davor Passwort/Bestätigungsphrase auf einem **ungesperrten** Read (Lock-Haltezeit minimieren) und ruft dann genau diese Funktion.
 
-Reihenfolge innerhalb einer Transaktion (`BEGIN` … `COMMIT`):
+**Merge-Blocker-Korrektur (Abschnitt 0b): Receipt-first Commit-Protokoll.** Die ursprüngliche Reihenfolge committete die DB-Transaktion, **bevor** das Deletion Receipt publiziert wurde (Best-Effort danach) — ein Receipt-Schreibfehler nach einem erfolgreichen Hard Delete hinterliess dadurch weder eine `users`-Zeile noch ein Receipt, ein für den Doctor vollständig unsichtbarer, unrekonstruierbarer Zustand (live reproduziert, siehe Abschnitt 14.3). Die korrigierte, verbindliche Reihenfolge innerhalb einer Transaktion (`BEGIN` … `COMMIT`):
 
-1. **Pre-Flight** (vor Transaktionsbeginn): `assertReceiptSubsystemUsable()` — verweigert den Start, wenn das Receipt-Subsystem in Produktion unkonfiguriert ist oder die Konfiguration selbst ungültig ist (`ACCOUNT_DELETION_SERVICE_UNAVAILABLE`, 503). Dies unterscheidet sich bewusst von einem Receipt-**Schreib**fehler nach erfolgreichem Commit (Schritt 17), der die HTTP-Antwort nie scheitern lässt.
-2. Konto-Zeile sperren, `planAccountDeletion(…, forUpdate:true)` — liefert zugleich den Sole-Owner-Blocker-Check.
-3. Bereits gelöscht? → `commit()` + `ACCOUNT_ALREADY_DELETED` (409) — kein Rollback nötig, es wurde nichts geändert, aber die Sperren müssen sauber freigegeben werden.
-4. Blocker vorhanden? → `rollback()` + `ACCOUNT_DELETION_STUDIO_OWNERSHIP_REQUIRED` (409).
-5. Laufende Studio-Workout-Sessions abbrechen (`in_progress → aborted`), verknüpfter Kalendereintrag `IN_PROGRESS → PLANNED` (Wiederverwendung des bestehenden Session-Abbruch-Effekts).
-6. Aktive Zuweisungen des Kontos **als Mitglied** abbrechen (`active → cancelled`) — Zuweisungen, die das Konto selbst als Coach **erstellt** hat, bleiben unverändert.
-7. Aktive Coaching-Beziehungen (als Coach oder Mitglied) beenden (`active → ended`).
-8. Terminierungsregeln deaktivieren (`active → disabled`) — **Merge-Gate-Korrektur (Befund #2):** die Vereinigung aus (a) Regeln, die das Konto **erstellt** hat (verhindert, dass die Regel eines ausgeschiedenen Coaches weiterhin Trainingstage für ein fremdes, weiterhin aktives Mitglied materialisiert — "Phantom-Coach"), **und** (b) Regeln für Assignments, deren **Mitglied** das gelöschte Konto ist, unabhängig davon, wer sie erstellt hat (verhindert, dass eine fremde Regel weiterhin auf ein bereits durch Schritt 6 abgesagtes Assignment zeigt — ein „Mix aus live und stale", den ADR 004 selbst als zu vermeidendes Ziel benennt). Ein einzelner `JOIN`+`WHERE ... OR ...` verarbeitet eine Regel, die beide Bedingungen erfüllt, nie doppelt.
-9. Kalendereinträge: geplante Studio-Vorkommnisse (`PLANNED → CANCELLED`, erfasst auch die gerade aus `IN_PROGRESS` zurückgesetzten Zeilen, da diese Abfrage danach läuft); persönliche Einträge — **Merge-Gate-Korrektur (Befund #3):** im Anonymisierungsfall nur `status='PLANNED'` hart gelöscht (historische `COMPLETED`/`SKIPPED`/`CANCELLED`-Einträge bleiben erhalten, exakt wie beim Design bereits spezifiziert), im Hard-Delete-Fall dagegen **alle** persönlichen Einträge unabhängig vom Status (keine überlebende Zeile, an die eine Historie geknüpft werden könnte — `user_id` ist `ON DELETE CASCADE`).
-10. Persönliche Daten hart löschen: `progress_entries`, `workouts` (kaskadiert `workout_exercises`), **`exercises` (Merge-Gate-Korrektur, Befund #1)** — nur die eigenen (`user_id=Konto`), nie globale (`user_id IS NULL`) Zeilen, in **beiden** Modi und stets nach `progress_entries`/`workouts`, da genau diese beiden Tabellen die einzigen `RESTRICT`-Fremdschlüssel auf `exercises.id` sind und zu diesem Zeitpunkt bereits leer sind.
-11. Alle aktiven/suspendierten Mitgliedschaften → `status='left'`, je ein `membership.left`-Audit-Ereignis pro betroffenem Studio.
-12. Offene E-Mail-Änderungsanfragen löschen.
-13. **Alle** Sessions/Refresh-Tokens widerrufen (`revokeAllSessionsInTransaction`, Grund `account_deletion`).
-14. Anonymisieren **oder** Hard Delete der `users`-Zeile (Abschnitt 6).
-15. Audit-Ereignisse einfügen (bestehende `SAFE_DETAIL_KEYS`-Allowlist, keine neuen Event-Typen nötig).
-16. `COMMIT`.
-17. Strukturiertes Log (`account_deletion_completed`).
-18. **Best-effort** externe Deletion-Receipt-Publikation — ein Schreibfehler hier wird laut geloggt, lässt die HTTP-Antwort aber nie scheitern.
+1. **Pre-Flight** (vor Transaktionsbeginn, in `requestAccountDeletion`): `assertReceiptSubsystemUsable()` — schnelles Scheitern, falls das Receipt-Subsystem in Produktion offensichtlich unkonfiguriert ist, bevor überhaupt eine Transaktion/ein Passwort-Check stattfindet.
+2. Passwort/Bestätigungsphrase auf einem **ungesperrten** Read prüfen (Lock-Haltezeit minimieren).
+3. Konto-Zeile sperren, `planAccountDeletion(…, forUpdate:true)` — liefert zugleich den Sole-Owner-Blocker-Check.
+4. Bereits gelöscht? → `commit()` + `ACCOUNT_ALREADY_DELETED` (409).
+5. Blocker vorhanden? → `rollback()` + `ACCOUNT_DELETION_STUDIO_OWNERSHIP_REQUIRED` (409).
+6. Laufende Studio-Workout-Sessions abbrechen (`in_progress → aborted`), verknüpfter Kalendereintrag `IN_PROGRESS → PLANNED`.
+7. Aktive Zuweisungen des Kontos **als Mitglied** abbrechen (`active → cancelled`) — vom Konto als Coach erstellte Zuweisungen bleiben unverändert.
+8. Aktive Coaching-Beziehungen (als Coach oder Mitglied) beenden (`active → ended`).
+9. Terminierungsregeln deaktivieren (`active → disabled`) — Vereinigung aus Ersteller-Scope und Mitglied-Scope (Befund #2, Details unverändert siehe unten).
+10. Kalendereinträge terminalisieren — Studio `PLANNED → CANCELLED`; persönliche Einträge modusabhängig (Befund #3, Details unverändert siehe unten).
+11. Persönliche Daten hart löschen: `progress_entries`, `workouts`, `exercises` (nur eigene, nie globale Zeilen — Befund #1).
+12. Alle aktiven/suspendierten Mitgliedschaften → `status='left'`, je ein `membership.left`-Audit-Ereignis pro betroffenem Studio.
+13. Offene E-Mail-Änderungsanfragen löschen.
+14. **Alle** Sessions/Refresh-Tokens widerrufen (`revokeAllSessionsInTransaction`, Grund `account_deletion`).
+15. Anonymisieren **oder** Hard Delete der `users`-Zeile (Abschnitt 6/7) — **noch nicht committet**.
+16. Audit-Ereignisse einfügen (bestehende `SAFE_DETAIL_KEYS`-Allowlist) — **noch nicht committet**.
+17. **Deletion Receipt auflösen** (`resolveDeletionReceipt`): ein bereits bestehendes, gültiges Receipt für dieses Konto wird wiederverwendet (Idempotenz, Abschnitt 14.5); sonst wird ein neues Receipt erzeugt **und atomar auf die Festplatte publiziert** — **noch innerhalb derselben, noch offenen Transaktion**. Jeder Fehlschlag hier (Konfiguration unsicher, ein bestehendes, aber beschädigtes Receipt, oder das Publizieren selbst) wird vom umgebenden `catch`-Block abgefangen und führt zu einem vollständigen `ROLLBACK` — keine Kontodaten ändern sich, kein HTTP 200 (Fehlercodes: Abschnitt 10).
+18. **Erst jetzt `COMMIT`** — in einem eigenen, vom obigen Fehlerpfad getrennten Try/Catch: gelingt der Commit, ist die Löschung vollständig abgeschlossen. Schlägt der Commit selbst fehl (das Receipt ist zu diesem Zeitpunkt bereits dauerhaft publiziert und wird **nie entfernt**), wird ein bestmöglicher `ROLLBACK`-Versuch unternommen (etwaige Fehler dabei werden verschluckt — die Verbindung könnte bereits unbrauchbar sein), die Verbindung freigegeben, und `DELETION_RECEIPT_RECONCILIATION_REQUIRED` (503) geworfen. Der Deletion Receipt Doctor erkennt diesen Zustand identisch zu einem restaurierten Konto (gültiges Receipt gegen eine weiterhin `active`/noch existierende Zeile) und Reconciliation vervollständigt die Löschung — unter Wiederverwendung genau dieses Receipts.
+19. Strukturiertes Log (`account_deletion_completed`) — nur nach erfolgreichem Commit.
+20. HTTP 200 — nur nach erfolgreichem Commit.
 
-**Fehlersicherheit ohne falsche Atomaritäts-Behauptung**: Frühzeitige Ausstiegspfade (bereits gelöscht, Blocker) setzen `earlyExitError`, committen/rollbacken und geben die Verbindung frei, **bevor** sie werfen — der äussere `catch`-Block prüft `if (error !== earlyExitError)`, bevor er selbst rollback/release versucht, und verhindert damit eine doppelte Freigabe derselben Pool-Verbindung (in dieser Phase selbst gefunden und behoben, kein von aussen gemeldeter Fehler).
+**Fehlersicherheit ohne falsche Atomaritäts-Behauptung**: Frühzeitige Ausstiegspfade (bereits gelöscht, Blocker) setzen `earlyExitError`, committen/rollbacken und geben die Verbindung frei, **bevor** sie werfen — der äussere `catch`-Block prüft `if (error !== earlyExitError)`, bevor er selbst rollback/release versucht, und verhindert damit eine doppelte Freigabe derselben Pool-Verbindung (in dieser Phase selbst gefunden und behoben, kein von aussen gemeldeter Fehler). Der COMMIT-Schritt selbst ist bewusst **ausserhalb** dieses Try/Catch-Blocks platziert — sein Fehlerpfad ist strukturell verschieden (niemals ein Rollback-und-vergessen, immer ein stabiler, auf Recovery hinweisender Fehler), und MySQL-Transaktion sowie Dateisystem bleiben zwei getrennte Ressourcen ohne Zwei-Phasen-Commit zwischen ihnen (keine falsche Atomaritäts-Behauptung, ADR 004).
 
 ---
 
@@ -158,10 +172,10 @@ Rate-limitiert (`account.deleteRequest`), `authenticateToken`. Body: `{currentPa
 | `ACCOUNT_DELETION_PHRASE_MISMATCH` | 400 | Bestätigungsphrase ≠ eigener Benutzername |
 | `ACCOUNT_DELETION_STUDIO_OWNERSHIP_REQUIRED` | 409 | Alleiniger aktiver Owner in ≥1 eigenem Studio; `fields.studios` enthält ausschliesslich eigene Studios |
 | `ACCOUNT_ALREADY_DELETED` | 409 | Konto bereits gelöscht (Idempotenz-Fall) |
-| `ACCOUNT_DELETION_SERVICE_UNAVAILABLE` | 503 | Pre-Flight: Receipt-Subsystem in Produktion unkonfiguriert/ungültig — Löschung wird nie gestartet |
-| `DELETION_RECEIPT_CONFIGURATION_UNSAFE` | 503 | Receipt-Konfiguration ungültig (Doctor/Reconciliation) |
-| `DELETION_RECEIPT_CORRUPTED` | 503 | Ein Receipt besteht seine Integritätsprüfung nicht |
-| `DELETION_RECEIPT_RECONCILIATION_REQUIRED` | 503 | Ungelöste Restore-Inkonsistenz blockiert weitere Aktionen |
+| `ACCOUNT_DELETION_SERVICE_UNAVAILABLE` | 503 | Receipt-Subsystem in Produktion unkonfiguriert/ungültig — geprüft sowohl im Pre-Flight (vor Transaktionsbeginn) als auch erneut innerhalb der Transaktion (Abschnitt 5, Schritt 17), da Reconciliation `executeDeletionTransaction` direkt aufruft, ohne durch den Pre-Flight-Check zu laufen |
+| `DELETION_RECEIPT_PUBLISH_FAILED` | 503 | **Neu (Merge-Blocker-Fix):** kein bestehendes Receipt gefunden, und das Publizieren eines neuen Receipts ist vor dem Commit fehlgeschlagen (z. B. Datenträger voll, Berechtigung verweigert) — die gesamte Transaktion wird zurückgerollt, keine Kontodaten geändert |
+| `DELETION_RECEIPT_CORRUPTED` | 503 | Ein **bestehendes** Receipt für dieses Konto wurde gefunden, besteht aber seine Integritätsprüfung nicht — blockiert fail-closed, bevor ein zweites, möglicherweise widersprüchliches Receipt erzeugt würde |
+| `DELETION_RECEIPT_RECONCILIATION_REQUIRED` | 503 | **Erweitert (Merge-Blocker-Fix):** entweder eine ungelöste Restore-Inkonsistenz blockiert weitere Aktionen (Reconciliation-Ebene), oder das Receipt wurde erfolgreich publiziert, aber der anschliessende `COMMIT` ist fehlgeschlagen (Abschnitt 5, Schritt 18) — in beiden Fällen ist eine spätere Reconciliation nötig, nie ein HTTP 200 |
 
 Zusätzlich wiederverwendet: `CurrentPasswordInvalidError` (bestehend, aus `AccountErrors.js`), `NotFoundError` (bestehend, aus `AppError.js`).
 
@@ -220,6 +234,15 @@ Neue Policy `account.deleteRequest`: 3 Versuche / 60 Minuten, Schlüssel `userKe
 
 Schreiben in `<receiptId>.json.partial` über exklusives `wx`-Öffnen (scheitert, falls eine verwaiste Partial-Datei bereits existiert, statt sie stillschweigend zu überschreiben) plus `fsync`, dann Veröffentlichung über **`link()` statt `rename()`**: `link()` scheitert mit `EEXIST`, falls das Ziel bereits existiert — `rename()` würde es stillschweigend überschreiben. Ein einmal veröffentlichtes Receipt darf nie überschrieben werden; praktisch unerreichbar, da `receiptId` pro Aufruf eine frische zufällige UUID ist, aber diese Wahl macht die Garantie strukturell statt nur probabilistisch.
 
+**Merge-Blocker-Korrektur — Receipt-first, Idempotenz bei bestehendem Receipt (`resolveDeletionReceipt`, `accountDeletionService.js`; `findValidReceiptForAccount`, `deletionReceiptStore.js`):** Bevor überhaupt ein neues Receipt erzeugt wird, durchsucht `findValidReceiptForAccount` das konfigurierte Verzeichnis nach einem bereits bestehenden, **gültig verifizierbaren** Receipt für exakt diesen `accountRef`:
+
+- **Gefunden und gültig** → wird wiederverwendet, kein neues Receipt wird erzeugt oder geschrieben. Das ist der Mechanismus, der einen Client-Retry, eine erneute Reconciliation-Anwendung und eine Fortsetzung nach einem Commit-Fehler (Abschnitt 0b) idempotent macht — für dasselbe Konto entsteht nie eine zweite, unbegrenzt wachsende Menge an Receipts.
+- **Gefunden, aber Integritätsprüfung schlägt fehl** (eine Datei, deren `accountRef` exakt passt, aber deren Signatur/Form nicht verifiziert) → blockiert fail-closed (`DELETION_RECEIPT_CORRUPTED`, 503) — ein zweites, möglicherweise widersprüchliches Receipt wird nie einfach über eine unerkannte Beschädigung hinweg erzeugt.
+- **Nicht gefunden** → ein neues Receipt wird erzeugt und publiziert; schlägt das fehl, `DELETION_RECEIPT_PUBLISH_FAILED` (503), Transaktion rollt vollständig zurück.
+- Eine Datei, die gar nicht als JSON geparst werden kann, oder deren `accountRef` zu einem **anderen** Konto gehört, wird übersprungen (nicht diesem Konto zurechenbar) — eine bereits anderswo global vom Doctor erfasste Beschädigung blockiert nie eine völlig unabhängige Löschung eines anderen Kontos.
+
+Kein Vergleich anhand der ursprünglichen E-Mail oder des ursprünglichen Benutzernamens irgendwo in dieser Logik — ausschliesslich über `accountRef` (die interne `users.id`).
+
 ### 14.3 Konfiguration (`backend/config/deletionReceiptConfig.js`)
 
 | Variable | Zweck |
@@ -237,7 +260,9 @@ Schreiben in `<receiptId>.json.partial` über exklusives `wx`-Öffnen (scheitert
 - Zeile fehlt **oder** `lifecycle_status='deleted'` → konsistent.
 - Zeile `active` → `restoredActiveAccounts` (ein Restore hat einen Vor-Löschungs-Snapshot zurückgebracht).
 
-Getrennt erfasst: `corruptedReceipts` (HMAC/Form ungültig), `unknownReceipts` (unbekannte `schemaVersion`), `missingReceipts` (eine `deleted`-Zeile ganz ohne passendes Receipt). **Merge-Gate-Korrektur (Befund #5):** `missingReceipts` ist **selbstheilbar über Reconciliation, aber nicht mehr allein von der Fail-Closed-Meldung ausgenommen** — jedes fehlende Receipt setzt `recoveryRequired:true`/`ready:false` sofort, exakt wie ein beschädigtes oder unbekanntes. Begründung: ein einzelnes strukturiertes Log (`account_deletion_receipt_write_failed`) allein als Nachweis zu akzeptieren widerspräche der eigenen Begründung dieses gesamten Subsystems (ADR 004: „A plain structured log line alone is also insufficient"); die Readiness-Probe (Abschnitt 14.7) propagiert dieses Fail-Closed automatisch, da sie `deletionReceiptStatus()`s `ready`-Wert direkt durchreicht. **Bekannte, durch diese Korrektur nicht auflösbare Restriktion:** die zugrundeliegende Prüfung ist ein `SELECT ... WHERE lifecycle_status='deleted'` — für ein hard-delete-fähiges Konto existiert nach der Löschung **keine** Zeile mehr, gegen die geprüft werden könnte. Ein Receipt-Schreibfehler auf dem Hard-Delete-Pfad bleibt daher strukturell unentdeckbar durch den Doctor; nur das strukturierte Log bleibt dort das einzige Signal (siehe Abschnitt 17). Eigene, dichte Exit-Code-Familie (`EXIT_CODES`), bewusst **nicht** dieselbe Nummerierung wie der Migration Doctor (zwei unabhängige Werkzeuge, ein gemeinsames Schema würde riskieren, dass die Bedeutung des einen unter Änderungen des anderen driftet).
+Getrennt erfasst: `corruptedReceipts` (HMAC/Form ungültig), `unknownReceipts` (unbekannte `schemaVersion`), `missingReceipts` (eine `deleted`-Zeile ganz ohne passendes Receipt — z. B. weil eine Receipt-Datei nachträglich extern verloren ging; unter dem seit dem Merge-Blocker-Fix geltenden Receipt-first-Protokoll kann dieser Fall für einen normalen Löschvorgang selbst nicht mehr entstehen, siehe Abschnitt 0b). **Merge-Gate-Korrektur (Befund #5):** `missingReceipts` ist **selbstheilbar über Reconciliation, aber nicht mehr allein von der Fail-Closed-Meldung ausgenommen** — jedes fehlende Receipt setzt `recoveryRequired:true`/`ready:false` sofort, exakt wie ein beschädigtes oder unbekanntes. Begründung: ein einzelnes strukturiertes Log (`account_deletion_receipt_write_failed`) allein als Nachweis zu akzeptieren widerspräche der eigenen Begründung dieses gesamten Subsystems (ADR 004: „A plain structured log line alone is also insufficient"); die Readiness-Probe (Abschnitt 14.7) propagiert dieses Fail-Closed automatisch, da sie `deletionReceiptStatus()`s `ready`-Wert direkt durchreicht.
+
+**Korrektur (Merge-Blocker-Fix, Abschnitt 0b) — die frühere „strukturell unentdeckbar beim Hard Delete"-Einschränkung ist aufgehoben:** Unter dem Receipt-first-Protokoll existiert das Receipt bereits **vor** dem Commit. Schlägt der Commit einer Hard-Delete-Transaktion fehl, rollt die **gesamte** Transaktion zurück — die `users`-Zeile bleibt folglich (mit `lifecycle_status='active'`) bestehen, während das Receipt bereits publiziert und gültig ist. Der Doctor erkennt diese Konstellation über genau denselben `restoredActiveAccounts`-Zweig, der auch einen echten Backup-Restore erkennt (gültiges Receipt gegen eine Zeile, die `active` zeigt statt `deleted`) — live durch einen dedizierten Integrationstest bewiesen, inklusive eines zweiten, simulierten Restore-Zyklus nach erfolgter Reconciliation (`test/integration/accountDeletionApi.test.js`, Abschnitt 18). Ein Receipt-Schreibfehler selbst (vor dem Commit) lässt ohnehin nie eine Zeile verschwinden, da die Transaktion dann nie committet (Abschnitt 5, Schritt 17/18) — es gibt also keinen Fall mehr, in dem eine Hard-Delete-Löschung sowohl die Zeile entfernt **als auch** ohne Receipt bleibt. Eigene, dichte Exit-Code-Familie (`EXIT_CODES`), bewusst **nicht** dieselbe Nummerierung wie der Migration Doctor (zwei unabhängige Werkzeuge, ein gemeinsames Schema würde riskieren, dass die Bedeutung des einen unter Änderungen des anderen driftet).
 
 ### 14.5 Restore-Reconciliation (`backend/deletionReceipts/deletionReceiptReconciliation.js`)
 
@@ -293,7 +318,8 @@ Bestehende `SAFE_DETAIL_KEYS`-Allowlist (`audit/studioAudit.js`) deckte bereits 
 - **Keine Freitextbereinigung** — bewusst, siehe Abschnitt 12; über `notices.freeTextRetention` transparent kommuniziert.
 - **Kein Dashboard** für Löschstatistiken — der Doctor liefert strukturierte JSON-Ausgabe, kein UI.
 - **`deletion_reason`** absichtlich nicht eingeführt (Abschnitt 2) — eine künftige Phase mit einem zweiten Löschauslöser (z. B. Admin-Zwangslöschung, Inaktivitäts-Bereinigung) müsste diese Spalte nachrüsten.
-- **Receipt-Schreibfehler auf dem Hard-Delete-Pfad sind für den Doctor strukturell unentdeckbar** (Merge-Gate-Befund #5, Abschnitt 14.4): die Diagnose vergleicht gegen die noch existierende `users`-Zeile — ein hard-delete-fähiges Konto hinterlässt keine. Nur das strukturierte Log (`account_deletion_receipt_write_failed`) bleibt in diesem einen Fall das einzige Signal. Eine Lösung würde eine zusätzliche, dauerhafte Spur ausserhalb von `users` erfordern (z. B. eine eigene, von der `users`-Zeile unabhängige Ledger-Tabelle) — ADR 004 lehnt eine solche Löschungs-Ledger-Tabelle bewusst ab ("A new retention-ledger database table... deliberately file-based, not a database object"), sodass dies ein bewusst akzeptierter Rest-Kompromiss bleibt, kein Versehen.
+- **Aufgehoben (Merge-Blocker-Fix, Abschnitt 0b):** die hier zuvor gelistete Einschränkung „Receipt-Schreibfehler auf dem Hard-Delete-Pfad sind für den Doctor strukturell unentdeckbar" gilt **nicht mehr** — das Receipt-first-Commit-Protokoll stellt sicher, dass ein Hard Delete nie committet, ohne dass zuvor ein gültiges Receipt bereits durably publiziert wurde; ein Commit-Fehler danach lässt die Zeile bestehen (Rollback), was der Doctor über `restoredActiveAccounts` erkennt (Abschnitt 14.4).
+- **Restliche, echte Restriktion (nicht auflösbar ohne eine zusätzliche persistente Spur ausserhalb von `users`):** verliert eine bereits **erfolgreich abgeschlossene** Löschung ihr Receipt nachträglich durch ein externes Ereignis (z. B. jemand löscht die Datei manuell, oder ein Dateisystemfehler tritt Wochen später auf), erkennt der Doctor das weiterhin nur für ein anonymisiertes Konto (Zeile existiert noch, `missingReceipts`), nicht für ein bereits hart gelöschtes (keine Zeile mehr). Das betrifft ausdrücklich **nicht** den in Abschnitt 0b behobenen Fehlerfall (der lag vor dem Commit), sondern einen nachträglichen, vom eigentlichen Löschvorgang unabhängigen Dateiverlust — ADR 004 lehnt eine zusätzliche Datenbank-Ledger-Tabelle bewusst ab ("A new retention-ledger database table... deliberately file-based, not a database object"), sodass dieser sehr viel schmalere Rest-Fall ein bewusst akzeptierter Kompromiss bleibt.
 
 **Nächste Phase**: Stage 5C2 (Frontend-UI für Profil-Danger-Zone und Bestätigungsdialog) — nicht begonnen.
 
@@ -301,30 +327,43 @@ Bestehende `SAFE_DETAIL_KEYS`-Allowlist (`audit/studioAudit.js`) deckte bereits 
 
 ## 18. Tests
 
-### 18.1 Unit (50 neue Tests: 46 in sechs neuen Dateien + 4 in drei bestehenden Dateien ergänzt)
+### 18.1 Unit (563 gesamt in der Backend-Unit-Suite; für Stage 5C1 insgesamt 55 neu/erweitert: 51 in sechs neuen Dateien + 4 in drei bestehenden Dateien ergänzt)
 
 | Datei | Tests | Inhalt |
 |---|---|---|
 | `test/unit/userLifecycleDomain.test.js` | 8 | Statusvokabular, Transitionen, Hard-Delete-Eligibility, Anonymisierungs-Generatoren, Display-Name-Projektion |
 | `test/unit/deletionReceiptConfig.test.js` | 10 | Unkonfiguriert/Teilkonfiguriert/Vollständig, Platzhalter-Ablehnung, Aussenseiter-Verzeichnis-Check, Produktions-Fail-Closed |
 | `test/unit/deletionReceipts.test.js` | 11 | `stableStringify`-Determinismus, Build/Verify-Rundreise, Signatur-Manipulation, Schema-Version, `receiptId`-Formatvalidierung |
-| `test/unit/deletionReceiptStore.test.js` | 4 | Atomare Publikation, `EEXIST`-Schutz gegen Überschreiben, verwaiste Partial-Datei |
-| `test/unit/deletionReceiptDoctor.test.js` | 10 | Alle vier Zustände, `restoredActiveAccounts`/`corruptedReceipts`/`unknownReceipts`/`missingReceipts`-Klassifikation |
-| `test/unit/accountDeletionErrors.test.js` | 3 | Statuscodes/Felder aller sieben Fehlerklassen |
+| `test/unit/deletionReceiptStore.test.js` | 9 (4 ursprünglich + **5 neu, Merge-Blocker-Fix**) | Atomare Publikation, `EEXIST`-Schutz, verwaiste Partial-Datei, **`findValidReceiptForAccount`**: findet passendes Receipt/ignoriert fremdes, liefert `null` ohne Treffer, blockiert fail-closed bei beschädigtem Treffer, überspringt unparsbare Dateien, bevorzugt das jüngste `deletedAt` bei mehreren Treffern |
+| `test/unit/deletionReceiptDoctor.test.js` | 10 | Alle vier Zustände, `restoredActiveAccounts`/`corruptedReceipts`/`unknownReceipts`/`missingReceipts`-Klassifikation (inkl. der Merge-Gate-Korrektur: `missingReceipts` ist jetzt ebenfalls fail-closed) |
+| `test/unit/accountDeletionErrors.test.js` | 3 (Assertions um `DeletionReceiptPublishFailedError` ergänzt) | Statuscodes/Felder aller acht Fehlerklassen |
 | `test/unit/authMiddleware.test.js` (ergänzt) | +1 | Gelöschtes-Konto-Token wird trotz gültiger Session/`authVersion` abgewiesen |
 | `test/unit/rateLimiter.test.js` (ergänzt) | +1 | `account.deleteRequest`-Default (3/60min), pro Benutzer geschlüsselt, unabhängig von `passwordChange` |
 | `test/unit/userValidation.test.js` (ergänzt) | +2 | `validateAccountDeletionRequestPayload` — Pflichtfelder, unbekannte Schlüssel |
 
-### 18.2 Integration (32 Tests insgesamt in `test/integration/accountDeletionApi.test.js`: 23 aus der ursprünglichen Implementierung + 9 neue aus dem Merge-Gate-Review)
+### 18.2 Integration (42 Tests insgesamt in `test/integration/accountDeletionApi.test.js`: 23 aus der ursprünglichen Implementierung + 8 verbleibende aus dem ersten Merge-Gate-Review (von ursprünglich 9 — einer ist jetzt gegenstandslos, siehe unten) + 11 neu aus dem Receipt-first-Merge-Blocker-Fix)
 
 Vorschau-Korrektheit (Hard-Delete-Fall, Sole-Owner-Blocker, Impact-Zählung, keine Drittdaten-Leckage inkl. interner IDs), Execute-Validierung (falsches Passwort, falsche Phrase, fehlende Felder, fehlende Authentifizierung), Sole-Owner-Blocker mit Vorher/Nachher-Snapshot-Beweis keiner Teilmutation, Mehrfach-Owner-Erfolgsfall, vollständige Transaktionswirkung über alle sieben terminalisierten Entitätstypen, kreuz-Studio-Isolation (eine fremde Zuweisung bleibt unberührt), Unveränderlichkeit bereits abgeschlossener Historie, Anonymisierung (Login scheitert identisch zu unbekanntem Konto, altes Token invalidiert, E-Mail sofort wiederverwendbar), Idempotenz (zweiter Löschversuch kann sich nicht mehr authentifizieren), Hard-Delete-Fall (Zeile vollständig verschwunden), Cookie-Löschung, gültiges Receipt nach Löschung, Doctor-`ready`-Bestätigung, Restore-Simulation mit Doctor-Erkennung und Reconciliation-Reapply, Ablehnung von `applyReconciliation` ohne alle drei Acknowledgements, echte parallele Doppelanfrage (genau ein Erfolg).
 
-**Neu aus dem Merge-Gate-Review (9 Tests):**
+**Aus dem ersten Merge-Gate-Review (8 verbleibende Tests):**
 - Befund #1 (2 Tests): Hard-Delete-Fall — persönliche Übung wird gelöscht und erscheint nie in der globalen Bibliothek eines fremden Benutzers; Anonymisierungs-Fall — persönliche Übung wird identisch zu Workouts/Progress gelöscht, deckungsgleich mit dem Preview-Zähler.
 - Befund #2 (2 Tests): Vereinigungs-Prädikat deckt Mitglied-Scope (fremder Coach) und Ersteller-Scope (Coach selbst) ab, lässt eine unrelated Regel und eine bereits deaktivierte Regel unberührt, Preview entspricht exakt Execute; Reconciliation wendet dasselbe Mitglied-Scope-Prädikat erneut an.
 - Befund #3 (3 Tests): historische (`COMPLETED`/`CANCELLED`) persönliche Einträge bleiben im Anonymisierungsfall erhalten, nur `PLANNED` wird gelöscht, Preview stimmt exakt; im Hard-Delete-Fall wird auch ein historischer Eintrag entfernt (keine überlebende Zeile).
 - Befund #4 (2 Tests): ein Cookie-only-Request mit echten, gültigen Refresh-/CSRF-Cookies aber ohne `Authorization`-Header wird abgelehnt; ein Cross-Site-Request von einer nicht erlaubten Origin erhält weder auf den „simple" Request noch auf den Preflight einen freizügigen CORS-Header.
-- Befund #5 (1 Test, 7-Schritte-Fluss): DB-Commit erfolgreich trotz künstlich erzwungenem Receipt-Schreibfehler, HTTP-Antwort zeigt keine Teilmutation, Doctor meldet sofort `recovery_required`/`ready:false` (keine PII in der Ausgabe), eine wie in `server.js` verdrahtete Readiness-Probe scheitert ebenfalls fail-closed, Reconciliation heilt das fehlende Receipt, danach sind Doctor und Readiness wieder `ready`.
+- Befund #5s ursprünglicher, jetzt entfernter Test beschrieb genau das Verhalten, das der Receipt-first-Fix (Abschnitt 0b) korrigiert (ein Receipt-Schreibfehler führte damals absichtlich zu HTTP 200) — sein Titel wäre nach der Korrektur irreführend; die 11 neuen Tests unten decken denselben Doctor-/Readiness-/Reconciliation-Zyklus unter dem korrigierten, tatsächlichen Vertrag vollständig ab.
+
+**Neu aus dem Receipt-first-Merge-Blocker-Fix (11 Tests, Abschnitt 0b):**
+- Anonymisierung, Receipt-Publikation schlägt fehl (1 Test): vollständiger Rollback, Konto unverändert aktiv, keine Domain-/Audit-Teilmutation, altes Token funktioniert weiter, kein Receipt zurückgelassen, kein HTTP 200.
+- Anonymisierung, Receipt erfolgreich, Commit schlägt danach fehl (1 Test): Receipt bleibt bestehen, Konto zunächst weiter aktiv mit Originaldaten, Doctor `recovery_required`, Readiness `false`, Reconciliation anonymisiert das Konto unter Wiederverwendung desselben Receipts (genau 1 Receipt-Datei), danach beide wieder `ready`.
+- Hard Delete, Receipt-Publikation schlägt fehl (1 Test): vollständiger Rollback, `users`-Zeile bleibt vollständig erhalten, kein Receipt, kein HTTP 200.
+- Hard Delete, Receipt erfolgreich, Commit schlägt danach fehl (1 Test): Zeile bleibt zunächst bestehen, Receipt bleibt bestehen, Doctor erkennt es über `restoredActiveAccounts`, Reconciliation führt den Hard Delete aus; ein zweiter, simulierter Restore-Zyklus (dieselbe `id`) beweist die Wiederholbarkeit des Mechanismus.
+- Erfolgsfall (1 Test): Receipt existiert vor Commit, HTTP 200, Receipt gültig, Doctor `ready`, wiederholte Prüfung liefert identisches Ergebnis (idempotent).
+- Parallele Doppelanfrage erzeugt genau ein Receipt (1 Test, ergänzt die bestehende „genau ein Erfolg"-Prüfung um eine Receipt-Eindeutigkeits-Assertion).
+- Retry nach Receipt-Erfolg/Commit-Fehler (1 Test): ein direkter Client-Retry gegen die normale API gelingt und nutzt exakt dasselbe, bereits publizierte Receipt weiter (keine zweite Receipt-Datei).
+- Sessions bleiben nach einem Commit-Fehler aktiv (1 Test): der gesamte Widerruf rollt zusammen mit allem anderen zurück, das ursprüngliche Zugriffstoken funktioniert weiterhin.
+- Beschädigtes bestehendes Receipt blockiert fail-closed (1 Test): kein zweites, widersprüchliches Receipt wird über eine unerkannte Beschädigung hinweg erzeugt.
+- Receipt eines fremden Kontos wird nie verwechselt (1 Test): Isolationsnachweis für `findValidReceiptForAccount`.
+- Keine der neuen Fehlerantworten enthält PII, Dateisystempfade oder Stacktrace-Fragmente (1 Test).
 
 ### 18.3 Migration (2 neue Tests plus 4 aktualisierte Legacy-Zähler)
 
@@ -332,17 +371,17 @@ Neuer Schema-Erzwingungstest (`migrationDatabase.test.js`) und neuer Schema-Cont
 
 ### 18.4 Vollständige Regression
 
-Zwei Durchläufe: die ursprüngliche Implementierung (Abschnitt 1-20 unten unverändert) und, nach dem Merge-Gate-Review (Abschnitt 0), eine erneute vollständige Regression mit den 5 Korrekturen. Zahlen unten sind der **finale** Stand nach dem Review:
+Drei Durchläufe insgesamt: die ursprüngliche Implementierung, das erste Merge-Gate-Review (Abschnitt 0, 5 Befunde), und der Receipt-first-Merge-Blocker-Fix (Abschnitt 0b). Zahlen unten sind der **finale** Stand nach allen drei Runden:
 
-- `npm run test:unit`: **558/558** bestanden (unverändert durch das Review — die beiden betroffenen bestehenden Unit-Tests, `userLifecycleDomain.test.js`/`deletionReceiptDoctor.test.js`, wurden inhaltlich aktualisiert, nicht neu hinzugefügt).
-- `npm run test:integration`: **286/286** bestanden (254 bestehend + 23 aus der ursprünglichen Implementierung + 9 neue aus dem Merge-Gate-Review) — inklusive einer während der ursprünglichen Implementierung gefundenen und behobenen Regression in einem **bestehenden** Test (`test/integration/accountApi.test.js`, siehe Abschnitt 19).
+- `npm run test:unit`: **563/563** bestanden (558 nach Review 1 + 5 neue `findValidReceiptForAccount`-Tests).
+- `npm run test:integration`: **296/296** bestanden (254 bestehend + 42 in `accountDeletionApi.test.js`: 23 ursprünglich + 8 verbleibende aus Review 1 + 11 neu aus dem Merge-Blocker-Fix) — inklusive der in Abschnitt 19 dokumentierten Regressionsfunde.
 - `npm run test:migrations`: **34/34** bestanden.
 - `npm run test:syntax`: bestanden (250 Dateien).
 - `npm run audit --audit-level=high` (Backend): **0 Schwachstellen**.
 - Migration Doctor gegen eine disponible Scratch-Datenbank: `ready:true, applied:13, pending:0, dirty:0, drift:0, unknown:0, schemaIssues:0, ledgerIssues:0`.
 - Deletion Receipt Doctor gegen dieselbe Art Scratch-Datenbank (unkonfigurierte Nicht-Produktionsumgebung): `state:not_configured, ready:true`.
-- Frontend: `npm run test:unit` **499/499** bestanden, Produktions-Build erfolgreich, `npm audit --audit-level=high` **0 Schwachstellen** — unverändert grün, da Stage 5C1 (inkl. Merge-Gate-Review) keine Frontend-Änderungen vornimmt.
-- Chromium-E2E-/Axe-Suite: **64/64**, nach dem Merge-Gate-Review erneut zweimal unabhängig bestätigt, 0 fehlgeschlagen, 0 übersprungen, keine unerwarteten Retries, keine kritischen/schweren Axe-Befunde.
+- Frontend: `npm run test:unit` **499/499** bestanden, Produktions-Build erfolgreich, `npm audit --audit-level=high` **0 Schwachstellen** — unverändert grün, da dieser Fix keine Frontend-Änderungen vornimmt.
+- Chromium-E2E-/Axe-Suite: **64/64**, nach dem Merge-Blocker-Fix erneut zweimal unabhängig bestätigt, 0 fehlgeschlagen, 0 übersprungen, keine unerwarteten Retries, keine kritischen/schweren Axe-Befunde.
 
 ---
 
@@ -353,6 +392,8 @@ Zwei Durchläufe: die ursprüngliche Implementierung (Abschnitt 1-20 unten unver
 3. **`test/unit/authMiddleware.test.js`**: Die bestehende, gemockte "gültige Session"-Testzeile (`sessionRow()`-Helper) kannte die neue `user_lifecycle_status`-Spalte nicht, wodurch der neue `accountDeleted`-Check sie fälschlich als ungültig einstufte. Gefunden über die volle Unit-Suite, behoben durch Ergänzen von `user_lifecycle_status: 'active'` als Default im Helper, plus einem neuen dedizierten Test für den tatsächlichen Invalidierungsfall.
 
 Alle drei Funde sind exakt die Art von "bestehender Code durch neues Pflichtfeld/neue Spalte betroffen"-Regression, die eine vollständige Regressionssuite aufdecken soll — in dieser Phase gefunden und behoben, bevor sie das Ergebnis verfälschen konnten.
+
+4. **`test/integration/accountDeletionApi.test.js`** (Receipt-first-Merge-Blocker-Fix): der eigene, im ersten Merge-Gate-Review hinzugefügte Test „a receipt write failure after a committed deletion never fails the HTTP response..." schlug nach der Korrektur erwartungsgemäss fehl (`503 !== 200`) — sein gesamter Titel und Inhalt beschrieben exakt das Verhalten, das dieser Fix behebt (Best-Effort-Commit-dann-Receipt statt Receipt-first). Kein Fund in fremdem Code, sondern der eigene, jetzt gegenstandslose Test aus der vorherigen Runde; entfernt, seine Abdeckung vollständig durch die 11 neuen, unter dem korrigierten Vertrag geschriebenen Tests ersetzt (Abschnitt 18.2).
 
 ---
 

@@ -74,9 +74,32 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um
 > Origin beide per Integrationstest widerlegt, siehe Abschnitt „Account-
 > Löschung und Deletion Receipts" unten); (3) der Deletion Receipt Doctor
 > meldet jetzt bei jedem fehlenden Receipt sofort `ready:false`, nicht nur
-> bei einem beschädigten — mit der bekannten, unveränderten Restriktion,
-> dass ein Receipt-Schreibfehler auf dem Hard-Delete-Pfad strukturell
-> unentdeckbar bleibt (keine überlebende `users`-Zeile zum Prüfen).
+> bei einem beschädigten. Die zu diesem Zeitpunkt noch bekannte Restriktion
+> (Receipt-Schreibfehler auf dem Hard-Delete-Pfad seien strukturell
+> unentdeckbar) stellte sich bei genauerer Prüfung als **echter
+> Merge-Blocker** heraus — siehe den nachfolgenden Nachtrag.
+>
+> **Nachtrag (2026-07-28, Receipt-first-Commit-Protokoll — Merge-Blocker-Fix):**
+> Reproduziert und behoben: die ursprüngliche Reihenfolge committete die
+> DB-Transaktion **vor** der (Best-Effort-)Receipt-Publikation — ein
+> Receipt-Schreibfehler nach einem erfolgreichen Hard Delete hinterliess
+> weder eine `users`-Zeile noch ein Receipt, ein für den Deletion Receipt
+> Doctor vollständig unsichtbarer Zustand; ein späterer Restore hätte das
+> Konto reaktivieren können, ohne dass irgendein Mechanismus dies je
+> erkannt hätte. Korrigiert durch ein **Receipt-first-Commit-Protokoll**:
+> das Receipt wird innerhalb der noch offenen Transaktion aufgelöst
+> (bestehendes gültiges Receipt für dieses Konto wiederverwendet, oder neu
+> erzeugt und atomar publiziert) und **erst danach** wird committet.
+> Schlägt die Publikation fehl, rollt die gesamte Transaktion zurück (kein
+> HTTP 200, keine Kontoänderung). Schlägt der Commit **nach** erfolgreicher
+> Publikation fehl, bleibt das Receipt unangetastet bestehen, und der
+> Doctor erkennt den Zustand — jetzt auch für Hard-Delete-Konten
+> zuverlässig — über denselben Mechanismus wie einen echten Backup-Restore
+> (gültiges Receipt gegen eine Zeile, die noch `active` ist statt
+> `deleted`); Reconciliation vervollständigt die Löschung unter
+> Wiederverwendung desselben Receipts (nie ein zweites für denselben
+> Vorgang). Volle Details in `STAGE_5C1_ACCOUNT_DELETION_BACKEND.md`
+> Abschnitt 0b.
 
 ## Auth
 
@@ -181,7 +204,7 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um
 - Hybride Löschstrategie: Anonymisierung (Konto mit Studio-Historie — Zeile bleibt wegen `RESTRICT`-Fremdschlüsseln bestehen, Benutzername/E-Mail/Passworthash werden durch kryptographisch zufällige, **nicht ableitbare** Platzhalter ersetzt) oder vollständiger Hard Delete (Konto ohne jede je existierende Studio-Mitgliedschaft). Welcher Pfad greift, wird ausschließlich serverseitig anhand der tatsächlichen Mitgliedschaftshistorie entschieden. **[GETESTET]**.
 - Auth-Invalidierung dreifach abgesichert: `auth_version`-Inkrement bei Anonymisierung, `authMiddleware.js`s kombinierte Session-Abfrage prüft zusätzlich `lifecycle_status` (kollabiert auf denselben generischen `AUTH_SESSION_INVALIDATED` wie jede andere Ungültigkeitsursache — keine Unterscheidbarkeit „gelöscht" vs. „abgelaufen"), und ein Hard Delete liefert beim Refresh-Versuch strukturell null Zeilen. Login eines gelöschten Kontos scheitert **identisch im Timing** zu einem unbekannten Konto (`bcrypt.compare` läuft immer gegen einen echten Hash, der Lifecycle-Check erfolgt erst danach). **[GETESTET]**.
 - Extern signierte Deletion Receipts (HMAC-SHA256, kanonisches JSON) belegen jede Löschung außerhalb der Datenbank — nie die ursprüngliche E-Mail/den Benutzernamen, nur die interne Konto-Referenz. Atomare Dateipublikation (`link()` statt `rename()` — strukturell nie überschreibbar). Ein Receipt-**Schreib**fehler nach erfolgreichem Commit lässt die HTTP-Antwort nie scheitern (nur Log); eine **unsichere Konfiguration** blockiert dagegen den Start der Löschung selbst (Pre-Flight-Check). Kein stiller Produktionsfallback — alle drei Konfigurationsvariablen sind in Produktion Pflicht. **[GETESTET]** `backend/test/unit/deletionReceipts*.test.js`, `deletionReceiptConfig.test.js`, `deletionReceiptStore.test.js`.
-- Deletion Receipt Doctor (rein lesend) und eine dreifach-acknowledgement-gated Restore-Reconciliation behandeln den Fall, dass ein Backup-Restore ein bereits gelöschtes Konto versehentlich auf `active` zurücksetzt — kein Acknowledgement darf ein bloßes `"true"` sein, jedes muss exakt Datenbankname/Receipt-Verzeichnis referenzieren. Seit dem Merge-Gate-Review meldet der Doctor `ready:false` sofort bei **jedem** fehlenden Receipt, nicht nur bei einem beschädigten (bekannte Restriktion: für hart gelöschte Konten strukturell unentdeckbar, da keine `users`-Zeile überlebt). **[GETESTET]** `backend/test/unit/deletionReceiptDoctor.test.js`, Integrationstest „restore simulation" sowie der 7-Schritte-Fluss „receipt write failure" in `accountDeletionApi.test.js`.
+- Deletion Receipt Doctor (rein lesend) und eine dreifach-acknowledgement-gated Restore-Reconciliation behandeln den Fall, dass ein Backup-Restore ein bereits gelöschtes Konto versehentlich auf `active` zurücksetzt — kein Acknowledgement darf ein bloßes `"true"` sein, jedes muss exakt Datenbankname/Receipt-Verzeichnis referenzieren. Der Doctor meldet `ready:false` sofort bei **jedem** fehlenden Receipt, nicht nur bei einem beschädigten. Seit dem Receipt-first-Commit-Protokoll (Merge-Blocker-Fix) gilt das jetzt zuverlässig auch für hart gelöschte Konten: das Receipt wird publiziert, **bevor** die Transaktion committet — ein Commit-Fehler danach lässt die Kontenzeile (per Rollback) bestehen, was der Doctor über denselben Mechanismus wie einen echten Restore erkennt; ein Receipt-Schreibfehler selbst lässt die Transaktion nie committen. **[GETESTET]** `backend/test/unit/deletionReceiptDoctor.test.js`, `backend/test/unit/deletionReceiptStore.test.js` (`findValidReceiptForAccount`), sowie die dedizierten Anonymisierungs-/Hard-Delete-/Retry-/Konkurrenz-Tests in `accountDeletionApi.test.js`.
 - Eigener Rate-Limiter (`account.deleteRequest`, 3/60min, pro Benutzer). **[GETESTET]** `backend/test/unit/rateLimiter.test.js`.
 - Terminierungsregel-Deaktivierung deckt die Vereinigung aus Mitglied-Scope (Assignment, dessen Mitglied das gelöschte Konto ist, unabhängig vom Regel-Ersteller) und Ersteller-Scope (vom Konto selbst erstellte Regeln) ab — verhindert sowohl eine „Phantom-Coach"-Materialisierung als auch eine stale aktive Regel für ein bereits abgesagtes Assignment. Persönliche Übungen werden in beiden Löschmodi explizit gelöscht (nie über `ON DELETE SET NULL` global sichtbar). Kein dediziertes CSRF-Mittel für `/api/account/deletion-request` — verifiziert als endgültige, sichere Architekturentscheidung (Bearer-only, keine Cookie-Authentifizierung möglich). **[GETESTET]** dedizierte Integrationstests in `accountDeletionApi.test.js`.
 - **Weiterhin offen:** keine Frontend-Oberfläche (Stage 5C2), keine Freitextbereinigung (bewusst, siehe Nachtrag oben), keine Admin-Löschung fremder Konten, kein Datenexport. Volle Details in `STAGE_5C1_ACCOUNT_DELETION_BACKEND.md`.

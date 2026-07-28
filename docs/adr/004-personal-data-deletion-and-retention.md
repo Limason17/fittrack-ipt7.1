@@ -352,3 +352,60 @@ what this ADR itself asserted are restated here.
   entries are removed regardless of status, since `training_calendar_entries.user_id`
   is `ON DELETE CASCADE` and no row remains for a retained entry to attach
   to.
+
+## Amendment 2 (2026-07-28, receipt-first commit protocol — merge blocker)
+
+A sixth, more serious issue surfaced after the first amendment: **a receipt
+write failure following a successful hard delete was unrecoverable.** The
+implementation committed the database transaction (including the hard
+`DELETE FROM users`) *before* attempting to publish the receipt, as a
+best-effort step. Reproduced live against a disposable database: the
+`users` row is gone, no receipt file exists (the write failed), and the
+Deletion Receipt Doctor reports `ready:true` — it has nothing to check
+against. A later restore of an older backup could reactivate the account
+with zero trace it was ever deleted. This directly contradicts this ADR's
+own stated purpose for the receipt subsystem (Context section: an external,
+tamper-evident record that survives exactly the failure modes the database
+itself cannot) and was a genuine merge blocker, not an accepted limitation.
+
+**Corrected to a receipt-first commit protocol.** The receipt is now
+resolved — either an existing valid receipt for this exact `accountRef` is
+reused, or a new one is generated and durably published — *inside* the
+still-open database transaction, before `COMMIT` is ever issued:
+
+- If receipt resolution/publication fails, the whole transaction rolls
+  back (no account data changes, no HTTP 200, a stable 503).
+- If the receipt is durably published but the subsequent `COMMIT` itself
+  fails, the receipt is never removed. The account row (for anonymize) or
+  the still-existing row (for hard delete, since the failed commit rolled
+  the `DELETE` back too) is caught by the Deletion Receipt Doctor through
+  the exact same `restoredActiveAccounts` check that already detects a
+  genuine backup restore — a valid receipt against a row that still shows
+  `active` instead of `deleted`. Reconciliation completes the deletion
+  idempotently, reusing the same receipt rather than minting a second one.
+
+This closes the reuse-for-idempotency requirement more generally too:
+before generating any new receipt, the codebase now scans for an
+already-valid receipt matching the account (`findValidReceiptForAccount`,
+`deletionReceiptStore.js`) — a receipt claiming this account's reference
+but failing verification blocks fail-closed rather than being silently
+replaced, and a client retry, a second reconciliation pass, or a
+resumed-after-commit-failure attempt all converge on the same single
+receipt for the account, never an unbounded number of them.
+
+**Residual, narrower limitation (not resolved, and not resolvable without
+a persistent record outside `users` — which this ADR's Consequences
+section already rejects: "A new retention-ledger database table... is
+deliberately file-based, not a database object"):** if a receipt for an
+**already-completed** deletion is lost afterward through some unrelated
+external event (a stray manual deletion of the file, an unrelated disk
+fault), the Doctor's `missingReceipts` check can only detect this for an
+anonymized account (the row still exists to check `lifecycle_status`
+against). A hard-deleted account's row is gone by then, so this specific,
+narrower after-the-fact file-loss case remains undetectable. This is a
+materially smaller and different problem than the one this amendment
+fixes: it requires an independent, later event to sever a link that the
+receipt-first protocol itself always establishes correctly.
+
+Full detail, reproduction, and test evidence in
+`docs/STAGE_5C1_ACCOUNT_DELETION_BACKEND.md` Section 0b.
