@@ -1,6 +1,6 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test } from '@playwright/test'
-import { attachAuth, authenticate, loginApi, userFixture } from './helpers.js'
+import { addDaysToDateOnly, attachAuth, authenticate, loginApi, todayInTimezone, userFixture } from './helpers.js'
 
 test.describe.configure({ mode: 'serial' })
 const accessibilityUser = userFixture('a11y')
@@ -259,9 +259,7 @@ test('Stage-5A2-Kalender: Desktop, mobil, gefüllt und alle drei Dialoge haben k
   const user = userFixture('a11y-calendar')
   await authenticate(page, request, user)
 
-  const future = new Date()
-  future.setDate(future.getDate() + 4)
-  const futureStr = future.toISOString().slice(0, 10)
+  const futureStr = addDaysToDateOnly(todayInTimezone(), 4)
 
   await page.goto('/calendar')
   await expectNoSeriousAxeViolations(page) // empty state, desktop
@@ -373,7 +371,7 @@ test('Stage-5A3-Zeitplan: leer, Formular, gefüllt, Bearbeiten, Deaktivieren-Dia
   const dialog = page.getByRole('dialog')
   const dayValue = await dialog.getByLabel('Trainingstag', { exact: true }).locator('option', { hasText: 'A11y Day' }).getAttribute('value')
   await dialog.getByLabel('Trainingstag', { exact: true }).selectOption(dayValue)
-  await dialog.getByLabel('Startdatum', { exact: true }).fill(new Date().toISOString().slice(0, 10))
+  await dialog.getByLabel('Startdatum', { exact: true }).fill(todayInTimezone())
   await dialog.getByRole('button', { name: 'Regel erstellen' }).click()
   await expect(page.getByText('Die Terminierungsregel wurde erstellt.')).toBeVisible()
   await waitForToastsToSettle(page)

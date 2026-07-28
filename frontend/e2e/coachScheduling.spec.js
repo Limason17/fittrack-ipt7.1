@@ -1,27 +1,17 @@
 import { expect, test } from '@playwright/test'
-import { attachAuth, authenticate, loginApi, registerApi, userFixture } from './helpers.js'
+import {
+  attachAuth,
+  authenticate,
+  loginApi,
+  registerApi,
+  todayInTimezone,
+  userFixture,
+  weekdayForDateOnly,
+} from './helpers.js'
 
 test.describe.configure({ mode: 'serial' })
 
 const DE_WEEKDAYS = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag']
-
-function isoDateOnly(date) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-function addDays(date, days) {
-  const next = new Date(date)
-  next.setDate(next.getDate() + days)
-  return next
-}
-
-// Matches the backend's 0=Monday..6=Sunday convention (trainingCalendarDomain.js).
-function backendWeekday(date) {
-  return (date.getDay() + 6) % 7
-}
 
 async function registerAndLogin(request, user) {
   await registerApi(request, user)
@@ -121,9 +111,8 @@ test('Coach-zu-Member-Ablauf: drei Regeln setzen, bearbeiten, deaktivieren, Memb
   expect(assignmentResponse.status()).toBe(201)
   const assignment = (await assignmentResponse.json()).programAssignment
 
-  const today = new Date()
-  const todayStr = isoDateOnly(today)
-  const weekdayToday = backendWeekday(today)
+  const todayStr = todayInTimezone()
+  const weekdayToday = weekdayForDateOnly(todayStr)
   const weekdayB = (weekdayToday + 1) % 7
   const weekdayC = (weekdayToday + 2) % 7
 
@@ -333,7 +322,7 @@ test('Rollen und Berechtigungen: Trainer nur innerhalb eigener Coaching-Beziehun
     await expect(trainerADialog).toBeVisible()
     const rbacDayValue = await trainerADialog.getByLabel('Trainingstag', { exact: true }).locator('option', { hasText: day.name }).getAttribute('value')
     await trainerADialog.getByLabel('Trainingstag', { exact: true }).selectOption(rbacDayValue)
-    await trainerADialog.getByLabel('Startdatum', { exact: true }).fill(isoDateOnly(new Date()))
+    await trainerADialog.getByLabel('Startdatum', { exact: true }).fill(todayInTimezone())
     await trainerADialog.getByRole('button', { name: 'Regel erstellen' }).click()
     await expect(trainerAPage.getByText('Die Terminierungsregel wurde erstellt.')).toBeVisible()
 

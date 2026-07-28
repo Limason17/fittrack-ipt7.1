@@ -95,6 +95,84 @@ function parseSetCookie(headerValue) {
   return cookie
 }
 
+// ---- Studio-timezone-aware date-only helpers ----
+//
+// Every spec file that builds a schedule-rule/calendar-entry date used to
+// compute "today" via `new Date()` plus that Date object's *local* getters
+// (getFullYear/getMonth/getDate/getDay) or via `.toISOString()`. Both are
+// wrong for this product: the studio (and DEFAULT_PERSONAL_TIMEZONE for
+// purely personal entries) is fixed at Europe/Zurich
+// (trainingCalendarDomain.js), while the Node.js test-runner process's own
+// "local" timezone is whatever the CI runner's OS is set to - UTC on
+// GitHub's ubuntu-latest images - and `.toISOString()` is *always* UTC
+// regardless of that. For roughly the 1-2 hours around Zurich local
+// midnight (CEST: 00:00-02:00, CET: 00:00-01:00) UTC and Europe/Zurich
+// disagree on the calendar day, so a schedule rule pinned to
+// "new Date()'s day" lands one calendar day behind the studio's actual
+// today - the backend (todayInTimezone(), findOrMaterializeTodayCalendarEntry())
+// then correctly refuses to link that day's session/materialize an
+// occurrence for the *real* today, leaving the stale prior-day entry
+// stranded as PLANNED/OVERDUE forever. See
+// frontend/e2e/calendarDateHelpers.spec.js for deterministic, fixed-clock
+// proof of this and docs (hotfix branch) for the full root-cause writeup.
+//
+// These three helpers mirror backend/domain/trainingCalendarDomain.js's own
+// todayInTimezone()/addDays() exactly (same Intl.DateTimeFormat/UTC-anchor
+// approach) so E2E test data is always computed the same way the product
+// itself computes it - never a second, independently-drifting notion of
+// "today".
+
+export const STUDIO_TIMEZONE = 'Europe/Zurich'
+
+// Mirrors backend/domain/trainingCalendarDomain.js#todayInTimezone exactly.
+// `now` is injectable (defaults to the real clock) purely so it can be unit
+// tested deterministically without waiting for a real UTC/Zurich boundary -
+// see calendarDateHelpers.spec.js.
+export function todayInTimezone(timezone = STUDIO_TIMEZONE, now = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now)
+}
+
+// Mirrors backend/domain/trainingCalendarDomain.js#addDays exactly: pure
+// date-only arithmetic anchored to UTC midnight, so the result never
+// depends on the Node process's own local timezone and is unaffected by
+// DST transitions in any zone (it operates on the calendar-date string,
+// never on a wall-clock instant).
+export function addDaysToDateOnly(dateOnly, days) {
+  const date = new Date(`${dateOnly}T00:00:00Z`)
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10)
+}
+
+// Matches the backend's 0=Monday..6=Sunday convention
+// (trainingCalendarDomain.js). Which weekday a calendar date falls on is a
+// pure fact about that date, independent of timezone - this parses the
+// date-only string as UTC midnight (never local time, unlike `new
+// Date(dateOnly).getDay()`) so the result cannot be shifted by the Node
+// process's own local timezone.
+export function weekdayForDateOnly(dateOnly) {
+  const date = new Date(`${dateOnly}T00:00:00Z`)
+  return (date.getUTCDay() + 6) % 7
+}
+
+// Formats a date-only string ("YYYY-MM-DD") the same way a human-readable
+// UI label would for that exact calendar day - explicit `timeZone: 'UTC'`
+// is required here because the string is parsed as UTC midnight; without
+// an explicit timeZone, Intl.DateTimeFormat would re-render it in the Node
+// process's own local timezone and could shift the displayed day.
+export function formatDateOnlyDeCH(dateOnly) {
+  return new Intl.DateTimeFormat('de-CH', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }).format(new Date(`${dateOnly}T00:00:00Z`))
+}
+
 export async function chooseExercise(page, name = 'Bench Press', { keyboard = false } = {}) {
   const dialog = page.getByRole('dialog', { name: 'Übung auswählen' })
   await expect(dialog).toBeVisible()
