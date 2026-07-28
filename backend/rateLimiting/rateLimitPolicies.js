@@ -13,6 +13,7 @@ const { resolveClientIp } = require("../security/clientIp");
 // | auth.registration       | 5    | 60 min | client IP                              | unchanged from Stage 1/3B behaviour
 // | auth.refresh            | 30   | 5 min  | client IP                              | new - refresh had no limiter at all before Stage 3D; sized generously so the Stage 3C cross-tab lock's normal single-flight refreshes (including the accessibility suite's 17 sequential reloads and the two-tab race test's 20 repeats) never trip it
 // | auth.logoutAll          | 10   | 15 min | authenticated user ID                  | new - logout-all had no limiter before; authenticated, low real abuse risk, limit only guards against a scripting mistake spamming it
+// | account.deleteRequest   | 3    | 60 min | authenticated user ID                  | new (Stage 5C1) - more generous than passwordChange since a legitimate attempt can hit the sole-owner blocker multiple times while the user fixes it in another tab
 // | account.passwordChange  | 5    | 60 min | authenticated user ID                  | unchanged
 // | account.emailChangeRequest | 5 | 60 min | authenticated user ID                  | unchanged
 // | account.emailChangeConfirm | 20| 15 min | client IP                              | unchanged; public token endpoint - keyed by IP, never by the token itself (Section 7)
@@ -77,6 +78,7 @@ function createRateLimitPolicies(options = {}) {
     const registration = envWindowMax(env, "AUTH_REGISTRATION_RATE_LIMIT", 60 * 60 * 1000, 5);
     const refresh = envWindowMax(env, "AUTH_REFRESH_RATE_LIMIT", 5 * 60 * 1000, 30);
     const logoutAll = envWindowMax(env, "AUTH_LOGOUT_ALL_RATE_LIMIT", 15 * 60 * 1000, 10);
+    const deleteRequest = envWindowMax(env, "ACCOUNT_DELETE_RATE_LIMIT", 60 * 60 * 1000, 3);
     const passwordChange = envWindowMax(env, "AUTH_PASSWORD_CHANGE_RATE_LIMIT", 60 * 60 * 1000, 5);
     const emailChangeRequest = envWindowMax(env, "AUTH_EMAIL_CHANGE_RATE_LIMIT", 60 * 60 * 1000, 5);
     const emailChangeConfirm = envWindowMax(env, "AUTH_EMAIL_CHANGE_CONFIRM_RATE_LIMIT", 15 * 60 * 1000, 20);
@@ -89,6 +91,7 @@ function createRateLimitPolicies(options = {}) {
         "auth.registration": { id: "auth.registration", ...registration, code: "RATE_LIMIT_EXCEEDED", buildKey: registrationKey },
         "auth.refresh": { id: "auth.refresh", ...refresh, code: "RATE_LIMIT_EXCEEDED", buildKey: refreshKey },
         "auth.logoutAll": { id: "auth.logoutAll", ...logoutAll, code: "RATE_LIMIT_EXCEEDED", buildKey: userKey("logout-all") },
+        "account.deleteRequest": { id: "account.deleteRequest", ...deleteRequest, code: "RATE_LIMIT_EXCEEDED", buildKey: userKey("account-delete") },
         "account.passwordChange": { id: "account.passwordChange", ...passwordChange, code: "RATE_LIMIT_EXCEEDED", buildKey: userKey("password-change") },
         "account.emailChangeRequest": { id: "account.emailChangeRequest", ...emailChangeRequest, code: "RATE_LIMIT_EXCEEDED", buildKey: userKey("email-change-request") },
         "account.emailChangeConfirm": { id: "account.emailChangeConfirm", ...emailChangeConfirm, code: "RATE_LIMIT_EXCEEDED", buildKey: emailChangeConfirmKey },

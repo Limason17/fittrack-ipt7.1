@@ -93,6 +93,7 @@ function createRateLimiters({ store, env = process.env, keySecret = RATE_LIMIT_K
         registration: middlewareFor("auth.registration"),
         refresh: middlewareFor("auth.refresh"),
         logoutAll: middlewareFor("auth.logoutAll"),
+        deleteRequest: middlewareFor("account.deleteRequest"),
         passwordChange: middlewareFor("account.passwordChange"),
         emailChangeRequest: middlewareFor("account.emailChangeRequest"),
         emailChangeConfirm: middlewareFor("account.emailChangeConfirm"),

@@ -132,9 +132,29 @@ function validateEmailChangeConfirmPayload(body) {
     };
 }
 
+// Section 9's exact allowlist: currentPassword + confirmationPhrase, and
+// nothing else - an unknown extra field is rejected rather than silently
+// ignored, consistent with this module's other payload validators.
+function validateAccountDeletionRequestPayload(body) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+        invalid("body", "A JSON object is required.");
+    }
+    const unknown = Object.keys(body).filter(
+        (key) => !["currentPassword", "confirmationPhrase"].includes(key)
+    );
+    if (unknown.length > 0) {
+        invalid(unknown[0], "This field is not allowed.");
+    }
+    return {
+        currentPassword: requiredRawString(body.currentPassword, "currentPassword"),
+        confirmationPhrase: requiredRawString(body.confirmationPhrase, "confirmationPhrase")
+    };
+}
+
 module.exports = {
     EMAIL_PATTERN,
     LIMITS,
+    validateAccountDeletionRequestPayload,
     validateChangePasswordPayload,
     validateEmail,
     validateEmailChangeConfirmPayload,
