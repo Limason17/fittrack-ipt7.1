@@ -194,17 +194,40 @@ function createAccountDeletionService({
         }
     }
 
-    // Section 7.6: scoped by created_by_user_id (the deleting account as
-    // rule creator), deliberately NOT by which member the rule serves -
-    // otherwise a departed coach's rule would keep materializing future
-    // training days for an unrelated, still-active member nobody is
-    // coaching anymore (verified against trainingCalendarService.js: it
-    // never re-checks the coaching relationship's live status).
-    async function terminalizeScheduleRules(connection, actorUserId, auditEvents) {
+    // Merge-gate finding #2: the union of two independent sets, never just
+    // one -
+    //   (A) active rules for an assignment whose MEMBER is the deleted
+    //       account (mirrors exactly which assignments terminalizeAssignments
+    //       just cancelled above) - without this, a rule created by some
+    //       OTHER, still-active coach would keep materializing future
+    //       training days against an assignment whose member no longer
+    //       exists/left, since trainingCalendarService.js never re-checks
+    //       assignment status before materializing from a rule;
+    //   (B) active rules the deleted account itself CREATED (as coach/
+    //       admin/owner) - without this, a departed creator's rule would
+    //       keep materializing future days for an unrelated, still-active
+    //       member nobody is coaching anymore ("phantom coach").
+    // A single WHERE ... OR ... over one JOIN naturally de-duplicates - a
+    // rule matching both (A) and (B) is still exactly one row, never
+    // double-processed. The planner's activeScheduleRules count and this
+    // execute-time query share the identical predicate (see
+    // accountDeletionPlanner.js) so preview can never diverge from
+    // execution; reconciliation re-applies the same execution path, so no
+    // third copy of this predicate exists anywhere.
+    async function terminalizeScheduleRules(connection, actorUserId, membershipInternalIds, auditEvents) {
+        const params = [actorUserId];
+        let memberScopeClause = "";
+        if (membershipInternalIds.length > 0) {
+            memberScopeClause = " OR a.member_membership_id IN (?)";
+            params.push(membershipInternalIds);
+        }
         const [rules] = await connection.query(
-            `SELECT id, public_id, studio_id, assignment_id FROM studio_assignment_schedule_rules
-             WHERE created_by_user_id = ? AND status = 'active' FOR UPDATE`,
-            [actorUserId]
+            `SELECT r.id, r.public_id, r.studio_id, r.assignment_id
+             FROM studio_assignment_schedule_rules r
+             INNER JOIN studio_program_assignments a ON a.id = r.assignment_id
+             WHERE r.status = 'active' AND (r.created_by_user_id = ?${memberScopeClause})
+             FOR UPDATE`,
+            params
         );
         if (rules.length === 0) return;
         const ids = rules.map((row) => row.id);
@@ -231,34 +254,70 @@ function createAccountDeletionService({
         }
     }
 
-    // Section 7.7/18.2 step 9: studio PLANNED -> CANCELLED (this also
-    // captures rows the session-abort step just reverted from
-    // IN_PROGRESS to PLANNED, since this query runs afterward); personal
-    // entries are hard-deleted unconditionally, matching step 9b's literal
-    // SQL and Section 7.9's "a personal calendar entry is conceptually a
-    // personal workout" reasoning - not filtered to future-dated rows.
-    async function terminalizeCalendarEntries(connection, actorUserId) {
+    // Merge-gate finding #3: Section 7.7 and the retention classification
+    // table of the merged design (STAGE_5C_PERSONAL_DATA_LIFECYCLE_DESIGN.md)
+    // are explicit: "Zukuenftige persoenliche Kalendereintraege ... werden
+    // hart geloescht" and "persoenliche PLANNED-Eintraege werden hart
+    // geloescht" - i.e. only the non-terminal status='PLANNED' rows, exactly
+    // mirroring the studio-entry rule directly above (which was already
+    // status-filtered). A COMPLETED/SKIPPED/already-CANCELLED personal entry
+    // is historical fact and is retained - but only in the anonymize mode,
+    // where the users row (and therefore the entry's owning user_id, an
+    // ON DELETE CASCADE FK) survives. In hard_delete mode there is no
+    // surviving row for a retained entry to attach to - training_calendar_
+    // entries.user_id CASCADEs on the users row itself, so every one of the
+    // account's calendar entries disappears the instant that row is
+    // deleted regardless of what this function does; a retained historical
+    // entry's still-set created_by_user_id (a separate, RESTRICT-by-default
+    // FK, 012_unified_training_calendar.js) would otherwise block that same
+    // DELETE. This function makes both outcomes explicit rather than
+    // leaving the hard-delete case to an implicit cascade side effect,
+    // mirroring the same "always an explicit step, never implicit cascade"
+    // philosophy Section 7.9 already applies to workouts/progress_entries.
+    // Filtering by the persisted status column (not by comparing
+    // scheduled_date against "today") also sidesteps the timezone-dependent
+    // date math that caused the earlier calendar-midnight hotfix - status
+    // is unambiguous.
+    async function terminalizeCalendarEntries(connection, actorUserId, mode) {
         await connection.query(
             `UPDATE training_calendar_entries
              SET status = 'CANCELLED', cancelled_at = CURRENT_TIMESTAMP(3), revision = revision + 1
              WHERE user_id = ? AND source_type = 'studio' AND status = 'PLANNED'`,
             [actorUserId]
         );
+        if (mode === "hard_delete") {
+            await connection.query(
+                "DELETE FROM training_calendar_entries WHERE user_id = ? AND source_type = 'personal'",
+                [actorUserId]
+            );
+            return;
+        }
         await connection.query(
-            "DELETE FROM training_calendar_entries WHERE user_id = ? AND source_type = 'personal'",
+            "DELETE FROM training_calendar_entries WHERE user_id = ? AND source_type = 'personal' AND status = 'PLANNED'",
             [actorUserId]
         );
     }
 
+    // Merge-gate finding #1: exercises.user_id is ON DELETE SET NULL
+    // (001_initial_schema.js), and GET /exercises treats every user_id IS
+    // NULL row as globally visible ("WHERE user_id = ? OR user_id IS
+    // NULL", exercises.js) - a hard delete of the users row would silently
+    // cascade a deleted account's private exercises into the global
+    // library for every other user. Deleting them here, unconditionally in
+    // both modes and strictly after progress_entries/workouts (whose own
+    // rows are the only other referrers of a personal exercise, both
+    // already gone by this point), removes the FK path that could ever
+    // trigger SET NULL for a personal exercise, and keeps this function
+    // consistent with what the preview's personalDataCounts.personalExercises
+    // already promised in both modes (previously counted but never
+    // actually deleted - a pre-existing preview/execute divergence, fixed
+    // together with the leak itself). Never touches user_id IS NULL rows
+    // - the global exercise library is untouched.
     async function deletePersonalData(connection, actorUserId) {
         await connection.query("DELETE FROM progress_entries WHERE user_id = ?", [actorUserId]);
-        // workout_exercises cascades from workouts (ON DELETE CASCADE,
-        // 001_initial_schema.js). exercises.user_id is intentionally left
-        // untouched here: it is ON DELETE SET NULL and carries no PII
-        // (Section 4's own classification - an exercise name is not a
-        // personal identifier), so leaving it attached to the now-
-        // anonymized account is not a privacy concern.
+        // workout_exercises cascades from workouts (ON DELETE CASCADE, 001_initial_schema.js).
         await connection.query("DELETE FROM workouts WHERE user_id = ?", [actorUserId]);
+        await connection.query("DELETE FROM exercises WHERE user_id = ?", [actorUserId]);
     }
 
     async function anonymizeOrHardDeleteUser(connection, { actorUserId, mode, deletedAt }) {
@@ -390,8 +449,8 @@ function createAccountDeletionService({
             await terminalizeWorkoutSessions(connection, membershipInternalIds, auditEvents);
             await terminalizeAssignments(connection, membershipInternalIds, membershipPublicIdOf, auditEvents);
             await terminalizeCoachingRelationships(connection, membershipInternalIds, membershipPublicIdOf, auditEvents);
-            await terminalizeScheduleRules(connection, actorUserId, auditEvents);
-            await terminalizeCalendarEntries(connection, actorUserId);
+            await terminalizeScheduleRules(connection, actorUserId, membershipInternalIds, auditEvents);
+            await terminalizeCalendarEntries(connection, actorUserId, plan.mode);
             await deletePersonalData(connection, actorUserId);
 
             // Section 7.1/17: every active/suspended membership becomes

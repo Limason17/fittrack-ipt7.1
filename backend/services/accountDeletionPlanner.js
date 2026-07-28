@@ -106,27 +106,48 @@ async function planAccountDeletion(connection, userId, { forUpdate = false } = {
          WHERE (coach_membership_id IN (?) OR member_membership_id IN (?)) AND status = 'active'`,
         [membershipInternalIds, membershipInternalIds]
     );
+    // Merge-gate finding #2: identical union predicate to the execute-time
+    // terminalizeScheduleRules query (accountDeletionService.js) - active
+    // rules for an assignment whose member is this account (set A) UNION
+    // active rules this account created (set B) - so preview can never
+    // diverge from execution.
+    const scheduleRuleParams = [userId];
+    let scheduleRuleMemberScopeClause = "";
+    if (membershipInternalIds.length > 0) {
+        scheduleRuleMemberScopeClause = " OR a.member_membership_id IN (?)";
+        scheduleRuleParams.push(membershipInternalIds);
+    }
     const [[{ total: activeScheduleRules }]] = await connection.query(
-        `SELECT COUNT(*) AS total FROM studio_assignment_schedule_rules
-         WHERE created_by_user_id = ? AND status = 'active'`,
-        [userId]
+        `SELECT COUNT(*) AS total
+         FROM studio_assignment_schedule_rules r
+         INNER JOIN studio_program_assignments a ON a.id = r.assignment_id
+         WHERE r.status = 'active' AND (r.created_by_user_id = ?${scheduleRuleMemberScopeClause})`,
+        scheduleRuleParams
     );
     const [[{ total: futureStudioCalendarEntries }]] = await connection.query(
         `SELECT COUNT(*) AS total FROM training_calendar_entries
          WHERE user_id = ? AND source_type = 'studio' AND status = 'PLANNED'`,
         [userId]
     );
-    // Not date-filtered, matching the deletion transaction's own step 9b
-    // (an unconditional DELETE by source_type='personal', no scheduled_date
-    // predicate) - a preview that only counted future-dated rows here would
-    // silently understate what execution actually removes, breaking the
-    // "preview never diverges from execution" invariant this function
-    // exists to guarantee. The field name mirrors the design document's
-    // illustrative JSON (Section 15.1); the value mirrors the actual
-    // transaction contract (Section 18.2).
-    const [[{ total: futurePersonalCalendarEntries }]] = await connection.query(
+    // Merge-gate finding #3: identical predicate to terminalizeCalendarEntries's
+    // execute-time DELETE (accountDeletionService.js). In anonymize mode
+    // only status='PLANNED' rows are removed (Section 7.7 / the retention
+    // classification table: "persoenliche PLANNED-Eintraege werden hart
+    // geloescht") - a historical COMPLETED/SKIPPED/CANCELLED personal entry
+    // is retained, exactly like its studio-entry sibling above. In
+    // hard_delete mode every personal entry is removed regardless of
+    // status: training_calendar_entries.user_id is ON DELETE CASCADE on
+    // users, so nothing here could survive the users row being hard-deleted
+    // anyway, and a retained historical entry's created_by_user_id (a
+    // separate RESTRICT FK) would otherwise block that same DELETE. Renamed
+    // from the design document's illustrative "futurePersonalCalendarEntries"
+    // - once this count legitimately differs by mode (all vs. only
+    // non-terminal), "future" is no longer an accurate description in the
+    // hard_delete case, so the field is named for exactly what it counts:
+    // the personal calendar entries this specific execution will delete.
+    const [[{ total: personalCalendarEntriesToDelete }]] = await connection.query(
         `SELECT COUNT(*) AS total FROM training_calendar_entries
-         WHERE user_id = ? AND source_type = 'personal'`,
+         WHERE user_id = ? AND source_type = 'personal'${hardDeleteEligible ? "" : " AND status = 'PLANNED'"}`,
         [userId]
     );
 
@@ -176,7 +197,7 @@ async function planAccountDeletion(connection, userId, { forUpdate = false } = {
             activeAssignments,
             activeCoachingRelationships,
             activeScheduleRules,
-            futurePersonalCalendarEntries,
+            personalCalendarEntriesToDelete,
             futureStudioCalendarEntries
         }),
         personalDataCounts: Object.freeze({

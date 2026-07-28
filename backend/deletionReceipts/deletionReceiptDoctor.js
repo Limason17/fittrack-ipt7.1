@@ -124,11 +124,19 @@ async function diagnoseDeletionReceipts({ connection, readConfig = readDeletionR
         }
     }
 
-    // Self-healing case (Section 18.3, crash window A): a deleted row with
-    // no receipt at all is not fail-closed on its own - the row is already
-    // correctly anonymized/absent - but it is reported so an operator (or
-    // the reconciliation apply command) can reconstruct the missing
-    // receipt from the row's own deleted_at.
+    // Merge-gate finding #5: a deleted row with no receipt at all (Section
+    // 18.3, crash window A - most commonly a receipt WRITE that failed
+    // after an already-committed deletion, Section 18.3's documented
+    // "best effort" step) is self-healable (the reconciliation apply
+    // command reconstructs it purely from the row's own deleted_at, no
+    // deletion logic re-run) but is NOT self-healing on its own - the
+    // Doctor is read-only by construction (see the function comment
+    // above) and never mutates anything itself. Until an operator actually
+    // runs reconciliation, the external, tamper-evident proof this whole
+    // subsystem exists to provide is genuinely absent for that account, so
+    // this fails closed exactly like a corrupted/unknown-version receipt
+    // does, rather than silently reporting ready while independent proof
+    // of a real deletion is missing.
     const [deletedWithoutReceiptRows] = await connection.query(
         "SELECT id FROM users WHERE lifecycle_status = 'deleted'"
     );
@@ -137,7 +145,10 @@ async function diagnoseDeletionReceipts({ connection, readConfig = readDeletionR
         .filter((id) => !validReceiptsByAccountRef.has(id));
 
     const recoveryRequired =
-        restoredActiveAccounts.length > 0 || corruptedReceipts.length > 0 || unknownReceipts.length > 0;
+        restoredActiveAccounts.length > 0 ||
+        corruptedReceipts.length > 0 ||
+        unknownReceipts.length > 0 ||
+        missingReceipts.length > 0;
 
     return {
         state: recoveryRequired ? STATE.RECOVERY_REQUIRED : STATE.READY,
