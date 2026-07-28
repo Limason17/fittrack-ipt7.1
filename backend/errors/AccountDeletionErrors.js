@@ -54,6 +54,22 @@ class DeletionReceiptConfigurationUnsafeError extends AppError {
     }
 }
 
+// Receipt-first commit protocol (merge-gate follow-up): thrown when the
+// receipt subsystem is configured and reachable, but the actual atomic
+// file publication itself fails (disk full, permission denied, etc.) -
+// before the database transaction is ever committed. The caller rolls the
+// whole transaction back; no account data is ever changed and no receipt
+// is left behind. Distinct from DeletionReceiptConfigurationUnsafeError
+// (a configuration-level problem, caught before any filesystem write is
+// even attempted) and from DeletionReceiptReconciliationRequiredError
+// (thrown when the receipt already exists/was already published but the
+// commit that was supposed to follow it failed).
+class DeletionReceiptPublishFailedError extends AppError {
+    constructor(message = "Account deletion is unavailable: the deletion receipt could not be published.") {
+        super({ status: 503, code: "DELETION_RECEIPT_PUBLISH_FAILED", message });
+    }
+}
+
 class DeletionReceiptCorruptedError extends AppError {
     constructor(message = "A deletion receipt failed its integrity check.") {
         super({ status: 503, code: "DELETION_RECEIPT_CORRUPTED", message });
@@ -73,5 +89,6 @@ module.exports = {
     AccountDeletionStudioOwnershipRequiredError,
     DeletionReceiptConfigurationUnsafeError,
     DeletionReceiptCorruptedError,
+    DeletionReceiptPublishFailedError,
     DeletionReceiptReconciliationRequiredError
 };

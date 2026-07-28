@@ -7,7 +7,10 @@ const {
     AccountAlreadyDeletedError,
     AccountDeletionPhraseMismatchError,
     AccountDeletionServiceUnavailableError,
-    AccountDeletionStudioOwnershipRequiredError
+    AccountDeletionStudioOwnershipRequiredError,
+    DeletionReceiptCorruptedError,
+    DeletionReceiptPublishFailedError,
+    DeletionReceiptReconciliationRequiredError
 } = require("../errors/AccountDeletionErrors");
 const {
     generateAnonymizedEmail,
@@ -18,11 +21,28 @@ const { planAccountDeletion, publicDeletionPreview } = require("./accountDeletio
 const { createSessionService } = require("./sessionService");
 const { readDeletionReceiptConfig } = require("../config/deletionReceiptConfig");
 const { buildReceipt, generateReceiptId } = require("../security/deletionReceipts");
-const { publishReceipt } = require("../deletionReceipts/deletionReceiptStore");
+const { findValidReceiptForAccount, publishReceipt } = require("../deletionReceipts/deletionReceiptStore");
 
 const PASSWORD_HASH_COST = 10;
 const MAX_ANONYMIZATION_ATTEMPTS = 5;
 const DELETION_REVOCATION_REASON = "account_deletion";
+
+// Error codes verifyReceipt()/buildReceiptContent() raise for a receipt
+// that was actually found and parsed but fails shape/version/signature
+// verification - used to distinguish "a specific receipt for this account
+// is corrupted" (fail-closed, DeletionReceiptCorruptedError) from any
+// other failure while resolving a receipt (a directory-listing/filesystem
+// problem - treated as a publish-availability issue instead).
+const RECEIPT_VERIFICATION_ERROR_CODES = new Set([
+    "DELETION_RECEIPT_MALFORMED",
+    "DELETION_RECEIPT_UNKNOWN_SCHEMA_VERSION",
+    "DELETION_RECEIPT_UNSUPPORTED_ALGORITHM",
+    "DELETION_RECEIPT_INTEGRITY_INVALID",
+    "DELETION_RECEIPT_INVALID_ID",
+    "DELETION_RECEIPT_INVALID_ACCOUNT_REF",
+    "DELETION_RECEIPT_INVALID_LIFECYCLE_ACTION",
+    "DELETION_RECEIPT_INVALID_DELETED_AT"
+]);
 
 function promiseDatabase(database) {
     return typeof database.promise === "function" ? database.promise() : database;
@@ -364,6 +384,88 @@ function createAccountDeletionService({
         }
     }
 
+    // Receipt-first commit protocol: resolves (reuses an existing valid
+    // receipt for this account, or generates and durably publishes a new
+    // one) BEFORE the caller commits the surrounding DB transaction. Any
+    // failure here (config unsafe, an existing-but-corrupted match, or the
+    // publish itself failing) throws and is caught by executeDeletionTransaction's
+    // own try/catch, which rolls the whole transaction back - no account
+    // data is ever changed and no receipt is ever left behind on this path.
+    // Reuse is what makes retries (client retry, reconciliation re-apply,
+    // a second attempt after a commit failure) idempotent and prevents
+    // unbounded receipt accumulation for the same account.
+    async function resolveDeletionReceipt({ accountRef, deletedAt, lifecycleAction, requestId }) {
+        let config;
+        try {
+            config = readReceiptConfig();
+        } catch (error) {
+            throw new AccountDeletionServiceUnavailableError(
+                "Account deletion is unavailable: deletion receipt configuration is unsafe."
+            );
+        }
+        if (!config.configured) {
+            if (process.env.NODE_ENV === "production") {
+                throw new AccountDeletionServiceUnavailableError(
+                    "Account deletion is unavailable: deletion receipts are not configured."
+                );
+            }
+            // Non-production, deliberately unconfigured (Section 21 of the
+            // design): the deletion proceeds without an external receipt -
+            // there is nothing to publish and nothing to reuse.
+            return null;
+        }
+
+        let existing;
+        try {
+            existing = await findValidReceiptForAccount(config.directory, accountRef, config.key);
+        } catch (error) {
+            if (RECEIPT_VERIFICATION_ERROR_CODES.has(error.code)) {
+                // A receipt file that specifically claims to be for this
+                // account failed cryptographic/shape verification - block
+                // fail-closed rather than mint a second, possibly
+                // conflicting receipt over an unresolved corruption.
+                logger.error?.("account_deletion_receipt_corrupted", { requestId, userId: accountRef });
+                throw new DeletionReceiptCorruptedError(
+                    "Account deletion is unavailable: an existing deletion receipt for this account failed verification."
+                );
+            }
+            // Any other failure (e.g. the receipt directory itself cannot
+            // be listed - ENOTDIR/EACCES/etc.) means the subsystem could
+            // not even be queried, not that a specific receipt is corrupt -
+            // treated as a publish-availability problem, same as the
+            // publish step itself failing below.
+            logger.error?.("account_deletion_receipt_publish_failed", {
+                requestId,
+                userId: accountRef,
+                error: error.message
+            });
+            throw new DeletionReceiptPublishFailedError();
+        }
+        if (existing) {
+            return existing;
+        }
+
+        const receipt = buildReceipt({
+            receiptId: generateReceiptIdFn(),
+            accountRef,
+            lifecycleAction,
+            deletedAt,
+            key: config.key,
+            keyId: config.keyId
+        });
+        try {
+            await publishReceipt(config.directory, receipt);
+        } catch (error) {
+            logger.error?.("account_deletion_receipt_publish_failed", {
+                requestId,
+                userId: accountRef,
+                error: error.message
+            });
+            throw new DeletionReceiptPublishFailedError();
+        }
+        return receipt;
+    }
+
     async function requestAccountDeletion(actorUserId, input, { requestId } = {}) {
         assertReceiptSubsystemUsable();
 
@@ -407,6 +509,7 @@ function createAccountDeletionService({
         const connection = await begin();
         let plan;
         let studiosAffected = 0;
+        let receipt = null;
         // Set instead of thrown directly inside the try below: throwing
         // there would be caught by this function's own catch block, which
         // would then try to rollback/release a connection this branch
@@ -504,55 +607,60 @@ function createAccountDeletionService({
 
             studiosAffected = new Set(plan.studios.map((studio) => studio.studioId)).size;
 
-            await connection.commit();
+            // Receipt-first commit protocol: resolved (reused or freshly
+            // published) BEFORE commit, while the transaction can still be
+            // rolled back cleanly on any failure here - config unsafe, an
+            // existing-but-corrupted match, or the publish itself failing
+            // (resolveDeletionReceipt's own comment has the full rationale).
+            receipt = await resolveDeletionReceipt({
+                accountRef: actorUserId,
+                deletedAt,
+                lifecycleAction,
+                requestId
+            });
         } catch (error) {
             if (error !== earlyExitError) {
                 await rollbackAndRelease(connection);
             }
             throw error;
         }
+
+        // Commit is deliberately outside the try/catch above: once the
+        // receipt is durably published (or an existing one reused), it
+        // must never be removed, so a failure here is handled differently
+        // from every earlier failure - never a silent rollback-and-forget,
+        // always a stable, recovery-pointing error. The Deletion Receipt
+        // Doctor will see a valid receipt against a row that still shows
+        // active (or, for hard delete, still exists) and flag it exactly
+        // like a restored-active account; reconciliation completes the
+        // job from there, reusing this same receipt.
+        try {
+            await connection.commit();
+        } catch (commitError) {
+            try {
+                await connection.rollback();
+            } catch {
+                // The connection may already be unusable (e.g. dropped
+                // mid-commit) - the receipt's durability never depended on
+                // this, and a failed defensive rollback changes nothing
+                // about it either way.
+            } finally {
+                connection.release();
+            }
+            logger.error?.("account_deletion_commit_failed_after_receipt", {
+                requestId,
+                userId: actorUserId,
+                receiptId: receipt?.receiptId
+            });
+            throw new DeletionReceiptReconciliationRequiredError(
+                "Account deletion could not be confirmed. Please try again shortly."
+            );
+        }
         connection.release();
 
         logger.info?.("account_deletion_completed", { requestId, userId: actorUserId, studiosAffected });
 
-        await publishDeletionReceiptBestEffort({ accountRef: actorUserId, deletedAt, requestId, lifecycleAction });
-
         return { accountDeletion: { completedAt: deletedAt, studiosAffected } };
-    }
-
-    async function publishDeletionReceiptBestEffort({ accountRef, deletedAt, requestId, lifecycleAction = "deleted" }) {
-        let config;
-        try {
-            config = readReceiptConfig();
-        } catch (error) {
-            logger.error?.("account_deletion_receipt_write_failed", {
-                requestId,
-                userId: accountRef,
-                error: error.message
-            });
-            return;
-        }
-        if (!config.configured) {
-            logger.warn?.("account_deletion_receipt_not_configured", { requestId, userId: accountRef });
-            return;
-        }
-        try {
-            const receipt = buildReceipt({
-                receiptId: generateReceiptIdFn(),
-                accountRef,
-                lifecycleAction,
-                deletedAt,
-                key: config.key,
-                keyId: config.keyId
-            });
-            await publishReceipt(config.directory, receipt);
-        } catch (error) {
-            logger.error?.("account_deletion_receipt_write_failed", {
-                requestId,
-                userId: accountRef,
-                error: error.message
-            });
-        }
     }
 
     return {

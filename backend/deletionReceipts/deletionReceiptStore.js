@@ -1,6 +1,8 @@
 const fsPromises = require("node:fs/promises");
 const path = require("node:path");
 
+const { verifyReceipt } = require("../security/deletionReceipts");
+
 function receiptStoreError(code, message) {
     const error = new Error(message);
     error.code = code;
@@ -95,8 +97,43 @@ async function listReceiptFiles(directory) {
         .sort();
 }
 
+// Receipt-first commit protocol: scans every receipt file for one that
+// verifiably belongs to accountRef, so a caller about to record a deletion
+// for this account can reuse an already-published receipt instead of
+// minting and publishing a second one (idempotent retries, reconciliation
+// re-applies, and a completed-but-uncommitted transaction being finished
+// later must never accumulate multiple receipts for the same account).
+// A file whose accountRef matches but that fails integrity verification
+// blocks fail-closed (thrown) rather than being silently treated as "no
+// match" - accepting that and minting a fresh receipt anyway would either
+// duplicate evidence or paper over real corruption. A file that cannot
+// even be parsed, or whose accountRef belongs to a different account
+// entirely, is skipped - it cannot be attributed to this account, and any
+// genuine corruption there is already surfaced globally by the Doctor.
+async function findValidReceiptForAccount(directory, accountRef, key) {
+    const filePaths = await listReceiptFiles(directory);
+    let match = null;
+    for (const filePath of filePaths) {
+        let parsed;
+        try {
+            parsed = await readReceiptFile(filePath);
+        } catch {
+            continue;
+        }
+        if (!parsed || typeof parsed !== "object" || parsed.accountRef !== accountRef) {
+            continue;
+        }
+        const content = verifyReceipt(parsed, key);
+        if (!match || content.deletedAt > match.deletedAt) {
+            match = content;
+        }
+    }
+    return match;
+}
+
 module.exports = {
     ensureReceiptDirectory,
+    findValidReceiptForAccount,
     listReceiptFiles,
     publishReceipt,
     readReceiptFile,
