@@ -18,17 +18,27 @@ async function expectNoSeriousAxeViolations(page) {
   expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([])
 }
 
-// A toast's enter transition only animates opacity/transform (ToastHost.vue),
-// but axe's color-contrast check measures the actually-composited pixel
-// color, so scanning while a toast is still mid-fade-in can observe a
-// transiently blended, non-representative color rather than the toast's real
-// steady-state one (which is a compliant ~8:1 - verified separately). Vue
-// removes the `*-enter-active` class itself the instant the transition
-// genuinely finishes, so polling for that class to be gone is a real,
-// event-backed signal - not a blind wait - and resolves immediately if no
-// toast is present at all.
+// A toast's enter/leave transitions only animate opacity/transform
+// (ToastHost.vue), but axe's color-contrast check measures the
+// actually-composited pixel color, so scanning while a toast is mid-fade
+// can observe a transiently blended, non-representative color rather than
+// the toast's real steady-state one (which is a compliant ~8:1 - verified
+// separately). Toasts auto-dismiss after 5s (toast.js), which is enough
+// margin normally, but a slow axe scan under system load can push the
+// *next* scan past that window, so the leave transition starts on its own
+// mid-scan - waiting beforehand for a transition that hasn't started yet
+// can't catch that. Dismissing any visible toast ourselves, rather than
+// waiting out the timer, removes the auto-dismiss race entirely: the
+// transition now starts on our command, so waiting for it (and the toast
+// itself) to be fully gone is deterministic regardless of how long the
+// subsequent scan takes.
 async function waitForToastsToSettle(page) {
-  await expect(page.locator('.toast-enter-active')).toHaveCount(0, { timeout: 2000 })
+  const closeButtons = page.locator('.toast-close')
+  const openToasts = await closeButtons.count()
+  for (let i = 0; i < openToasts; i += 1) {
+    await closeButtons.first().click()
+  }
+  await expect(page.locator('.toast')).toHaveCount(0, { timeout: 2000 })
 }
 
 test('Kernseiten haben keine schweren oder kritischen Axe-Verstöße', async ({ page, request }) => {

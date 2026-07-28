@@ -189,7 +189,20 @@ test('Persönlicher Ablauf: erstellen, verschieben, bestätigen, verknüpftes Wo
   await (await findEvent(page, /Push Day E2E/)).click()
   await page.getByRole('button', { name: 'Als abgeschlossen bestätigen' }).click()
   await expect(page.getByRole('dialog').getByText('wird als abgeschlossen markiert')).toBeVisible()
+  // confirmPending() (CalendarView.vue) has the exact same toast-then-refetch
+  // order as handleRescheduleSubmit above: it shows the success toast
+  // synchronously and only *then* awaits loadRange(). Asserting on the toast
+  // alone and immediately re-querying the grid can race ahead of the actual
+  // refetch, so wait for the real calendar refetch response - the same fix
+  // already applied to the reschedule step above - before reading the
+  // button's class off the DOM.
+  const refetchAfterComplete = page.waitForResponse((response) =>
+    response.request().method() === 'GET' &&
+    response.url().includes('/api/v1/training-calendar?') &&
+    response.ok()
+  )
   await page.getByRole('dialog').getByRole('button', { name: 'Bestätigen' }).click()
+  await refetchAfterComplete
   await expect(page.getByText('Training wurde als abgeschlossen markiert.')).toBeVisible()
 
   const completedButton = await findEvent(page, /Push Day E2E/)

@@ -146,10 +146,30 @@ test('Coach-zu-Member-Ablauf: drei Regeln setzen, bearbeiten, deaktivieren, Memb
     if (repeatLabel) {
       await dialog.getByLabel('Wiederholung', { exact: true }).selectOption({ label: repeatLabel })
     }
+    // ScheduleRulesView.vue's own submit handler already awaits the create
+    // POST, then awaits refreshRules() (a GET on the same /schedule-rules
+    // path), and only *then* shows the success toast - so the toast itself
+    // is a reliable "the list is already updated" signal in isolation.
+    // But it stacks with identical text across the three back-to-back
+    // creations in this test, and Playwright's `.last()` polls at whatever
+    // moment it happens to check - if an *earlier* rule's toast (rule 1 or
+    // 2) is still on screen (auto-dismiss takes several seconds) when this
+    // wait starts, `.last()` can match that stale-but-identical-text toast
+    // immediately, satisfying the wait before *this* rule's own create
+    // request has even been sent, let alone before its refetch has
+    // repopulated the list with the new row - which is exactly what then
+    // makes the very next `Bearbeiten <day> (<weekday>)` visibility check
+    // flake. Waiting for the real signal (the list GET this component's own
+    // handler awaits) instead of the ambiguous toast text closes that race,
+    // the same way the calendar reschedule fix waits for the real refetch
+    // response rather than the toast.
+    const rulesRefetched = page.waitForResponse((response) =>
+      response.request().method() === 'GET' &&
+      response.url().includes('/schedule-rules') &&
+      response.ok()
+    )
     await dialog.getByRole('button', { name: 'Regel erstellen' }).click()
-    // Toasts stack and auto-dismiss after several seconds - across three
-    // rapid rule creations, an earlier toast may still be visible, so this
-    // asserts on the most recent one rather than assuming there is only one.
+    await rulesRefetched
     await expect(page.getByText('Die Terminierungsregel wurde erstellt.').last()).toBeVisible()
   }
 
