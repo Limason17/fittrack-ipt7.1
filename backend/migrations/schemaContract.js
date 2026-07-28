@@ -1644,6 +1644,48 @@ const unifiedCalendarChecks = [
     )
 );
 
+const accountLifecycleMigrationId = "013_account_lifecycle";
+const accountLifecycleExistingTableElement = { pendingMissingAllowed: false };
+
+const accountLifecycleUserColumns = [
+    ["users", "lifecycle_status", "varchar(16)", false],
+    ["users", "deleted_at", "timestamp(3)", true]
+].map(([tableName, columnName, columnType, nullable]) =>
+    column(
+        accountLifecycleMigrationId,
+        tableName,
+        columnName,
+        columnType,
+        nullable,
+        accountLifecycleExistingTableElement
+    )
+);
+
+const accountLifecycleIndexes = [
+    ["users", "idx_users_lifecycle_status", ["lifecycle_status"], false]
+].map(([tableName, indexName, columns, unique]) =>
+    index(
+        accountLifecycleMigrationId,
+        tableName,
+        indexName,
+        columns,
+        unique,
+        accountLifecycleExistingTableElement
+    )
+);
+
+const accountLifecycleChecks = [
+    ["users", "chk_users_lifecycle_status"],
+    ["users", "chk_users_deleted_at"]
+].map(([tableName, constraintName]) =>
+    checkConstraint(
+        accountLifecycleMigrationId,
+        tableName,
+        constraintName,
+        accountLifecycleExistingTableElement
+    )
+);
+
 const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
     {
         migrationId: "001_initial_schema",
@@ -1746,6 +1788,14 @@ const MIGRATION_SCHEMA_CONTRACT = Object.freeze([
             ...unifiedCalendarIndexes,
             ...unifiedCalendarForeignKeys,
             ...unifiedCalendarChecks
+        ]
+    },
+    {
+        migrationId: accountLifecycleMigrationId,
+        checks: [
+            ...accountLifecycleUserColumns,
+            ...accountLifecycleIndexes,
+            ...accountLifecycleChecks
         ]
     }
 ]);
