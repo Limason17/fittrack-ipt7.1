@@ -1,25 +1,16 @@
 import { expect, test } from '@playwright/test'
-import { attachAuth, authenticate, loginApi, registerApi, userFixture } from './helpers.js'
+import {
+  addDaysToDateOnly,
+  attachAuth,
+  authenticate,
+  loginApi,
+  registerApi,
+  todayInTimezone,
+  userFixture,
+  weekdayForDateOnly,
+} from './helpers.js'
 
 test.describe.configure({ mode: 'serial' })
-
-function isoDateOnly(date) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-function addDays(date, days) {
-  const next = new Date(date)
-  next.setDate(next.getDate() + days)
-  return next
-}
-
-// Matches the backend's 0=Monday..6=Sunday convention (trainingCalendarDomain.js).
-function backendWeekday(date) {
-  return (date.getDay() + 6) % 7
-}
 
 // A date N days out may or may not fall within the currently displayed
 // ~42-day month grid depending on what day-of-month "today" happens to be
@@ -154,8 +145,7 @@ test('Persönlicher Ablauf: erstellen, verschieben, bestätigen, verknüpftes Wo
   await page.goto('/calendar')
   await expect(page.getByRole('heading', { name: 'Trainingskalender' })).toBeVisible()
 
-  const future = addDays(new Date(), 5)
-  const futureStr = isoDateOnly(future)
+  const futureStr = addDaysToDateOnly(todayInTimezone(), 5)
 
   await page.getByRole('button', { name: 'Training eintragen' }).click()
   await page.getByLabel('Titel').fill('Push Day E2E')
@@ -169,8 +159,7 @@ test('Persönlicher Ablauf: erstellen, verschieben, bestätigen, verknüpftes Wo
   // ---- Reschedule ----
   await eventButton.click()
   await page.getByRole('button', { name: 'Verschieben' }).click()
-  const rescheduled = addDays(future, 2)
-  const rescheduledStr = isoDateOnly(rescheduled)
+  const rescheduledStr = addDaysToDateOnly(futureStr, 2)
   await page.getByRole('dialog').locator('input[type="date"]').fill(rescheduledStr)
   // handleRescheduleSubmit shows the success toast synchronously and only
   // *then* awaits the calendar refetch (CalendarView.vue) - a perfectly
@@ -200,7 +189,20 @@ test('Persönlicher Ablauf: erstellen, verschieben, bestätigen, verknüpftes Wo
   await (await findEvent(page, /Push Day E2E/)).click()
   await page.getByRole('button', { name: 'Als abgeschlossen bestätigen' }).click()
   await expect(page.getByRole('dialog').getByText('wird als abgeschlossen markiert')).toBeVisible()
+  // confirmPending() (CalendarView.vue) has the exact same toast-then-refetch
+  // order as handleRescheduleSubmit above: it shows the success toast
+  // synchronously and only *then* awaits loadRange(). Asserting on the toast
+  // alone and immediately re-querying the grid can race ahead of the actual
+  // refetch, so wait for the real calendar refetch response - the same fix
+  // already applied to the reschedule step above - before reading the
+  // button's class off the DOM.
+  const refetchAfterComplete = page.waitForResponse((response) =>
+    response.request().method() === 'GET' &&
+    response.url().includes('/api/v1/training-calendar?') &&
+    response.ok()
+  )
   await page.getByRole('dialog').getByRole('button', { name: 'Bestätigen' }).click()
+  await refetchAfterComplete
   await expect(page.getByText('Training wurde als abgeschlossen markiert.')).toBeVisible()
 
   const completedButton = await findEvent(page, /Push Day E2E/)
@@ -220,7 +222,7 @@ test('Heute: Standard abgeschlossen, planAsUpcoming ergibt "Heute fällig"', asy
   await authenticate(page, request, member)
   await page.goto('/calendar')
 
-  const todayStr = isoDateOnly(new Date())
+  const todayStr = todayInTimezone()
 
   await page.getByRole('button', { name: 'Training eintragen' }).click()
   await page.getByLabel('Titel').fill('Heute Default')
@@ -244,9 +246,9 @@ test('Vergangenheit: wird als abgeschlossen gespeichert', async ({ page, request
   await authenticate(page, request, member)
   await page.goto('/calendar')
 
-  const past = addDays(new Date(), -3)
-  const pastCrossesMonth = past.getMonth() !== new Date().getMonth()
-  const pastStr = isoDateOnly(past)
+  const todayStr = todayInTimezone()
+  const pastStr = addDaysToDateOnly(todayStr, -3)
+  const pastCrossesMonth = pastStr.slice(0, 7) !== todayStr.slice(0, 7)
 
   await page.getByRole('button', { name: 'Training eintragen' }).click()
   await page.getByLabel('Titel').fill('Vergangenes Training')
@@ -263,9 +265,9 @@ test('Vergangenheit: wird als abgeschlossen gespeichert', async ({ page, request
 
 test('Studio-Workout: erscheint im Kalender, wird gestartet, im Ausführungsbildschirm abgeschlossen, kehrt als abgeschlossen zurück, kein doppelter persönlicher Eintrag', async ({ page, request }) => {
   test.setTimeout(180_000)
-  const today = new Date()
+  const todayStr = todayInTimezone()
   const fixture = await setupStudioWithSchedule(request, {
-    idPrefix: 'cal-studio', weekday: backendWeekday(today), activeFrom: isoDateOnly(today),
+    idPrefix: 'cal-studio', weekday: weekdayForDateOnly(todayStr), activeFrom: todayStr,
   })
 
   await attachAuth(page, fixture.memberAuth)
@@ -306,8 +308,9 @@ test('Überspringen und Absagen führen zu unterschiedlichen roten Zuständen', 
   await authenticate(page, request, member)
   await page.goto('/calendar')
 
-  const dateA = isoDateOnly(addDays(new Date(), 10))
-  const dateB = isoDateOnly(addDays(new Date(), 11))
+  const todayStr = todayInTimezone()
+  const dateA = addDaysToDateOnly(todayStr, 10)
+  const dateB = addDaysToDateOnly(todayStr, 11)
 
   await page.getByRole('button', { name: 'Training eintragen' }).click()
   await page.getByLabel('Titel').fill('Skip-Test-Training')
@@ -339,10 +342,11 @@ test('Überspringen und Absagen führen zu unterschiedlichen roten Zuständen', 
 
 test('Overdue: ein vergangenes, unbestätigtes Coach-Event bleibt PLANNED und erscheint als "Noch zu bestätigen"', async ({ page, request }) => {
   test.setTimeout(120_000)
-  const overdue = addDays(new Date(), -1)
-  const overdueCrossesMonth = overdue.getMonth() !== new Date().getMonth()
+  const todayStr = todayInTimezone()
+  const overdueStr = addDaysToDateOnly(todayStr, -1)
+  const overdueCrossesMonth = overdueStr.slice(0, 7) !== todayStr.slice(0, 7)
   const fixture = await setupStudioWithSchedule(request, {
-    idPrefix: 'cal-overdue', weekday: backendWeekday(overdue), activeFrom: isoDateOnly(overdue),
+    idPrefix: 'cal-overdue', weekday: weekdayForDateOnly(overdueStr), activeFrom: overdueStr,
   })
 
   await attachAuth(page, fixture.memberAuth)
@@ -360,16 +364,16 @@ test('Overdue: ein vergangenes, unbestätigtes Coach-Event bleibt PLANNED und er
 
 test('Filter: Quelle und Status filtern die sichtbaren Ereignisse client-seitig', async ({ page, request }) => {
   test.setTimeout(120_000)
-  const today = new Date()
+  const todayStr = todayInTimezone()
   const fixture = await setupStudioWithSchedule(request, {
-    idPrefix: 'cal-filter', weekday: backendWeekday(today), activeFrom: isoDateOnly(today),
+    idPrefix: 'cal-filter', weekday: weekdayForDateOnly(todayStr), activeFrom: todayStr,
   })
   await attachAuth(page, fixture.memberAuth)
   await page.goto('/calendar')
 
   await page.getByRole('button', { name: 'Training eintragen' }).click()
   await page.getByLabel('Titel').fill('Eigenes Training')
-  await page.getByLabel('Datum').fill(isoDateOnly(addDays(today, 1)))
+  await page.getByLabel('Datum').fill(addDaysToDateOnly(todayStr, 1))
   await page.getByRole('button', { name: 'Speichern' }).click()
 
   await expect(page.getByRole('button', { name: /Push Day/ })).toBeVisible()

@@ -1,27 +1,17 @@
 import { expect, test } from '@playwright/test'
-import { attachAuth, authenticate, loginApi, registerApi, userFixture } from './helpers.js'
+import {
+  attachAuth,
+  authenticate,
+  loginApi,
+  registerApi,
+  todayInTimezone,
+  userFixture,
+  weekdayForDateOnly,
+} from './helpers.js'
 
 test.describe.configure({ mode: 'serial' })
 
 const DE_WEEKDAYS = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag']
-
-function isoDateOnly(date) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-function addDays(date, days) {
-  const next = new Date(date)
-  next.setDate(next.getDate() + days)
-  return next
-}
-
-// Matches the backend's 0=Monday..6=Sunday convention (trainingCalendarDomain.js).
-function backendWeekday(date) {
-  return (date.getDay() + 6) % 7
-}
 
 async function registerAndLogin(request, user) {
   await registerApi(request, user)
@@ -121,9 +111,8 @@ test('Coach-zu-Member-Ablauf: drei Regeln setzen, bearbeiten, deaktivieren, Memb
   expect(assignmentResponse.status()).toBe(201)
   const assignment = (await assignmentResponse.json()).programAssignment
 
-  const today = new Date()
-  const todayStr = isoDateOnly(today)
-  const weekdayToday = backendWeekday(today)
+  const todayStr = todayInTimezone()
+  const weekdayToday = weekdayForDateOnly(todayStr)
   const weekdayB = (weekdayToday + 1) % 7
   const weekdayC = (weekdayToday + 2) % 7
 
@@ -157,10 +146,30 @@ test('Coach-zu-Member-Ablauf: drei Regeln setzen, bearbeiten, deaktivieren, Memb
     if (repeatLabel) {
       await dialog.getByLabel('Wiederholung', { exact: true }).selectOption({ label: repeatLabel })
     }
+    // ScheduleRulesView.vue's own submit handler already awaits the create
+    // POST, then awaits refreshRules() (a GET on the same /schedule-rules
+    // path), and only *then* shows the success toast - so the toast itself
+    // is a reliable "the list is already updated" signal in isolation.
+    // But it stacks with identical text across the three back-to-back
+    // creations in this test, and Playwright's `.last()` polls at whatever
+    // moment it happens to check - if an *earlier* rule's toast (rule 1 or
+    // 2) is still on screen (auto-dismiss takes several seconds) when this
+    // wait starts, `.last()` can match that stale-but-identical-text toast
+    // immediately, satisfying the wait before *this* rule's own create
+    // request has even been sent, let alone before its refetch has
+    // repopulated the list with the new row - which is exactly what then
+    // makes the very next `Bearbeiten <day> (<weekday>)` visibility check
+    // flake. Waiting for the real signal (the list GET this component's own
+    // handler awaits) instead of the ambiguous toast text closes that race,
+    // the same way the calendar reschedule fix waits for the real refetch
+    // response rather than the toast.
+    const rulesRefetched = page.waitForResponse((response) =>
+      response.request().method() === 'GET' &&
+      response.url().includes('/schedule-rules') &&
+      response.ok()
+    )
     await dialog.getByRole('button', { name: 'Regel erstellen' }).click()
-    // Toasts stack and auto-dismiss after several seconds - across three
-    // rapid rule creations, an earlier toast may still be visible, so this
-    // asserts on the most recent one rather than assuming there is only one.
+    await rulesRefetched
     await expect(page.getByText('Die Terminierungsregel wurde erstellt.').last()).toBeVisible()
   }
 
@@ -333,7 +342,7 @@ test('Rollen und Berechtigungen: Trainer nur innerhalb eigener Coaching-Beziehun
     await expect(trainerADialog).toBeVisible()
     const rbacDayValue = await trainerADialog.getByLabel('Trainingstag', { exact: true }).locator('option', { hasText: day.name }).getAttribute('value')
     await trainerADialog.getByLabel('Trainingstag', { exact: true }).selectOption(rbacDayValue)
-    await trainerADialog.getByLabel('Startdatum', { exact: true }).fill(isoDateOnly(new Date()))
+    await trainerADialog.getByLabel('Startdatum', { exact: true }).fill(todayInTimezone())
     await trainerADialog.getByRole('button', { name: 'Regel erstellen' }).click()
     await expect(trainerAPage.getByText('Die Terminierungsregel wurde erstellt.')).toBeVisible()
 
