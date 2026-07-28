@@ -276,3 +276,79 @@ list.
   larger, but still single, atomic transaction; the security analysis
   (design document Section 24) adds corresponding scope-boundary tests to
   ensure this never reaches another member's own assignments or calendar.
+
+## Amendment (2026-07-28, Stage 5C1 merge-gate review)
+
+Four corrections made during backend implementation review, before merge to
+`main`. Full detail, rationale, and test evidence for all of these live in
+`docs/STAGE_5C1_ACCOUNT_DELETION_BACKEND.md`; only the decisions that change
+what this ADR itself asserted are restated here.
+
+- **Schedule-rule scope, corrected from creator-only to a union.** The
+  paragraph above ("a schedule rule the deleted account **created** is
+  `disabled` regardless of which member it serves") is **incomplete**: it
+  covers only rules the deleted account created (set B), not rules an
+  *unrelated* coach created for an assignment where the deleted account is
+  the *member* (set A). Leaving a set-A rule active contradicts this
+  section's own stated goal — "one consistent terminal state, not a mix of
+  live and stale" — since the assignment itself is cancelled the instant its
+  member is deleted, while an unrelated creator's rule for that same,
+  now-cancelled assignment would stay `active`. The corrected, final
+  predicate disables the union of both sets, never double-processing a rule
+  that happens to match both. `training_calendar_entries.materializeStudioOccurrences`
+  already re-checks the assignment's own live status separately, so this
+  correction is about eliminating stale/inconsistent state, not a
+  previously-reachable materialization bug.
+- **Deletion Receipt Doctor now fails closed on a missing receipt, not only
+  on a corrupted one.** This ADR's Context section already establishes that
+  a bare structured log line is "insufficient" as the sole proof a deletion
+  happened; treating a *known-missing* receipt as merely self-healable
+  (rather than failing `ready`) left exactly that log line as the only
+  signal until an operator happened to run the Doctor manually. The Doctor
+  now reports `recovery_required`/`ready:false` immediately whenever any
+  deleted account lacks a receipt, exactly as it already did for a
+  corrupted or unknown-schema one — self-healing (via reconciliation) is
+  unchanged, only the interim reporting is stricter.
+  **Known residual limitation, not fixed by this amendment:** this check is
+  a `SELECT ... WHERE lifecycle_status = 'deleted'` — it can only detect a
+  missing receipt for a row that still exists. A hard-delete-eligible
+  account (never any studio membership) leaves no row at all, so a receipt
+  write failure on that specific path remains observable only via the
+  `account_deletion_receipt_write_failed` log line, not via the Doctor. No
+  design in this ADR resolves this, since there is no surviving database
+  state left to check against.
+- **No dedicated CSRF middleware on `/api/account/*`, confirmed as a final
+  decision, not an oversight.** Neither this ADR nor the design document
+  ever mandated CSRF protection for the deletion endpoint specifically (the
+  design document's own CSRF mentions are about invalidating a deleted
+  account's *existing* CSRF/refresh cookies, not about protecting the
+  deletion endpoint's own request). Verified against the actual session
+  architecture: `/api/account/*` is authenticated exclusively by a Bearer
+  access token that is never stored in a cookie and never readable
+  cross-origin; `authMiddleware.js` never inspects cookies for
+  authentication at all. A forged cross-site request therefore cannot
+  supply the one credential this endpoint requires, regardless of which
+  cookies a browser would otherwise attach automatically — the same
+  precondition CSRF protection exists to guarantee, met here by
+  construction rather than by an additional token. Integration tests prove
+  both a cookie-only forged request (real, valid cookies, no Authorization
+  header) and a disallowed cross-site origin (simple request and
+  Authorization-requiring preflight alike) are rejected.
+- **Personal-exercise and personal-calendar-entry retention, corrected to
+  match this design's own stated intent.** The implementation had drifted
+  from what this ADR and the design document actually specify:
+  `exercises.user_id`'s `ON DELETE SET NULL` combined with the existing
+  `GET /exercises` query (`WHERE user_id = ? OR user_id IS NULL`) meant a
+  hard-deleted account's personal exercises would have resurfaced as
+  globally-visible rows — now corrected by deleting them as personal data,
+  in both modes, before any hard delete can occur. Personal calendar
+  entries were being deleted unconditionally regardless of status; the
+  design document's own retention classification (`persoenliche
+  PLANNED-Eintraege werden hart geloescht`) already specified PLANNED-only
+  deletion, historical (COMPLETED/SKIPPED/CANCELLED) entries retained — now
+  corrected accordingly, with one necessary further refinement the
+  documents did not anticipate: retention is only possible when the `users`
+  row survives (anonymize mode); a hard-delete-eligible account's calendar
+  entries are removed regardless of status, since `training_calendar_entries.user_id`
+  is `ON DELETE CASCADE` and no row remains for a retained entry to attach
+  to.

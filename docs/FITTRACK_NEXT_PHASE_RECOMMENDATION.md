@@ -274,6 +274,19 @@
 > eingerichtet, und Stage 5C2 (Frontend-UI) wurde nicht begonnen.
 >
 > ---
+>
+> **Nachtrag (2026-07-28, Stage 5C1 Merge-Gate-Review):** Ein Merge-Gate-
+> Review fand fünf Befunde im oben beschriebenen Stand (Privat-zu-global-
+> Übungsleck, unvollständiges Terminierungsregel-Scope, unbedingte statt
+> `PLANNED`-only Löschung persönlicher Kalendereinträge, ungeklärte CSRF-
+> Entscheidung, nicht fail-closed meldender Receipt Doctor) — alle behoben,
+> siehe `STAGE_5C1_ACCOUNT_DELETION_BACKEND.md` Abschnitt 0. Die Empfehlung
+> selbst ändert sich dadurch **nicht**: **Stage 5C2 — Frontend-UI für
+> Kontolöschung** bleibt die unmittelbar nächste Phase, jetzt auf einem
+> korrigierten, vollständig regressionsgetesteten Backend-Vertrag
+> aufbauend.
+>
+> ---
 
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-

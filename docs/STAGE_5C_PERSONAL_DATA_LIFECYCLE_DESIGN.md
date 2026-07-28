@@ -17,6 +17,19 @@
 > keine externe rechtliche Prüfung (Schweizer Datenschutzrecht, ggf. DSGVO
 > bei EU-Bezug) vor einem echten Produktionsbetrieb mit echten
 > Endkund:innen.
+>
+> **Nachtrag (2026-07-28, Stage 5C1 Merge-Gate-Review):** Die Backend-
+> Implementierung (`docs/STAGE_5C1_ACCOUNT_DELETION_BACKEND.md`) wich vor
+> dem Merge in vier Punkten von diesem Dokument bzw. von ADR 004 ab — drei
+> waren Implementierungsfehler (Terminierungsregel-Scope unvollständig;
+> persönliche Übungen konnten via `ON DELETE SET NULL` global sichtbar
+> werden; persönliche Kalendereinträge wurden entgegen der hier bereits
+> korrekt spezifizierten `PLANNED`-only-Regel unbedingt gelöscht), einer war
+> eine explizit zu treffende, hier nicht vorweggenommene Entscheidung
+> (kein dediziertes CSRF-Mittel für den Löschendpunkt). Alle vier sind
+> behoben bzw. entschieden und getestet — vollständige Details in ADR 004s
+> Abschnitt „Amendment" und im genannten Backend-Dokument. Dieses Dokument
+> selbst wird **nicht** rückwirkend umgeschrieben.
 
 ## Aufgelöste Designblocker (Revision 2)
 

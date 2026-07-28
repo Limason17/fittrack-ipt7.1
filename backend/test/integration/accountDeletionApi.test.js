@@ -38,6 +38,7 @@ const {
     planReconciliation
 } = require("../../deletionReceipts/deletionReceiptReconciliation");
 const { createAccountDeletionService } = require("../../services/accountDeletionService");
+const { createReadinessProbe } = require("../../startup/readiness");
 
 const logger = { info() {}, warn() {}, error() {} };
 const runId = crypto.randomBytes(5).toString("hex");
@@ -207,11 +208,20 @@ async function seedCalendarEntry({
     const publicId = createPublicId();
     const date = scheduledDate || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     if (sourceType === "personal") {
+        // chk_training_calendar_entries_completed_at/skipped_at/cancelled_at
+        // each require the matching timestamp column set exactly when its
+        // own status is active (012_unified_training_calendar.js) - needed
+        // to seed historical/terminal personal entries (COMPLETED/SKIPPED/
+        // CANCELLED), not just PLANNED ones.
+        const completedAt = status === "COMPLETED" ? new Date() : null;
+        const skippedAt = status === "SKIPPED" ? new Date() : null;
+        const cancelledAt = status === "CANCELLED" ? new Date() : null;
         const [result] = await pool.query(
             `INSERT INTO training_calendar_entries
-                (public_id, user_id, scheduled_date, status, source_type, title_snapshot, created_by_user_id)
-             VALUES (?, ?, ?, ?, 'personal', 'Personal Entry', ?)`,
-            [publicId, userId, date, status, userId]
+                (public_id, user_id, scheduled_date, status, source_type, title_snapshot,
+                 created_by_user_id, completed_at, skipped_at, cancelled_at)
+             VALUES (?, ?, ?, ?, 'personal', 'Personal Entry', ?, ?, ?, ?)`,
+            [publicId, userId, date, status, userId, completedAt, skippedAt, cancelledAt]
         );
         return { entryInternalId: result.insertId, entryPublicId: publicId };
     }
@@ -576,6 +586,377 @@ test("full deletion transaction: sessions aborted, assignments cancelled, relati
     assert.equal(membershipAfter[0].status, "left");
 });
 
+// ---- Merge-gate finding #1: private-to-global exercise leak ----
+
+test("hard-delete-eligible account: personal exercises are removed and never leak into the global exercise library", async () => {
+    const user = await registerAndLogin("exec-exercise-leak-hard");
+    const exerciseName = `Private Leak Check ${crypto.randomBytes(4).toString("hex")}`;
+    const createResult = await api("/api/exercises", {
+        method: "POST",
+        token: user.token,
+        body: { name: exerciseName, description: "", category: "strength", muscle_group: "chest" }
+    });
+    assert.equal(createResult.response.status, 201, JSON.stringify(createResult.data));
+
+    const beforeOwn = await api("/api/exercises", { token: user.token });
+    assert.ok(beforeOwn.data.some((exercise) => exercise.name === exerciseName), "sanity: creator sees own exercise");
+
+    const otherUser = await registerAndLogin("exec-exercise-leak-hard-other");
+    const beforeOther = await api("/api/exercises", { token: otherUser.token });
+    assert.ok(!beforeOther.data.some((exercise) => exercise.name === exerciseName), "sanity: a stranger never sees it before deletion");
+
+    const preview = await api("/api/account/deletion-preview", { token: user.token });
+    assert.equal(preview.data.deletionPreview.mode, "hard_delete");
+    assert.equal(preview.data.deletionPreview.personalDataCounts.personalExercises, 1);
+
+    const result = await api("/api/account/deletion-request", {
+        method: "POST",
+        token: user.token,
+        body: { currentPassword: user.password, confirmationPhrase: user.username }
+    });
+    assert.equal(result.response.status, 200, JSON.stringify(result.data));
+
+    const [exerciseRows] = await pool.query("SELECT id, user_id FROM exercises WHERE name = ?", [exerciseName]);
+    assert.equal(
+        exerciseRows.length, 0,
+        "the deleted account's personal exercise must be gone entirely, never orphaned with user_id=NULL"
+    );
+
+    const afterOther = await api("/api/exercises", { token: otherUser.token });
+    assert.ok(
+        !afterOther.data.some((exercise) => exercise.name === exerciseName),
+        "a hard-deleted account's personal exercise must never appear in another user's global exercise view"
+    );
+});
+
+test("anonymized account (has studio history): personal exercises are removed identically to workouts/progress, matching the preview count", async () => {
+    const owner = await registerAndLogin("exec-exercise-leak-anon");
+    const studio = await seedStudio({ name: "Exercise Leak Anon Studio", ownerUserId: owner.id });
+    const secondOwner = await registerAndLogin("exec-exercise-leak-anon-owner2");
+    await seedMembership({ studioInternalId: studio.studioInternalId, userId: secondOwner.id, role: "owner" });
+
+    const exerciseName = `Private Anon Check ${crypto.randomBytes(4).toString("hex")}`;
+    const createResult = await api("/api/exercises", {
+        method: "POST",
+        token: owner.token,
+        body: { name: exerciseName, description: "", category: "strength", muscle_group: "back" }
+    });
+    assert.equal(createResult.response.status, 201, JSON.stringify(createResult.data));
+
+    const preview = await api("/api/account/deletion-preview", { token: owner.token });
+    assert.equal(preview.data.deletionPreview.mode, "anonymize");
+    assert.equal(preview.data.deletionPreview.personalDataCounts.personalExercises, 1);
+
+    const result = await api("/api/account/deletion-request", {
+        method: "POST",
+        token: owner.token,
+        body: { currentPassword: owner.password, confirmationPhrase: owner.username }
+    });
+    assert.equal(result.response.status, 200, JSON.stringify(result.data));
+
+    const [exerciseRows] = await pool.query("SELECT id FROM exercises WHERE name = ?", [exerciseName]);
+    assert.equal(
+        exerciseRows.length, 0,
+        "personal exercises must be deleted in the anonymize path too, matching the preview's personalDataCounts promise"
+    );
+
+    const otherUser = await registerAndLogin("exec-exercise-leak-anon-other");
+    const otherView = await api("/api/exercises", { token: otherUser.token });
+    assert.ok(!otherView.data.some((exercise) => exercise.name === exerciseName));
+});
+
+// ---- Merge-gate finding #2: schedule-rule scope is a union of member-scope and creator-scope ----
+
+test("schedule-rule deactivation covers both the member-scope and creator-scope set, never touches an unrelated or already-disabled rule, and preview matches execute exactly", async () => {
+    const ownerA = await registerAndLogin("rule-scope-ownerA");
+    const coachX = await registerAndLogin("rule-scope-coachX");
+    const memberY = await registerAndLogin("rule-scope-memberY");
+    const memberW = await registerAndLogin("rule-scope-memberW");
+    const studio = await seedStudio({ name: "Schedule Rule Scope Studio", ownerUserId: ownerA.id });
+    await seedMembership({ studioInternalId: studio.studioInternalId, userId: coachX.id, role: "trainer" });
+    const memberYMembership = await seedMembership({
+        studioInternalId: studio.studioInternalId, userId: memberY.id, role: "member"
+    });
+    const memberWMembership = await seedMembership({
+        studioInternalId: studio.studioInternalId, userId: memberW.id, role: "member"
+    });
+
+    // Set A candidate: rule created by ownerA (NOT memberY), but the
+    // assignment's MEMBER is memberY - must be disabled when memberY is deleted.
+    const relY = await seedCoachingRelationship({
+        studioInternalId: studio.studioInternalId,
+        coachMembershipId: studio.ownerMembership.membershipInternalId,
+        memberMembershipId: memberYMembership.membershipInternalId,
+        createdByUserId: ownerA.id
+    });
+    const programY = await seedProgramWithAssignment({
+        studioInternalId: studio.studioInternalId,
+        coachingRelationshipId: relY.relationshipInternalId,
+        memberMembershipId: memberYMembership.membershipInternalId,
+        assignedByUserId: ownerA.id
+    });
+    const ruleForMemberY = await seedScheduleRule({
+        studioInternalId: studio.studioInternalId,
+        assignmentInternalId: programY.assignmentInternalId,
+        programDayInternalId: programY.programDayInternalId,
+        createdByUserId: ownerA.id
+    });
+
+    // Already-disabled rule on the SAME assignment as memberY - must remain
+    // untouched (still 'disabled'), never toggled or re-processed.
+    const alreadyDisabledRule = await seedScheduleRule({
+        studioInternalId: studio.studioInternalId,
+        assignmentInternalId: programY.assignmentInternalId,
+        programDayInternalId: programY.programDayInternalId,
+        createdByUserId: memberY.id
+    });
+    await pool.query(
+        "UPDATE studio_assignment_schedule_rules SET status = 'disabled' WHERE id = ?",
+        [alreadyDisabledRule.ruleInternalId]
+    );
+
+    // Set B candidate: rule created BY coachX, but the assignment's member
+    // is memberW (unrelated to coachX) - must be disabled when coachX is deleted.
+    const relW = await seedCoachingRelationship({
+        studioInternalId: studio.studioInternalId,
+        coachMembershipId: studio.ownerMembership.membershipInternalId,
+        memberMembershipId: memberWMembership.membershipInternalId,
+        createdByUserId: ownerA.id
+    });
+    const programW = await seedProgramWithAssignment({
+        studioInternalId: studio.studioInternalId,
+        coachingRelationshipId: relW.relationshipInternalId,
+        memberMembershipId: memberWMembership.membershipInternalId,
+        assignedByUserId: ownerA.id
+    });
+    const ruleByCoachX = await seedScheduleRule({
+        studioInternalId: studio.studioInternalId,
+        assignmentInternalId: programW.assignmentInternalId,
+        programDayInternalId: programW.programDayInternalId,
+        createdByUserId: coachX.id
+    });
+
+    // Fully unrelated studio/member/coach - must never be touched by either deletion.
+    const ownerB = await registerAndLogin("rule-scope-ownerB");
+    const memberV = await registerAndLogin("rule-scope-memberV");
+    const otherStudio = await seedStudio({ name: "Unrelated Schedule Studio", ownerUserId: ownerB.id });
+    const memberVMembership = await seedMembership({
+        studioInternalId: otherStudio.studioInternalId, userId: memberV.id, role: "member"
+    });
+    const relV = await seedCoachingRelationship({
+        studioInternalId: otherStudio.studioInternalId,
+        coachMembershipId: otherStudio.ownerMembership.membershipInternalId,
+        memberMembershipId: memberVMembership.membershipInternalId,
+        createdByUserId: ownerB.id
+    });
+    const programV = await seedProgramWithAssignment({
+        studioInternalId: otherStudio.studioInternalId,
+        coachingRelationshipId: relV.relationshipInternalId,
+        memberMembershipId: memberVMembership.membershipInternalId,
+        assignedByUserId: ownerB.id
+    });
+    const ruleUnrelated = await seedScheduleRule({
+        studioInternalId: otherStudio.studioInternalId,
+        assignmentInternalId: programV.assignmentInternalId,
+        programDayInternalId: programV.programDayInternalId,
+        createdByUserId: ownerB.id
+    });
+
+    async function ruleStatus(ruleInternalId) {
+        const [[row]] = await pool.query(
+            "SELECT status FROM studio_assignment_schedule_rules WHERE id = ?", [ruleInternalId]
+        );
+        return row.status;
+    }
+
+    // Preview/execute consistency: exactly the rules each account's own
+    // deletion will actually disable, no more, no less.
+    const memberYPreview = await api("/api/account/deletion-preview", { token: memberY.token });
+    assert.equal(memberYPreview.data.deletionPreview.impact.activeScheduleRules, 1);
+    const coachXPreview = await api("/api/account/deletion-preview", { token: coachX.token });
+    assert.equal(coachXPreview.data.deletionPreview.impact.activeScheduleRules, 1);
+
+    const deleteMemberY = await api("/api/account/deletion-request", {
+        method: "POST",
+        token: memberY.token,
+        body: { currentPassword: memberY.password, confirmationPhrase: memberY.username }
+    });
+    assert.equal(deleteMemberY.response.status, 200, JSON.stringify(deleteMemberY.data));
+
+    assert.equal(await ruleStatus(ruleForMemberY.ruleInternalId), "disabled", "set A: member-scoped rule created by someone else must be disabled");
+    assert.equal(await ruleStatus(alreadyDisabledRule.ruleInternalId), "disabled", "an already-disabled rule must remain unchanged, not re-processed");
+    assert.equal(await ruleStatus(ruleByCoachX.ruleInternalId), "active", "coachX's own rule must be untouched by memberY's deletion");
+    assert.equal(await ruleStatus(ruleUnrelated.ruleInternalId), "active", "a fully unrelated rule must never be touched");
+
+    const deleteCoachX = await api("/api/account/deletion-request", {
+        method: "POST",
+        token: coachX.token,
+        body: { currentPassword: coachX.password, confirmationPhrase: coachX.username }
+    });
+    assert.equal(deleteCoachX.response.status, 200, JSON.stringify(deleteCoachX.data));
+
+    assert.equal(await ruleStatus(ruleByCoachX.ruleInternalId), "disabled", "set B: creator-scoped rule must be disabled when its creator is deleted");
+    assert.equal(await ruleStatus(ruleUnrelated.ruleInternalId), "active", "the unrelated rule must still be untouched after the second deletion");
+});
+
+test("reconciliation re-applies the exact same member-scope schedule-rule predicate as the original execution", async () => {
+    const ownerA = await registerAndLogin("rule-scope-reconcile-owner");
+    const memberY = await registerAndLogin("rule-scope-reconcile-member");
+    const studio = await seedStudio({ name: "Reconcile Rule Scope Studio", ownerUserId: ownerA.id });
+    const memberYMembership = await seedMembership({
+        studioInternalId: studio.studioInternalId, userId: memberY.id, role: "member"
+    });
+    const relY = await seedCoachingRelationship({
+        studioInternalId: studio.studioInternalId,
+        coachMembershipId: studio.ownerMembership.membershipInternalId,
+        memberMembershipId: memberYMembership.membershipInternalId,
+        createdByUserId: ownerA.id
+    });
+    const programY = await seedProgramWithAssignment({
+        studioInternalId: studio.studioInternalId,
+        coachingRelationshipId: relY.relationshipInternalId,
+        memberMembershipId: memberYMembership.membershipInternalId,
+        assignedByUserId: ownerA.id
+    });
+    // Created by ownerA, not memberY - only the member-scope (set A) leg of
+    // the union predicate can catch this one.
+    const rule = await seedScheduleRule({
+        studioInternalId: studio.studioInternalId,
+        assignmentInternalId: programY.assignmentInternalId,
+        programDayInternalId: programY.programDayInternalId,
+        createdByUserId: ownerA.id
+    });
+
+    await api("/api/account/deletion-request", {
+        method: "POST",
+        token: memberY.token,
+        body: { currentPassword: memberY.password, confirmationPhrase: memberY.username }
+    });
+    const [[disabledOnce]] = await pool.query(
+        "SELECT status FROM studio_assignment_schedule_rules WHERE id = ?", [rule.ruleInternalId]
+    );
+    assert.equal(disabledOnce.status, "disabled");
+
+    // Simulate a restore that brought back a full pre-deletion snapshot,
+    // including the schedule rule reverting to 'active'.
+    await pool.query("UPDATE users SET lifecycle_status = 'active', deleted_at = NULL WHERE id = ?", [memberY.id]);
+    await pool.query(
+        "UPDATE studio_memberships SET status = 'active' WHERE user_id = ? AND studio_id = ?",
+        [memberY.id, studio.studioInternalId]
+    );
+    await pool.query(
+        "UPDATE studio_assignment_schedule_rules SET status = 'active' WHERE id = ?", [rule.ruleInternalId]
+    );
+
+    const deletionService = createAccountDeletionService({ database: pool, logger });
+    await applyReconciliation({
+        connection: pool,
+        deletionService,
+        databaseName: TEST_DATABASE,
+        env: {
+            FITTRACK_DELETION_RECONCILE_APPLY: "true",
+            FITTRACK_DELETION_RECONCILE_DATABASE_ACK: `reconcile:${TEST_DATABASE}`,
+            FITTRACK_DELETION_RECONCILE_RECEIPT_DIR_ACK: RECEIPT_DIR,
+            NODE_ENV: "test",
+            DELETION_RECEIPT_DIR: RECEIPT_DIR,
+            DELETION_RECEIPT_HMAC_KEY_B64: process.env.DELETION_RECEIPT_HMAC_KEY_B64,
+            DELETION_RECEIPT_HMAC_KEY_ID: process.env.DELETION_RECEIPT_HMAC_KEY_ID
+        },
+        logger
+    });
+
+    const [[reapplied]] = await pool.query(
+        "SELECT status FROM studio_assignment_schedule_rules WHERE id = ?", [rule.ruleInternalId]
+    );
+    assert.equal(reapplied.status, "disabled", "reconciliation must re-apply the same member-scope predicate, not just re-delete the user row");
+});
+
+// ---- Merge-gate finding #3: only PLANNED personal calendar entries are deleted ----
+
+test("historical (COMPLETED/CANCELLED) personal calendar entries are retained across a deletion; only the PLANNED entry is removed, and preview matches execute exactly", async () => {
+    const user = await registerAndLogin("exec-calendar-retention");
+    // Retention of historical entries only applies in anonymize mode (the
+    // users row survives) - give this account studio history so it is not
+    // hard-delete-eligible, matching the scenario the retention rule
+    // actually governs (see the separate hard-delete counterpart test below).
+    const ownerA = await registerAndLogin("exec-calendar-retention-owner");
+    const studio = await seedStudio({ name: "Calendar Retention Studio", ownerUserId: ownerA.id });
+    await seedMembership({ studioInternalId: studio.studioInternalId, userId: user.id, role: "member" });
+    const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const past = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const olderPast = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    const plannedEntry = await seedCalendarEntry({
+        userId: user.id, sourceType: "personal", status: "PLANNED", scheduledDate: future
+    });
+    const completedEntry = await seedCalendarEntry({
+        userId: user.id, sourceType: "personal", status: "COMPLETED", scheduledDate: past
+    });
+    const cancelledEntry = await seedCalendarEntry({
+        userId: user.id, sourceType: "personal", status: "CANCELLED", scheduledDate: olderPast
+    });
+
+    const preview = await api("/api/account/deletion-preview", { token: user.token });
+    assert.equal(
+        preview.data.deletionPreview.impact.personalCalendarEntriesToDelete, 1,
+        "preview must count only the non-terminal PLANNED entry, never historical ones"
+    );
+
+    const result = await api("/api/account/deletion-request", {
+        method: "POST",
+        token: user.token,
+        body: { currentPassword: user.password, confirmationPhrase: user.username }
+    });
+    assert.equal(result.response.status, 200, JSON.stringify(result.data));
+
+    const [plannedAfter] = await pool.query(
+        "SELECT id FROM training_calendar_entries WHERE id = ?", [plannedEntry.entryInternalId]
+    );
+    assert.equal(plannedAfter.length, 0, "the PLANNED personal entry must be hard-deleted");
+
+    const [completedAfter] = await pool.query(
+        "SELECT status FROM training_calendar_entries WHERE id = ?", [completedEntry.entryInternalId]
+    );
+    assert.equal(completedAfter.length, 1, "a historical COMPLETED personal entry must be retained, matching the merged design's retention rule");
+    assert.equal(completedAfter[0].status, "COMPLETED");
+
+    const [cancelledAfter] = await pool.query(
+        "SELECT status FROM training_calendar_entries WHERE id = ?", [cancelledEntry.entryInternalId]
+    );
+    assert.equal(cancelledAfter.length, 1, "a historical CANCELLED personal entry must also be retained");
+    assert.equal(cancelledAfter[0].status, "CANCELLED");
+});
+
+test("hard-delete-eligible account: even historical personal calendar entries are removed, since no surviving row remains to retain them against", async () => {
+    const user = await registerAndLogin("exec-calendar-hard-delete-historical");
+    const past = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const completedEntry = await seedCalendarEntry({
+        userId: user.id, sourceType: "personal", status: "COMPLETED", scheduledDate: past
+    });
+
+    const preview = await api("/api/account/deletion-preview", { token: user.token });
+    assert.equal(preview.data.deletionPreview.mode, "hard_delete");
+    assert.equal(
+        preview.data.deletionPreview.impact.personalCalendarEntriesToDelete, 1,
+        "hard-delete mode must count the historical entry too, since it cannot survive the users row being removed"
+    );
+
+    const result = await api("/api/account/deletion-request", {
+        method: "POST",
+        token: user.token,
+        body: { currentPassword: user.password, confirmationPhrase: user.username }
+    });
+    assert.equal(result.response.status, 200, JSON.stringify(result.data));
+
+    const [entryAfter] = await pool.query(
+        "SELECT id FROM training_calendar_entries WHERE id = ?", [completedEntry.entryInternalId]
+    );
+    assert.equal(entryAfter.length, 0, "a historical personal entry must not survive a hard delete");
+
+    const row = await userRow(user.id);
+    assert.equal(row, null, "the users row itself must still be fully gone");
+});
+
 test("an assignment the deleted account created for another member is left untouched", async () => {
     const coach = await registerAndLogin("exec-scope-coach");
     const otherMember = await registerAndLogin("exec-scope-other-member");
@@ -751,6 +1132,76 @@ test("execute clears the refresh/CSRF cookies in the response", async () => {
     assert.ok(setCookie.length > 0, "expected at least one Set-Cookie clearing header");
 });
 
+// ---- Merge-gate finding #4: deletion-request is Bearer-only by construction;
+// no CSRF middleware is used because no cookie-only authentication path
+// exists for it to defend, and cross-site callers can never supply the
+// required Authorization header ----
+
+test("deletion-request rejects a cookie-only request carrying a real, valid refresh/CSRF cookie pair but no Authorization header", async () => {
+    const user = await registerAndLogin("csrf-cookie-only");
+    const loginResponse = await fetch(`${baseUrl}/api/users/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: user.password })
+    });
+    assert.equal(loginResponse.status, 200);
+    const setCookieHeaders = typeof loginResponse.headers.getSetCookie === "function"
+        ? loginResponse.headers.getSetCookie()
+        : [loginResponse.headers.get("set-cookie") || ""];
+    const cookieHeader = setCookieHeaders.filter(Boolean).map((entry) => entry.split(";")[0]).join("; ");
+    assert.ok(cookieHeader.length > 0, "login must have set at least the refresh/CSRF cookies");
+
+    // Simulates exactly what a forged cross-site request can achieve: a
+    // browser attaches this account's real, valid cookies automatically,
+    // but no cross-site page can ever read or attach the memory-resident
+    // access token, so the Authorization header is absent - the one thing
+    // this endpoint actually requires.
+    const forged = await fetch(`${baseUrl}/api/account/deletion-request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookieHeader },
+        body: JSON.stringify({ currentPassword: user.password, confirmationPhrase: user.username })
+    });
+    assert.equal(forged.status, 401, "cookies alone must never authenticate this endpoint");
+
+    const row = await userRow(user.id);
+    assert.equal(row.lifecycle_status, "active", "a cookie-only forged request must never delete the account");
+});
+
+test("deletion-request from a disallowed cross-site origin gets no permissive CORS header on either the simple request or the Authorization-requiring preflight", async () => {
+    const user = await registerAndLogin("csrf-cross-site");
+
+    // A "simple" cross-site request (a form-like content type, no custom
+    // headers) never triggers a preflight and so can never carry an
+    // Authorization header at all - this stands in for the most basic
+    // forged cross-site POST a browser would ever send unprompted.
+    const simpleForged = await fetch(`${baseUrl}/api/account/deletion-request`, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain", Origin: "http://evil.example.test" },
+        body: JSON.stringify({ currentPassword: user.password, confirmationPhrase: user.username })
+    });
+    assert.equal(simpleForged.headers.get("access-control-allow-origin"), null);
+    assert.notEqual(simpleForged.status, 200);
+
+    // The only way to attach a bearer token cross-site would require a
+    // preflighted request (Authorization is a non-simple header) - a real
+    // browser refuses to ever send the follow-up actual request once the
+    // preflight response lacks a matching Access-Control-Allow-Origin, so
+    // asserting the preflight itself grants nothing to this origin is the
+    // decisive, browser-independent proof (same pattern as corsHeaders.test.js).
+    const preflight = await fetch(`${baseUrl}/api/account/deletion-request`, {
+        method: "OPTIONS",
+        headers: {
+            Origin: "http://evil.example.test",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type"
+        }
+    });
+    assert.equal(preflight.headers.get("access-control-allow-origin"), null);
+
+    const row = await userRow(user.id);
+    assert.equal(row.lifecycle_status, "active");
+});
+
 // ---- Receipts ----
 
 test("a valid, non-PII deletion receipt exists after a successful deletion", async () => {
@@ -784,6 +1235,108 @@ test("Deletion Receipt Doctor reports ready:true with no inconsistencies for a n
     const report = await diagnoseDeletionReceipts({ connection: pool });
     assert.equal(report.ready, true);
     assert.equal(report.restoredActiveAccounts.length, 0);
+});
+
+// ---- Merge-gate finding #5: a receipt write failure never fails the HTTP
+// response, but the Doctor and readiness fail closed until reconciliation
+// heals the missing receipt ----
+
+test("a receipt write failure after a committed deletion never fails the HTTP response, but Doctor and readiness fail closed until reconciliation heals it, then both are ready again", async () => {
+    // Deliberately an anonymize-mode account (studio history present): the
+    // Doctor's missingReceipts scan is a `SELECT ... WHERE lifecycle_status
+    // = 'deleted'` - it can only ever detect a missing receipt for a row
+    // that still exists. A hard-delete-eligible account leaves no row at
+    // all, so a receipt write failure there is structurally undetectable
+    // by the Doctor/reconciliation and observable only via the
+    // account_deletion_receipt_write_failed log line - a real, documented
+    // limitation (see the closing report), not something this test can
+    // exercise for the hard-delete path.
+    const user = await registerAndLogin("receipt-write-failure");
+    const ownerA = await registerAndLogin("receipt-write-failure-owner");
+    const studio = await seedStudio({ name: "Receipt Write Failure Studio", ownerUserId: ownerA.id });
+    await seedMembership({ studioInternalId: studio.studioInternalId, userId: user.id, role: "member" });
+
+    // Force the WRITE step (not the pre-flight config check, which only
+    // validates the configured strings and never touches the filesystem)
+    // to fail deterministically: a regular file already sits where
+    // publishReceipt's ensureReceiptDirectory would need to mkdir a
+    // directory, so mkdir throws ENOTDIR (or EEXIST on some platforms).
+    const brokenDir = path.join(os.tmpdir(), `fittrack-broken-receipt-${crypto.randomBytes(4).toString("hex")}`);
+    await fsPromises.writeFile(brokenDir, "not a directory");
+    const originalReceiptDir = process.env.DELETION_RECEIPT_DIR;
+    process.env.DELETION_RECEIPT_DIR = brokenDir;
+
+    let result;
+    try {
+        result = await api("/api/account/deletion-request", {
+            method: "POST",
+            token: user.token,
+            body: { currentPassword: user.password, confirmationPhrase: user.username }
+        });
+    } finally {
+        process.env.DELETION_RECEIPT_DIR = originalReceiptDir;
+        await fsPromises.rm(brokenDir, { force: true });
+    }
+
+    // 1-3: the DB deletion itself is unaffected by the receipt failure - a
+    // clean, complete success response, never a partial-failure shape.
+    assert.equal(result.response.status, 200, JSON.stringify(result.data));
+    assert.ok(result.data.accountDeletion);
+    const row = await userRow(user.id);
+    assert.equal(row.lifecycle_status, "deleted");
+
+    // 4: Doctor, checked against the correctly-configured directory,
+    // immediately reports the missing receipt as fail-closed - no PII in
+    // its output, only the internal numeric account reference.
+    const brokenDiagnosis = await diagnoseDeletionReceipts({ connection: pool });
+    assert.equal(brokenDiagnosis.ready, false);
+    assert.equal(brokenDiagnosis.recoveryRequired, true);
+    assert.ok(brokenDiagnosis.missingReceipts.includes(user.id));
+    const serializedDiagnosis = JSON.stringify(brokenDiagnosis);
+    assert.ok(!serializedDiagnosis.includes(user.username));
+    assert.ok(!serializedDiagnosis.includes(user.email));
+
+    // 5: readiness, wired exactly as server.js wires it, fails closed too.
+    const readiness = createReadinessProbe({
+        ping: async () => {},
+        migrationStatus: async () => ({ pending: [], dirty: [], drift: [], unknown: [] }),
+        deletionReceiptStatus: async () => {
+            const report = await diagnoseDeletionReceipts({ connection: pool });
+            return { ready: report.ready, reason: report.ready ? undefined : report.code };
+        }
+    });
+    readiness.markReady();
+    const brokenCheck = await readiness.check();
+    assert.equal(brokenCheck.ready, false);
+    assert.equal(brokenCheck.reason, "DELETION_RECEIPT_DOCTOR_RECOVERY_REQUIRED");
+
+    // 6: reconciliation (correctly configured directory, all three exact
+    // acknowledgements) self-heals the missing receipt purely from the
+    // row's own already-correct deleted_at - no deletion logic re-run.
+    const deletionService = createAccountDeletionService({ database: pool, logger });
+    const applyResult = await applyReconciliation({
+        connection: pool,
+        deletionService,
+        databaseName: TEST_DATABASE,
+        env: {
+            FITTRACK_DELETION_RECONCILE_APPLY: "true",
+            FITTRACK_DELETION_RECONCILE_DATABASE_ACK: `reconcile:${TEST_DATABASE}`,
+            FITTRACK_DELETION_RECONCILE_RECEIPT_DIR_ACK: RECEIPT_DIR,
+            NODE_ENV: "test",
+            DELETION_RECEIPT_DIR: RECEIPT_DIR,
+            DELETION_RECEIPT_HMAC_KEY_B64: process.env.DELETION_RECEIPT_HMAC_KEY_B64,
+            DELETION_RECEIPT_HMAC_KEY_ID: process.env.DELETION_RECEIPT_HMAC_KEY_ID
+        },
+        logger
+    });
+    assert.ok(applyResult.healedReceipts.includes(user.id));
+
+    // 7: both are ready again.
+    const healedDiagnosis = await diagnoseDeletionReceipts({ connection: pool });
+    assert.equal(healedDiagnosis.ready, true);
+    assert.equal(healedDiagnosis.recoveryRequired, false);
+    const healedCheck = await readiness.check();
+    assert.equal(healedCheck.ready, true);
 });
 
 test("restore simulation: a receipt exists but the row was restored to active -> Doctor flags it, reconciliation re-applies the deletion", async () => {

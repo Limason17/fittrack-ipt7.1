@@ -193,7 +193,7 @@ test("a receipt with an unknown/future schema version is reported separately fro
     });
 });
 
-test("a deleted account row with no receipt at all is reported in missingReceipts, but does not fail closed on its own", async () => {
+test("a deleted account row with no receipt at all is reported in missingReceipts and fails closed until reconciliation heals it (merge-gate finding #5)", async () => {
     await withTempDir(async (dir) => {
         const hmacKey = crypto.randomBytes(32);
         const usersById = new Map([[5, { lifecycleStatus: "deleted" }]]);
@@ -202,8 +202,9 @@ test("a deleted account row with no receipt at all is reported in missingReceipt
             readConfig: readConfigFor(dir, hmacKey),
             env: {}
         });
-        assert.equal(report.state, STATE.READY);
-        assert.equal(report.ready, true);
+        assert.equal(report.state, STATE.RECOVERY_REQUIRED);
+        assert.equal(report.ready, false);
+        assert.equal(report.recoveryRequired, true);
         assert.deepEqual(report.missingReceipts, [5]);
     });
 });

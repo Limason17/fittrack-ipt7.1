@@ -6,6 +6,20 @@ Referenzdokumente: [`docs/STAGE_5C_PERSONAL_DATA_LIFECYCLE_DESIGN.md`](./STAGE_5
 
 ---
 
+## 0. Merge-Gate-Review (2026-07-28) — 5 Befunde behoben
+
+Vor dem für merge-bereit erklärten Zustand deckte eine gezielte Merge-Gate-Prüfung fünf Befunde auf, alle behoben und getestet, bevor diese Phase erneut als abschlussbereit gilt. Volle Begründung je Befund direkt in den betroffenen Abschnitten unten sowie in ADR 004s neuem Abschnitt „Amendment"; hier nur die Kurzfassung:
+
+1. **Privat-zu-global-Leak bei persönlichen Übungen (behoben):** `exercises.user_id` ist `ON DELETE SET NULL`, und `GET /exercises` behandelt jede `user_id IS NULL`-Zeile als global sichtbar — ein Hard Delete hätte die persönlichen Übungen des gelöschten Kontos in die globale Bibliothek durchsickern lassen. Behoben durch explizites Löschen persönlicher Übungen als Teil von `deletePersonalData`, in **beiden** Modi, unmittelbar nach `workouts`/`progress_entries` (Abschnitt 5/6/11).
+2. **Terminierungsregel-Scope war unvollständig (behoben):** deaktivierte bisher nur Regeln, die das gelöschte Konto selbst erstellt hatte. Der endgültige Vertrag verlangt die Vereinigung aus Ersteller-Scope **und** Mitglied-Scope (aktive Regeln für Assignments, deren Member das gelöschte Konto ist) — behoben, keine Doppelzählung, Preview und Execute teilen dasselbe Prädikat (Abschnitt 5).
+3. **Persönliche Kalendereinträge wurden unbedingt gelöscht (behoben):** entgegen dem bereits korrekt gemergten Design (`persönliche PLANNED-Einträge werden hart gelöscht`) löschte die Transaktion **alle** persönlichen Einträge unabhängig vom Status. Korrigiert auf `status='PLANNED'`-only im Anonymisierungsfall; im Hard-Delete-Fall bleibt die Löschung **aller** persönlichen Einträge nötig (keine überlebende Zeile, an die eine Historie geknüpft werden könnte — `training_calendar_entries.user_id` ist `ON DELETE CASCADE`). Das Preview-Feld wurde von `futurePersonalCalendarEntries` zu `personalCalendarEntriesToDelete` umbenannt, da „future" im Hard-Delete-Fall keine ehrliche Beschreibung mehr wäre (Abschnitt 4/5/9).
+4. **CSRF-Vertrag explizit entschieden (Option B, No-CSRF):** verifiziert und getestet, dass `/api/account/deletion-request` niemals allein über Cookies authentifizierbar ist, fremde Origins keinen autorisierten Request erzeugen können (weder als „simple" Request noch über einen Authorization-erfordernden Preflight) und der Authorization-Header zwingend ist. In ADR 004 als endgültige Architekturentscheidung dokumentiert (Abschnitt 8).
+5. **Receipt-Ausfallsicherheit verschärft (behoben):** der Deletion Receipt Doctor behandelte ein fehlendes Receipt bisher als rein selbstheilend, nicht fail-closed. Jetzt meldet er `recovery_required`/`ready:false` sofort bei jedem fehlenden Receipt, exakt wie bei einem beschädigten — Reconciliation heilt weiterhin unverändert. **Bekannte Restriktion:** für hard-delete-fähige Konten bleibt ein Receipt-Schreibfehler strukturell unentdeckbar durch den Doctor (keine überlebende Zeile zum Prüfen) — nur das strukturierte Log bleibt dort das einzige Signal (Abschnitt 14.4/17).
+
+Alle fünf Befunde sind durch neue, gezielte Integrationstests abgesichert (`test/integration/accountDeletionApi.test.js`, siehe Abschnitt 18).
+
+---
+
 ## 1. Produktziel und Ausgangslage
 
 FitTrack besass bislang keinen Weg, ein Benutzerkonto endgültig zu entfernen — nur Studio-Mitgliedschaften konnten über `status` verändert werden. Stage 5C1 schliesst diese Lücke für den Self-Service-Fall ("ich möchte mein eigenes Konto löschen") mit einer hybriden Strategie:
@@ -60,11 +74,13 @@ Der Plan berechnet:
 - `mode`: `hard_delete` (keine je existierende Mitgliedschaft) oder `anonymize`.
 - `blockers`: pro Studio, in dem das Konto der **einzige aktive Owner** ist (`SELECT COUNT(*) FROM studio_memberships WHERE studio_id=? AND role='owner' AND status='active'`, unter `FOR UPDATE` im Execute-Pfad) — Feld `studios` enthält ausschliesslich die eigenen Studios des Akteurs, nie Daten Dritter.
 - `studios`: öffentliche Projektion (`studioId`, `studioName`, `role`, `isSoleActiveOwner`) nur der aktuell aktiven/suspendierten Mitgliedschaften.
-- `impact`: `runningWorkoutSessions`, `activeAssignments`, `activeCoachingRelationships`, `activeScheduleRules`, `futurePersonalCalendarEntries`, `futureStudioCalendarEntries`.
-- `personalDataCounts` / `preservedHistoryCounts`: was gelöscht wird vs. was (anonymisiert) erhalten bleibt.
+- `impact`: `runningWorkoutSessions`, `activeAssignments`, `activeCoachingRelationships`, `activeScheduleRules`, `personalCalendarEntriesToDelete`, `futureStudioCalendarEntries`.
+- `personalDataCounts` (jetzt inkl. `personalExercises`, tatsächlich gelöscht, siehe Abschnitt 6/7) / `preservedHistoryCounts`: was gelöscht wird vs. was (anonymisiert) erhalten bleibt.
 - `confirmationPhrase: {type:'username'}`, `notices` (feste, mehrsprachig vorbereitete Hinweistexte zu Freitext- und Backup-Retention).
 
-**Bewusste Abweichung von der illustrativen Formulierung des Design-Dokuments**: `futurePersonalCalendarEntries` zählt **alle** persönlichen Kalendereinträge des Kontos, nicht nur zukünftige — weil die tatsächliche Löschtransaktion (Abschnitt 5, Schritt 9b) `training_calendar_entries` für `source_type='personal'` ohne Datumsfilter unbedingt löscht. Eine nur zukunftsgefilterte Vorschau hätte das tatsächliche Ausmass der Löschung untertrieben und damit genau die "Preview weicht nie von der Ausführung ab"-Garantie gebrochen, die diese Funktion herstellen soll. Der Feldname folgt der illustrativen JSON-Struktur des Designs, der Wert folgt dem tatsächlichen Transaktionsvertrag.
+**Merge-Gate-Korrektur (Abschnitt 0, Befund #2 und #3):**
+- `activeScheduleRules` zählt jetzt die Vereinigung aus Ersteller-Scope (`created_by_user_id=Konto`) **und** Mitglied-Scope (Assignment, dessen `member_membership_id` zum Konto gehört) — identisches Prädikat wie die Execute-Transaktion (Abschnitt 5), keine Doppelzählung durch einen einzelnen `JOIN`+`WHERE ... OR ...`.
+- `personalCalendarEntriesToDelete` (umbenannt von der illustrativen `futurePersonalCalendarEntries` des Designdokuments) zählt im Anonymisierungsfall nur `status='PLANNED'`-Einträge (historische `COMPLETED`/`SKIPPED`/`CANCELLED`-Einträge bleiben erhalten, exakt wie ihr Studio-Pendant) — im Hard-Delete-Fall dagegen **alle** persönlichen Einträge, da `training_calendar_entries.user_id` `ON DELETE CASCADE` auf `users` ist und keine überlebende Zeile für eine "erhaltene Historie" existiert. Der neue Name behauptet nie mehr "future", wo das in einem der beiden Modi nicht mehr zuträfe — siehe ADR 004s Amendment für die volle Herleitung.
 
 Die öffentliche Projektion (`publicDeletionPreview`) entfernt jede interne numerische ID — nur `studioId`/Membership-`public_id` verlassen den Service.
 
@@ -83,9 +99,9 @@ Reihenfolge innerhalb einer Transaktion (`BEGIN` … `COMMIT`):
 5. Laufende Studio-Workout-Sessions abbrechen (`in_progress → aborted`), verknüpfter Kalendereintrag `IN_PROGRESS → PLANNED` (Wiederverwendung des bestehenden Session-Abbruch-Effekts).
 6. Aktive Zuweisungen des Kontos **als Mitglied** abbrechen (`active → cancelled`) — Zuweisungen, die das Konto selbst als Coach **erstellt** hat, bleiben unverändert.
 7. Aktive Coaching-Beziehungen (als Coach oder Mitglied) beenden (`active → ended`).
-8. Terminierungsregeln, die das Konto **erstellt** hat, deaktivieren (`active → disabled`) — bewusst nach `created_by_user_id`, nicht nach betroffenem Mitglied, sonst würde die Regel eines ausgeschiedenen Coaches weiterhin Trainingstage für ein fremdes, weiterhin aktives Mitglied materialisieren ("Phantom-Coach").
-9. Kalendereinträge: geplante Studio-Vorkommnisse (`PLANNED → CANCELLED`, erfasst auch die gerade aus `IN_PROGRESS` zurückgesetzten Zeilen, da diese Abfrage danach läuft); **alle** persönlichen Einträge unbedingt hart gelöscht (kein Datumsfilter — siehe Abschnitt 4).
-10. Persönliche Daten hart löschen: `progress_entries`, `workouts` (kaskadiert `workout_exercises`). `exercises.user_id` bleibt unverändert (`ON DELETE SET NULL`, trägt laut Designklassifikation keine PII).
+8. Terminierungsregeln deaktivieren (`active → disabled`) — **Merge-Gate-Korrektur (Befund #2):** die Vereinigung aus (a) Regeln, die das Konto **erstellt** hat (verhindert, dass die Regel eines ausgeschiedenen Coaches weiterhin Trainingstage für ein fremdes, weiterhin aktives Mitglied materialisiert — "Phantom-Coach"), **und** (b) Regeln für Assignments, deren **Mitglied** das gelöschte Konto ist, unabhängig davon, wer sie erstellt hat (verhindert, dass eine fremde Regel weiterhin auf ein bereits durch Schritt 6 abgesagtes Assignment zeigt — ein „Mix aus live und stale", den ADR 004 selbst als zu vermeidendes Ziel benennt). Ein einzelner `JOIN`+`WHERE ... OR ...` verarbeitet eine Regel, die beide Bedingungen erfüllt, nie doppelt.
+9. Kalendereinträge: geplante Studio-Vorkommnisse (`PLANNED → CANCELLED`, erfasst auch die gerade aus `IN_PROGRESS` zurückgesetzten Zeilen, da diese Abfrage danach läuft); persönliche Einträge — **Merge-Gate-Korrektur (Befund #3):** im Anonymisierungsfall nur `status='PLANNED'` hart gelöscht (historische `COMPLETED`/`SKIPPED`/`CANCELLED`-Einträge bleiben erhalten, exakt wie beim Design bereits spezifiziert), im Hard-Delete-Fall dagegen **alle** persönlichen Einträge unabhängig vom Status (keine überlebende Zeile, an die eine Historie geknüpft werden könnte — `user_id` ist `ON DELETE CASCADE`).
+10. Persönliche Daten hart löschen: `progress_entries`, `workouts` (kaskadiert `workout_exercises`), **`exercises` (Merge-Gate-Korrektur, Befund #1)** — nur die eigenen (`user_id=Konto`), nie globale (`user_id IS NULL`) Zeilen, in **beiden** Modi und stets nach `progress_entries`/`workouts`, da genau diese beiden Tabellen die einzigen `RESTRICT`-Fremdschlüssel auf `exercises.id` sind und zu diesem Zeitpunkt bereits leer sind.
 11. Alle aktiven/suspendierten Mitgliedschaften → `status='left'`, je ein `membership.left`-Audit-Ereignis pro betroffenem Studio.
 12. Offene E-Mail-Änderungsanfragen löschen.
 13. **Alle** Sessions/Refresh-Tokens widerrufen (`revokeAllSessionsInTransaction`, Grund `account_deletion`).
@@ -119,7 +135,7 @@ Reihenfolge innerhalb einer Transaktion (`BEGIN` … `COMMIT`):
 - **Login** (`routes/users.js`): `if (!user || user.lifecycle_status !== "active" || !isMatch)` — die `bcrypt.compare` läuft in **jedem** Fall gegen einen echten Hash, der Lifecycle-Check erfolgt erst danach, sodass das Timing-Profil zwischen "unbekanntes Konto", "gelöschtes Konto" und "falsches Passwort" identisch bleibt. Alle drei Fälle werfen exakt dieselbe `AuthenticationError("Invalid email or password.")`.
 - **`authMiddleware.js`** (defense in depth): die bestehende kombinierte `users LEFT JOIN user_auth_sessions`-Abfrage wurde um `u.lifecycle_status AS user_lifecycle_status` erweitert; `accountDeleted = row.user_lifecycle_status !== "active"` ist in die bestehende Invalidierungs-ODER-Kette gefaltet — kollabiert auf denselben generischen `AuthSessionInvalidatedError` wie jede andere Ungültigkeitsursache (abgelaufen, widerrufen, `auth_version`-Mismatch). Dieser Schritt fing bei der ersten vollen Regression eine **eigene, bestehende** Unit-Test-Fixture ab (`test/unit/authMiddleware.test.js`), deren gemockte "gültige Session"-Zeile die neue Spalte nicht kannte — behoben durch Ergänzen von `user_lifecycle_status: 'active'` im Test-Fixture-Helper (`sessionRow()`), plus einem neuen dedizierten Test für den gelöscht-Fall.
 - **Refresh** (`sessionService.js`) benötigte **keine Codeänderung**: `rotateRefreshToken` vergleicht bereits `session_auth_version` gegen `user_auth_version` (die Anonymisierung erhöht Letzteres) und führt ohnehin ein frisches `SELECT ... FOR UPDATE` gegen `users` aus, das beim Hard-Delete-Fall null Zeilen liefert (`AuthRefreshTokenInvalidError`) — durch Codeprüfung verifiziert, nicht durch Vermutung.
-- **CSRF/Origin**: `/api/account/*` ist Bearer-Token-authentifiziert, nicht Cookie-basiert — CSRF verteidigt spezifisch Cookie-getragene Auth und greift hier nicht (verifiziert: der bestehende `change-password`-Endpunkt hat ebenfalls keinen CSRF-Guard). Die neuen Endpunkte haben daher bewusst keine CSRF-Middleware, nur die bereits global aktive Origin-Durchsetzung (`cors(createCorsOptions())`).
+- **CSRF/Origin (Merge-Gate-Befund #4, endgültig entschieden — Option B, No-CSRF):** `/api/account/*` ist Bearer-Token-authentifiziert, nicht Cookie-basiert — CSRF verteidigt spezifisch Cookie-getragene Auth und greift hier nicht (verifiziert: der bestehende `change-password`-Endpunkt hat ebenfalls keinen CSRF-Guard). `authMiddleware.js` liest ausschliesslich `req.headers["authorization"]` — nie ein Cookie — was strukturell garantiert, dass keine Cookie-only-Authentifizierung je möglich ist. Ein gefälschter Cross-Site-Request kann den Access Token (nur im Frontend-Arbeitsspeicher, nie in einem Cookie) grundsätzlich nicht mitliefern; selbst ein Versuch, den `Authorization`-Header zu setzen, erfordert einen Preflight (nicht-„simple" Header), den die globale Origin-Allowlist für jede nicht konfigurierte Origin verweigert. Zwei dedizierte Integrationstests beweisen beides: ein Cookie-only-Request mit echten, gültigen Refresh-/CSRF-Cookies aber ohne `Authorization`-Header wird mit 401 abgelehnt; ein Cross-Site-Request von einer nicht erlaubten Origin erhält weder auf den „simple" Request noch auf den Preflight einen freizügigen CORS-Header. Endgültig als Architekturentscheidung in ADR 004s Abschnitt „Amendment" festgehalten.
 
 ---
 
@@ -158,15 +174,14 @@ Zusätzlich wiederverwendet: `CurrentPasswordInvalidError` (bestehend, aus `Acco
 | Studio-Workout-Sessions | Mitglied | `in_progress → aborted` |
 | Programm-Zuweisungen | Mitglied (nicht: von diesem Konto erstellt) | `active → cancelled` |
 | Coaching-Beziehungen | Coach **oder** Mitglied | `active → ended` |
-| Terminierungsregeln | Von diesem Konto **erstellt** | `active → disabled` |
+| Terminierungsregeln | **Vereinigung**: von diesem Konto erstellt **oder** Mitglied des Assignments ist dieses Konto (Befund #2) | `active → disabled` |
 | Studio-Kalendereinträge | Eigentümer | `PLANNED → CANCELLED` |
-| Persönliche Kalendereinträge | Eigentümer | hart gelöscht, unbedingt |
-| Persönliche Workouts/Progress | Eigentümer | hart gelöscht |
+| Persönliche Kalendereinträge | Eigentümer | Anonymisierung: nur `status='PLANNED'` hart gelöscht, Historie erhalten; Hard Delete: alle Status hart gelöscht (Befund #3) |
+| Persönliche Workouts/Progress/Übungen | Eigentümer | hart gelöscht (persönliche Übungen: Befund #1, nie globale `user_id IS NULL`-Zeilen) |
 | Mitgliedschaften | Eigentümer, aktiv/suspendiert | `→ left` |
 | Sessions/Refresh-Tokens | Eigentümer | vollständig widerrufen |
 | E-Mail-Änderungsanfragen | Eigentümer | gelöscht |
 | Studio-Audit-Ereignisse | — | unverändert erhalten |
-| `exercises.user_id` | — | unverändert (SET NULL-FK, keine PII) |
 
 ---
 
@@ -222,7 +237,7 @@ Schreiben in `<receiptId>.json.partial` über exklusives `wx`-Öffnen (scheitert
 - Zeile fehlt **oder** `lifecycle_status='deleted'` → konsistent.
 - Zeile `active` → `restoredActiveAccounts` (ein Restore hat einen Vor-Löschungs-Snapshot zurückgebracht).
 
-Getrennt erfasst: `corruptedReceipts` (HMAC/Form ungültig), `unknownReceipts` (unbekannte `schemaVersion`), `missingReceipts` (eine `deleted`-Zeile ganz ohne passendes Receipt — selbstheilbar, für sich allein **nicht** fail-closed). Eigene, dichte Exit-Code-Familie (`EXIT_CODES`), bewusst **nicht** dieselbe Nummerierung wie der Migration Doctor (zwei unabhängige Werkzeuge, ein gemeinsames Schema würde riskieren, dass die Bedeutung des einen unter Änderungen des anderen driftet).
+Getrennt erfasst: `corruptedReceipts` (HMAC/Form ungültig), `unknownReceipts` (unbekannte `schemaVersion`), `missingReceipts` (eine `deleted`-Zeile ganz ohne passendes Receipt). **Merge-Gate-Korrektur (Befund #5):** `missingReceipts` ist **selbstheilbar über Reconciliation, aber nicht mehr allein von der Fail-Closed-Meldung ausgenommen** — jedes fehlende Receipt setzt `recoveryRequired:true`/`ready:false` sofort, exakt wie ein beschädigtes oder unbekanntes. Begründung: ein einzelnes strukturiertes Log (`account_deletion_receipt_write_failed`) allein als Nachweis zu akzeptieren widerspräche der eigenen Begründung dieses gesamten Subsystems (ADR 004: „A plain structured log line alone is also insufficient"); die Readiness-Probe (Abschnitt 14.7) propagiert dieses Fail-Closed automatisch, da sie `deletionReceiptStatus()`s `ready`-Wert direkt durchreicht. **Bekannte, durch diese Korrektur nicht auflösbare Restriktion:** die zugrundeliegende Prüfung ist ein `SELECT ... WHERE lifecycle_status='deleted'` — für ein hard-delete-fähiges Konto existiert nach der Löschung **keine** Zeile mehr, gegen die geprüft werden könnte. Ein Receipt-Schreibfehler auf dem Hard-Delete-Pfad bleibt daher strukturell unentdeckbar durch den Doctor; nur das strukturierte Log bleibt dort das einzige Signal (siehe Abschnitt 17). Eigene, dichte Exit-Code-Familie (`EXIT_CODES`), bewusst **nicht** dieselbe Nummerierung wie der Migration Doctor (zwei unabhängige Werkzeuge, ein gemeinsames Schema würde riskieren, dass die Bedeutung des einen unter Änderungen des anderen driftet).
 
 ### 14.5 Restore-Reconciliation (`backend/deletionReceipts/deletionReceiptReconciliation.js`)
 
@@ -278,6 +293,7 @@ Bestehende `SAFE_DETAIL_KEYS`-Allowlist (`audit/studioAudit.js`) deckte bereits 
 - **Keine Freitextbereinigung** — bewusst, siehe Abschnitt 12; über `notices.freeTextRetention` transparent kommuniziert.
 - **Kein Dashboard** für Löschstatistiken — der Doctor liefert strukturierte JSON-Ausgabe, kein UI.
 - **`deletion_reason`** absichtlich nicht eingeführt (Abschnitt 2) — eine künftige Phase mit einem zweiten Löschauslöser (z. B. Admin-Zwangslöschung, Inaktivitäts-Bereinigung) müsste diese Spalte nachrüsten.
+- **Receipt-Schreibfehler auf dem Hard-Delete-Pfad sind für den Doctor strukturell unentdeckbar** (Merge-Gate-Befund #5, Abschnitt 14.4): die Diagnose vergleicht gegen die noch existierende `users`-Zeile — ein hard-delete-fähiges Konto hinterlässt keine. Nur das strukturierte Log (`account_deletion_receipt_write_failed`) bleibt in diesem einen Fall das einzige Signal. Eine Lösung würde eine zusätzliche, dauerhafte Spur ausserhalb von `users` erfordern (z. B. eine eigene, von der `users`-Zeile unabhängige Ledger-Tabelle) — ADR 004 lehnt eine solche Löschungs-Ledger-Tabelle bewusst ab ("A new retention-ledger database table... deliberately file-based, not a database object"), sodass dies ein bewusst akzeptierter Rest-Kompromiss bleibt, kein Versehen.
 
 **Nächste Phase**: Stage 5C2 (Frontend-UI für Profil-Danger-Zone und Bestätigungsdialog) — nicht begonnen.
 
@@ -299,9 +315,16 @@ Bestehende `SAFE_DETAIL_KEYS`-Allowlist (`audit/studioAudit.js`) deckte bereits 
 | `test/unit/rateLimiter.test.js` (ergänzt) | +1 | `account.deleteRequest`-Default (3/60min), pro Benutzer geschlüsselt, unabhängig von `passwordChange` |
 | `test/unit/userValidation.test.js` (ergänzt) | +2 | `validateAccountDeletionRequestPayload` — Pflichtfelder, unbekannte Schlüssel |
 
-### 18.2 Integration (23 neue Tests, `test/integration/accountDeletionApi.test.js`)
+### 18.2 Integration (32 Tests insgesamt in `test/integration/accountDeletionApi.test.js`: 23 aus der ursprünglichen Implementierung + 9 neue aus dem Merge-Gate-Review)
 
 Vorschau-Korrektheit (Hard-Delete-Fall, Sole-Owner-Blocker, Impact-Zählung, keine Drittdaten-Leckage inkl. interner IDs), Execute-Validierung (falsches Passwort, falsche Phrase, fehlende Felder, fehlende Authentifizierung), Sole-Owner-Blocker mit Vorher/Nachher-Snapshot-Beweis keiner Teilmutation, Mehrfach-Owner-Erfolgsfall, vollständige Transaktionswirkung über alle sieben terminalisierten Entitätstypen, kreuz-Studio-Isolation (eine fremde Zuweisung bleibt unberührt), Unveränderlichkeit bereits abgeschlossener Historie, Anonymisierung (Login scheitert identisch zu unbekanntem Konto, altes Token invalidiert, E-Mail sofort wiederverwendbar), Idempotenz (zweiter Löschversuch kann sich nicht mehr authentifizieren), Hard-Delete-Fall (Zeile vollständig verschwunden), Cookie-Löschung, gültiges Receipt nach Löschung, Doctor-`ready`-Bestätigung, Restore-Simulation mit Doctor-Erkennung und Reconciliation-Reapply, Ablehnung von `applyReconciliation` ohne alle drei Acknowledgements, echte parallele Doppelanfrage (genau ein Erfolg).
+
+**Neu aus dem Merge-Gate-Review (9 Tests):**
+- Befund #1 (2 Tests): Hard-Delete-Fall — persönliche Übung wird gelöscht und erscheint nie in der globalen Bibliothek eines fremden Benutzers; Anonymisierungs-Fall — persönliche Übung wird identisch zu Workouts/Progress gelöscht, deckungsgleich mit dem Preview-Zähler.
+- Befund #2 (2 Tests): Vereinigungs-Prädikat deckt Mitglied-Scope (fremder Coach) und Ersteller-Scope (Coach selbst) ab, lässt eine unrelated Regel und eine bereits deaktivierte Regel unberührt, Preview entspricht exakt Execute; Reconciliation wendet dasselbe Mitglied-Scope-Prädikat erneut an.
+- Befund #3 (3 Tests): historische (`COMPLETED`/`CANCELLED`) persönliche Einträge bleiben im Anonymisierungsfall erhalten, nur `PLANNED` wird gelöscht, Preview stimmt exakt; im Hard-Delete-Fall wird auch ein historischer Eintrag entfernt (keine überlebende Zeile).
+- Befund #4 (2 Tests): ein Cookie-only-Request mit echten, gültigen Refresh-/CSRF-Cookies aber ohne `Authorization`-Header wird abgelehnt; ein Cross-Site-Request von einer nicht erlaubten Origin erhält weder auf den „simple" Request noch auf den Preflight einen freizügigen CORS-Header.
+- Befund #5 (1 Test, 7-Schritte-Fluss): DB-Commit erfolgreich trotz künstlich erzwungenem Receipt-Schreibfehler, HTTP-Antwort zeigt keine Teilmutation, Doctor meldet sofort `recovery_required`/`ready:false` (keine PII in der Ausgabe), eine wie in `server.js` verdrahtete Readiness-Probe scheitert ebenfalls fail-closed, Reconciliation heilt das fehlende Receipt, danach sind Doctor und Readiness wieder `ready`.
 
 ### 18.3 Migration (2 neue Tests plus 4 aktualisierte Legacy-Zähler)
 
@@ -309,15 +332,17 @@ Neuer Schema-Erzwingungstest (`migrationDatabase.test.js`) und neuer Schema-Cont
 
 ### 18.4 Vollständige Regression
 
-- `npm run test:unit`: **558/558** bestanden.
-- `npm run test:integration`: **277/277** bestanden (254 bestehend + 23 neu) — inklusive einer während dieser Phase gefundenen und behobenen Regression in einem **bestehenden** Test (`test/integration/accountApi.test.js`, siehe Abschnitt 19).
+Zwei Durchläufe: die ursprüngliche Implementierung (Abschnitt 1-20 unten unverändert) und, nach dem Merge-Gate-Review (Abschnitt 0), eine erneute vollständige Regression mit den 5 Korrekturen. Zahlen unten sind der **finale** Stand nach dem Review:
+
+- `npm run test:unit`: **558/558** bestanden (unverändert durch das Review — die beiden betroffenen bestehenden Unit-Tests, `userLifecycleDomain.test.js`/`deletionReceiptDoctor.test.js`, wurden inhaltlich aktualisiert, nicht neu hinzugefügt).
+- `npm run test:integration`: **286/286** bestanden (254 bestehend + 23 aus der ursprünglichen Implementierung + 9 neue aus dem Merge-Gate-Review) — inklusive einer während der ursprünglichen Implementierung gefundenen und behobenen Regression in einem **bestehenden** Test (`test/integration/accountApi.test.js`, siehe Abschnitt 19).
 - `npm run test:migrations`: **34/34** bestanden.
 - `npm run test:syntax`: bestanden (250 Dateien).
 - `npm run audit --audit-level=high` (Backend): **0 Schwachstellen**.
 - Migration Doctor gegen eine disponible Scratch-Datenbank: `ready:true, applied:13, pending:0, dirty:0, drift:0, unknown:0, schemaIssues:0, ledgerIssues:0`.
-- Deletion Receipt Doctor gegen dieselbe Scratch-Datenbank (unkonfigurierte Nicht-Produktionsumgebung): `state:not_configured, ready:true`.
-- Frontend: `npm run test:unit` **499/499** bestanden, Produktions-Build erfolgreich, `npm audit --audit-level=high` **0 Schwachstellen** — unverändert grün, da Stage 5C1 keine Frontend-Änderungen vornimmt.
-- Chromium-E2E-/Axe-Suite: **64/64**, zweimal unabhängig bestätigt, keine kritischen/schweren Axe-Befunde.
+- Deletion Receipt Doctor gegen dieselbe Art Scratch-Datenbank (unkonfigurierte Nicht-Produktionsumgebung): `state:not_configured, ready:true`.
+- Frontend: `npm run test:unit` **499/499** bestanden, Produktions-Build erfolgreich, `npm audit --audit-level=high` **0 Schwachstellen** — unverändert grün, da Stage 5C1 (inkl. Merge-Gate-Review) keine Frontend-Änderungen vornimmt.
+- Chromium-E2E-/Axe-Suite: **64/64**, nach dem Merge-Gate-Review erneut zweimal unabhängig bestätigt, 0 fehlgeschlagen, 0 übersprungen, keine unerwarteten Retries, keine kritischen/schweren Axe-Befunde.
 
 ---
 

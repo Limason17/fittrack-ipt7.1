@@ -338,7 +338,7 @@ $env:DELETION_RECEIPT_HMAC_KEY_ID = "pilot-deletion-key-2026"
 npm run db:deletion-receipts:doctor
 ```
 
-Erwartetes Ergebnis in einer unkonfigurierten Nicht-Produktionsumgebung: `{"state":"not_configured","ready":true,...}`. Bei konfiguriertem Subsystem und konsistentem Zustand: `{"state":"ready","ready":true,...}`. `recovery_required` bedeutet, dass ein Restore (Abschnitt 16) einen Vor-Löschungs-Snapshot zurückgebracht hat oder ein Receipt beschädigt ist — vor dem nächsten Schritt zuerst die Ursache klären (`restoredActiveAccounts`/`corruptedReceipts`/`unknownReceipts` im JSON-Ergebnis).
+Erwartetes Ergebnis in einer unkonfigurierten Nicht-Produktionsumgebung: `{"state":"not_configured","ready":true,...}`. Bei konfiguriertem Subsystem und konsistentem Zustand: `{"state":"ready","ready":true,...}`. `recovery_required` bedeutet, dass ein Restore (Abschnitt 16) einen Vor-Löschungs-Snapshot zurückgebracht hat, ein Receipt beschädigt ist, **oder einem bereits gelöschten Konto schlicht das Receipt fehlt** (z. B. nach einem Schreibfehler — der Doctor meldet das seit dem Stage-5C1-Merge-Gate-Review sofort, nicht erst verzögert) — vor dem nächsten Schritt zuerst die Ursache klären (`restoredActiveAccounts`/`corruptedReceipts`/`unknownReceipts`/`missingReceipts` im JSON-Ergebnis). Ein fehlendes Receipt heilt `reconcile:apply` (Abschnitt 24.3) automatisch, ohne die Löschung erneut auszuführen. **Bekannte Einschränkung:** für ein hard-delete-fähiges Konto (nie eine Studio-Mitgliedschaft) existiert nach der Löschung keine Datenbankzeile mehr — ein Receipt-Schreibfehler auf diesem Pfad bleibt für den Doctor unsichtbar; das strukturierte Log (`account_deletion_receipt_write_failed`) ist dort das einzige Signal.
 
 ### 24.3 Reconciliation nach einem Restore
 

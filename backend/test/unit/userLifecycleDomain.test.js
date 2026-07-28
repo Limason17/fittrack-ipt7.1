@@ -51,7 +51,7 @@ test("hard-delete eligibility is an exact zero-membership-rows check", () => {
 test("classifyDeletionStrategy returns a stable classification per table and rejects unknown tables", () => {
     assert.equal(classifyDeletionStrategy("workouts"), "hard_delete");
     assert.equal(classifyDeletionStrategy("progress_entries"), "hard_delete");
-    assert.equal(classifyDeletionStrategy("exercises"), "retain_unchanged");
+    assert.equal(classifyDeletionStrategy("exercises"), "hard_delete");
     assert.equal(classifyDeletionStrategy("studio_memberships"), "retain_unchanged");
     assert.equal(classifyDeletionStrategy("studio_workout_sessions"), "retain_unchanged");
     assert.equal(classifyDeletionStrategy("studio_workout_session_sets"), "retain_unchanged");
