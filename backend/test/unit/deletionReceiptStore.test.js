@@ -6,11 +6,13 @@ const os = require("node:os");
 const crypto = require("node:crypto");
 
 const {
+    findValidReceiptForAccount,
     listReceiptFiles,
     publishReceipt,
     readReceiptFile,
     receiptFilePath
 } = require("../../deletionReceipts/deletionReceiptStore");
+const { buildReceipt } = require("../../security/deletionReceipts");
 
 async function withTempDir(callback) {
     const dir = await fsPromises.mkdtemp(path.join(os.tmpdir(), "fittrack-deletion-receipt-store-test-"));
@@ -96,5 +98,89 @@ test("readReceiptFile throws a typed error for a missing file and for malformed 
             () => readReceiptFile(badPath),
             (error) => error.code === "DELETION_RECEIPT_MALFORMED"
         );
+    });
+});
+
+// ---- findValidReceiptForAccount (receipt-first commit protocol) ----
+
+test("findValidReceiptForAccount finds a valid receipt matching accountRef, and ignores one for a different account", async () => {
+    await withTempDir(async (dir) => {
+        const key = crypto.randomBytes(32);
+        const mine = buildReceipt({
+            receiptId: crypto.randomUUID(), accountRef: 42, lifecycleAction: "deleted",
+            deletedAt: new Date(), key, keyId: "test-key"
+        });
+        const someoneElses = buildReceipt({
+            receiptId: crypto.randomUUID(), accountRef: 99, lifecycleAction: "deleted",
+            deletedAt: new Date(), key, keyId: "test-key"
+        });
+        await publishReceipt(dir, mine);
+        await publishReceipt(dir, someoneElses);
+
+        const found = await findValidReceiptForAccount(dir, 42, key);
+        assert.equal(found.accountRef, 42);
+        assert.equal(found.receiptId, mine.receiptId);
+    });
+});
+
+test("findValidReceiptForAccount returns null when no receipt exists for the account", async () => {
+    await withTempDir(async (dir) => {
+        const key = crypto.randomBytes(32);
+        assert.equal(await findValidReceiptForAccount(dir, 1, key), null);
+
+        const someoneElses = buildReceipt({
+            receiptId: crypto.randomUUID(), accountRef: 99, lifecycleAction: "deleted",
+            deletedAt: new Date(), key, keyId: "test-key"
+        });
+        await publishReceipt(dir, someoneElses);
+        assert.equal(await findValidReceiptForAccount(dir, 1, key), null);
+    });
+});
+
+test("findValidReceiptForAccount throws fail-closed when a receipt claiming this accountRef fails signature verification", async () => {
+    await withTempDir(async (dir) => {
+        const key = crypto.randomBytes(32);
+        const receipt = buildReceipt({
+            receiptId: crypto.randomUUID(), accountRef: 7, lifecycleAction: "deleted",
+            deletedAt: new Date(), key, keyId: "test-key"
+        });
+        const tampered = JSON.parse(JSON.stringify(receipt));
+        tampered.integrity.signature = "0".repeat(64);
+        await fsPromises.mkdir(dir, { recursive: true });
+        await fsPromises.writeFile(path.join(dir, `${tampered.receiptId}.json`), JSON.stringify(tampered));
+
+        await assert.rejects(
+            () => findValidReceiptForAccount(dir, 7, key),
+            (error) => error.code === "DELETION_RECEIPT_INTEGRITY_INVALID"
+        );
+    });
+});
+
+test("findValidReceiptForAccount skips a receipt that cannot even be parsed, rather than blocking on it", async () => {
+    await withTempDir(async (dir) => {
+        const key = crypto.randomBytes(32);
+        await fsPromises.mkdir(dir, { recursive: true });
+        await fsPromises.writeFile(path.join(dir, `${crypto.randomUUID()}.json`), "{ not valid json !!");
+
+        assert.equal(await findValidReceiptForAccount(dir, 1, key), null);
+    });
+});
+
+test("findValidReceiptForAccount prefers the most recently deletedAt among multiple valid matches for the same account", async () => {
+    await withTempDir(async (dir) => {
+        const key = crypto.randomBytes(32);
+        const older = buildReceipt({
+            receiptId: crypto.randomUUID(), accountRef: 5, lifecycleAction: "deleted",
+            deletedAt: new Date("2026-01-01T00:00:00.000Z"), key, keyId: "test-key"
+        });
+        const newer = buildReceipt({
+            receiptId: crypto.randomUUID(), accountRef: 5, lifecycleAction: "reconciliation_reapplied",
+            deletedAt: new Date("2026-02-01T00:00:00.000Z"), key, keyId: "test-key"
+        });
+        await publishReceipt(dir, older);
+        await publishReceipt(dir, newer);
+
+        const found = await findValidReceiptForAccount(dir, 5, key);
+        assert.equal(found.receiptId, newer.receiptId);
     });
 });

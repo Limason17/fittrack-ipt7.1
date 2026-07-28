@@ -39,6 +39,7 @@ const {
 } = require("../../deletionReceipts/deletionReceiptReconciliation");
 const { createAccountDeletionService } = require("../../services/accountDeletionService");
 const { createReadinessProbe } = require("../../startup/readiness");
+const { buildReceipt } = require("../../security/deletionReceipts");
 
 const logger = { info() {}, warn() {}, error() {} };
 const runId = crypto.randomBytes(5).toString("hex");
@@ -243,6 +244,96 @@ async function userRow(userId) {
         [userId]
     );
     return rows[0] || null;
+}
+
+// ---- Receipt-first commit protocol test helpers ----
+
+// Simulates the exact "receipt published, commit then failed" crash window:
+// wraps a real pool connection so its commit() throws, without ever
+// mutating the real connection object itself (so a later, unrelated test
+// reusing the same pooled connection is never affected).
+function createCommitFailingPool(realPool) {
+    return {
+        async getConnection() {
+            const realConnection = await realPool.getConnection();
+            return new Proxy(realConnection, {
+                get(target, prop) {
+                    if (prop === "commit") {
+                        return async () => {
+                            throw new Error("simulated commit failure");
+                        };
+                    }
+                    const value = target[prop];
+                    return typeof value === "function" ? value.bind(target) : value;
+                }
+            });
+        },
+        query: (...args) => realPool.query(...args)
+    };
+}
+
+// Forces the receipt WRITE step to fail deterministically: a regular file
+// already sits where publishReceipt's mkdir would need a directory.
+async function withBrokenReceiptDirectory(fn) {
+    const brokenDir = path.join(os.tmpdir(), `fittrack-broken-receipt-${crypto.randomBytes(4).toString("hex")}`);
+    await fsPromises.writeFile(brokenDir, "not a directory");
+    const original = process.env.DELETION_RECEIPT_DIR;
+    process.env.DELETION_RECEIPT_DIR = brokenDir;
+    try {
+        return await fn();
+    } finally {
+        process.env.DELETION_RECEIPT_DIR = original;
+        await fsPromises.rm(brokenDir, { force: true });
+    }
+}
+
+async function allReceipts() {
+    let files;
+    try {
+        files = await fsPromises.readdir(RECEIPT_DIR);
+    } catch {
+        return [];
+    }
+    const receipts = [];
+    for (const file of files) {
+        receipts.push(JSON.parse(await fsPromises.readFile(path.join(RECEIPT_DIR, file), "utf8")));
+    }
+    return receipts;
+}
+
+async function readReceiptByAccountRef(accountRef) {
+    const receipts = await allReceipts();
+    return receipts.find((receipt) => receipt.accountRef === accountRef) || null;
+}
+
+async function countReceiptsForAccount(accountRef) {
+    const receipts = await allReceipts();
+    return receipts.filter((receipt) => receipt.accountRef === accountRef).length;
+}
+
+function reconciliationEnv() {
+    return {
+        FITTRACK_DELETION_RECONCILE_APPLY: "true",
+        FITTRACK_DELETION_RECONCILE_DATABASE_ACK: `reconcile:${TEST_DATABASE}`,
+        FITTRACK_DELETION_RECONCILE_RECEIPT_DIR_ACK: RECEIPT_DIR,
+        NODE_ENV: "test",
+        DELETION_RECEIPT_DIR: RECEIPT_DIR,
+        DELETION_RECEIPT_HMAC_KEY_B64: process.env.DELETION_RECEIPT_HMAC_KEY_B64,
+        DELETION_RECEIPT_HMAC_KEY_ID: process.env.DELETION_RECEIPT_HMAC_KEY_ID
+    };
+}
+
+function wiredReadinessProbe() {
+    const readiness = createReadinessProbe({
+        ping: async () => {},
+        migrationStatus: async () => ({ pending: [], dirty: [], drift: [], unknown: [] }),
+        deletionReceiptStatus: async () => {
+            const report = await diagnoseDeletionReceipts({ connection: pool });
+            return { ready: report.ready, reason: report.ready ? undefined : report.code };
+        }
+    });
+    readiness.markReady();
+    return readiness;
 }
 
 before(async () => {
@@ -1241,104 +1332,6 @@ test("Deletion Receipt Doctor reports ready:true with no inconsistencies for a n
 // response, but the Doctor and readiness fail closed until reconciliation
 // heals the missing receipt ----
 
-test("a receipt write failure after a committed deletion never fails the HTTP response, but Doctor and readiness fail closed until reconciliation heals it, then both are ready again", async () => {
-    // Deliberately an anonymize-mode account (studio history present): the
-    // Doctor's missingReceipts scan is a `SELECT ... WHERE lifecycle_status
-    // = 'deleted'` - it can only ever detect a missing receipt for a row
-    // that still exists. A hard-delete-eligible account leaves no row at
-    // all, so a receipt write failure there is structurally undetectable
-    // by the Doctor/reconciliation and observable only via the
-    // account_deletion_receipt_write_failed log line - a real, documented
-    // limitation (see the closing report), not something this test can
-    // exercise for the hard-delete path.
-    const user = await registerAndLogin("receipt-write-failure");
-    const ownerA = await registerAndLogin("receipt-write-failure-owner");
-    const studio = await seedStudio({ name: "Receipt Write Failure Studio", ownerUserId: ownerA.id });
-    await seedMembership({ studioInternalId: studio.studioInternalId, userId: user.id, role: "member" });
-
-    // Force the WRITE step (not the pre-flight config check, which only
-    // validates the configured strings and never touches the filesystem)
-    // to fail deterministically: a regular file already sits where
-    // publishReceipt's ensureReceiptDirectory would need to mkdir a
-    // directory, so mkdir throws ENOTDIR (or EEXIST on some platforms).
-    const brokenDir = path.join(os.tmpdir(), `fittrack-broken-receipt-${crypto.randomBytes(4).toString("hex")}`);
-    await fsPromises.writeFile(brokenDir, "not a directory");
-    const originalReceiptDir = process.env.DELETION_RECEIPT_DIR;
-    process.env.DELETION_RECEIPT_DIR = brokenDir;
-
-    let result;
-    try {
-        result = await api("/api/account/deletion-request", {
-            method: "POST",
-            token: user.token,
-            body: { currentPassword: user.password, confirmationPhrase: user.username }
-        });
-    } finally {
-        process.env.DELETION_RECEIPT_DIR = originalReceiptDir;
-        await fsPromises.rm(brokenDir, { force: true });
-    }
-
-    // 1-3: the DB deletion itself is unaffected by the receipt failure - a
-    // clean, complete success response, never a partial-failure shape.
-    assert.equal(result.response.status, 200, JSON.stringify(result.data));
-    assert.ok(result.data.accountDeletion);
-    const row = await userRow(user.id);
-    assert.equal(row.lifecycle_status, "deleted");
-
-    // 4: Doctor, checked against the correctly-configured directory,
-    // immediately reports the missing receipt as fail-closed - no PII in
-    // its output, only the internal numeric account reference.
-    const brokenDiagnosis = await diagnoseDeletionReceipts({ connection: pool });
-    assert.equal(brokenDiagnosis.ready, false);
-    assert.equal(brokenDiagnosis.recoveryRequired, true);
-    assert.ok(brokenDiagnosis.missingReceipts.includes(user.id));
-    const serializedDiagnosis = JSON.stringify(brokenDiagnosis);
-    assert.ok(!serializedDiagnosis.includes(user.username));
-    assert.ok(!serializedDiagnosis.includes(user.email));
-
-    // 5: readiness, wired exactly as server.js wires it, fails closed too.
-    const readiness = createReadinessProbe({
-        ping: async () => {},
-        migrationStatus: async () => ({ pending: [], dirty: [], drift: [], unknown: [] }),
-        deletionReceiptStatus: async () => {
-            const report = await diagnoseDeletionReceipts({ connection: pool });
-            return { ready: report.ready, reason: report.ready ? undefined : report.code };
-        }
-    });
-    readiness.markReady();
-    const brokenCheck = await readiness.check();
-    assert.equal(brokenCheck.ready, false);
-    assert.equal(brokenCheck.reason, "DELETION_RECEIPT_DOCTOR_RECOVERY_REQUIRED");
-
-    // 6: reconciliation (correctly configured directory, all three exact
-    // acknowledgements) self-heals the missing receipt purely from the
-    // row's own already-correct deleted_at - no deletion logic re-run.
-    const deletionService = createAccountDeletionService({ database: pool, logger });
-    const applyResult = await applyReconciliation({
-        connection: pool,
-        deletionService,
-        databaseName: TEST_DATABASE,
-        env: {
-            FITTRACK_DELETION_RECONCILE_APPLY: "true",
-            FITTRACK_DELETION_RECONCILE_DATABASE_ACK: `reconcile:${TEST_DATABASE}`,
-            FITTRACK_DELETION_RECONCILE_RECEIPT_DIR_ACK: RECEIPT_DIR,
-            NODE_ENV: "test",
-            DELETION_RECEIPT_DIR: RECEIPT_DIR,
-            DELETION_RECEIPT_HMAC_KEY_B64: process.env.DELETION_RECEIPT_HMAC_KEY_B64,
-            DELETION_RECEIPT_HMAC_KEY_ID: process.env.DELETION_RECEIPT_HMAC_KEY_ID
-        },
-        logger
-    });
-    assert.ok(applyResult.healedReceipts.includes(user.id));
-
-    // 7: both are ready again.
-    const healedDiagnosis = await diagnoseDeletionReceipts({ connection: pool });
-    assert.equal(healedDiagnosis.ready, true);
-    assert.equal(healedDiagnosis.recoveryRequired, false);
-    const healedCheck = await readiness.check();
-    assert.equal(healedCheck.ready, true);
-});
-
 test("restore simulation: a receipt exists but the row was restored to active -> Doctor flags it, reconciliation re-applies the deletion", async () => {
     const user = await registerAndLogin("reconcile-restore");
     const studio = await seedStudio({ name: "Reconcile Studio", ownerUserId: user.id });
@@ -1477,4 +1470,361 @@ test("no cross-tenant leak: deleting an account never changes a row in a studio 
         [unrelatedStudio.studioInternalId]
     );
     assert.deepEqual(afterRows, beforeRows);
+});
+
+// ==== Receipt-first commit protocol (merge-blocker follow-up) ====
+//
+// Prior behaviour: the DB transaction committed BEFORE the receipt was
+// published (best-effort, after commit). A hard-delete account whose
+// receipt write then failed left no user row AND no receipt - nothing for
+// the Doctor to ever detect, and a later restore-from-backup could
+// reactivate the account with zero trace it was ever deleted. Fixed by
+// moving receipt resolution (reuse existing, or generate+publish new)
+// BEFORE commit, and treating a commit failure after a successful publish
+// as a distinct, recovery-pointing outcome rather than a silent success.
+
+// ---- Anonymize mode ----
+
+test("anonymize mode: a receipt publish failure rolls back the entire transaction, leaves the account fully active and unchanged, and never returns 200", async () => {
+    const owner = await registerAndLogin("receiptfirst-anon-publish-fail");
+    const studio = await seedStudio({ name: "Receipt First Anon Publish Fail Studio", ownerUserId: owner.id });
+    const secondOwner = await registerAndLogin("receiptfirst-anon-publish-fail-owner2");
+    await seedMembership({ studioInternalId: studio.studioInternalId, userId: secondOwner.id, role: "owner" });
+
+    const before_ = await userRow(owner.id);
+    const [beforeMembership] = await pool.query(
+        "SELECT status FROM studio_memberships WHERE user_id = ? AND studio_id = ?",
+        [owner.id, studio.studioInternalId]
+    );
+    const [[auditCountBefore]] = await pool.query(
+        "SELECT COUNT(*) AS total FROM studio_audit_events WHERE actor_user_id = ?", [owner.id]
+    );
+
+    const result = await withBrokenReceiptDirectory(() => api("/api/account/deletion-request", {
+        method: "POST",
+        token: owner.token,
+        body: { currentPassword: owner.password, confirmationPhrase: owner.username }
+    }));
+
+    assert.equal(result.response.status, 503);
+    assert.equal(result.data.error.code, "DELETION_RECEIPT_PUBLISH_FAILED");
+
+    const after_ = await userRow(owner.id);
+    assert.deepEqual(after_, before_, "no account data may change when the receipt publish fails");
+    assert.equal(after_.lifecycle_status, "active");
+
+    const [afterMembership] = await pool.query(
+        "SELECT status FROM studio_memberships WHERE user_id = ? AND studio_id = ?",
+        [owner.id, studio.studioInternalId]
+    );
+    assert.deepEqual(afterMembership, beforeMembership, "no domain state may be partially terminalized");
+
+    const [[auditCountAfter]] = await pool.query(
+        "SELECT COUNT(*) AS total FROM studio_audit_events WHERE actor_user_id = ?", [owner.id]
+    );
+    assert.equal(Number(auditCountAfter.total), Number(auditCountBefore.total), "no audit events may survive a rolled-back transaction");
+
+    const stillWorks = await api("/api/account/deletion-preview", { token: owner.token });
+    assert.equal(stillWorks.response.status, 200, "the original session must remain fully valid");
+
+    assert.equal(await readReceiptByAccountRef(owner.id), null, "no receipt may be left behind when the transaction rolled back");
+});
+
+test("anonymize mode: if the receipt is published but the commit then fails, the receipt is never removed, the account stays active until reconciliation anonymizes it, and Doctor/readiness recover", async () => {
+    const owner = await registerAndLogin("receiptfirst-anon-commit-fail");
+    const studio = await seedStudio({ name: "Receipt First Anon Commit Fail Studio", ownerUserId: owner.id });
+    const secondOwner = await registerAndLogin("receiptfirst-anon-commit-fail-owner2");
+    await seedMembership({ studioInternalId: studio.studioInternalId, userId: secondOwner.id, role: "owner" });
+
+    const faultyService = createAccountDeletionService({ database: createCommitFailingPool(pool), logger });
+    await assert.rejects(
+        () => faultyService.requestAccountDeletion(owner.id, {
+            currentPassword: owner.password, confirmationPhrase: owner.username
+        }, { requestId: "commit-fail-anon" }),
+        (error) => error.code === "DELETION_RECEIPT_RECONCILIATION_REQUIRED"
+    );
+
+    const afterFailedCommit = await userRow(owner.id);
+    assert.equal(afterFailedCommit.lifecycle_status, "active", "the row must remain active - the whole transaction rolled back");
+    assert.equal(afterFailedCommit.username, owner.username, "original data must be intact, not partially anonymized");
+
+    const receipt = await readReceiptByAccountRef(owner.id);
+    assert.ok(receipt, "the receipt must remain published despite the commit failure");
+    assert.equal(receipt.lifecycleAction, "deleted");
+
+    const diagnosis = await diagnoseDeletionReceipts({ connection: pool });
+    assert.equal(diagnosis.ready, false);
+    assert.ok(diagnosis.restoredActiveAccounts.includes(owner.id));
+
+    const readiness = wiredReadinessProbe();
+    const before = await readiness.check();
+    assert.equal(before.ready, false);
+
+    const deletionService = createAccountDeletionService({ database: pool, logger });
+    const applyResult = await applyReconciliation({
+        connection: pool, deletionService, databaseName: TEST_DATABASE, env: reconciliationEnv(), logger
+    });
+    assert.equal(applyResult.reapplied[0].status, "reapplied");
+
+    const rowAfter = await userRow(owner.id);
+    assert.equal(rowAfter.lifecycle_status, "deleted");
+
+    assert.equal(
+        await countReceiptsForAccount(owner.id), 1,
+        "reconciliation must reuse the existing receipt, never mint a second one"
+    );
+
+    const finalDiagnosis = await diagnoseDeletionReceipts({ connection: pool });
+    assert.equal(finalDiagnosis.ready, true);
+    const after = await readiness.check();
+    assert.equal(after.ready, true);
+});
+
+// ---- Hard delete mode ----
+
+test("hard-delete mode: a receipt publish failure rolls back the entire transaction and leaves the user row fully intact", async () => {
+    const user = await registerAndLogin("receiptfirst-hard-publish-fail");
+
+    const result = await withBrokenReceiptDirectory(() => api("/api/account/deletion-request", {
+        method: "POST",
+        token: user.token,
+        body: { currentPassword: user.password, confirmationPhrase: user.username }
+    }));
+
+    assert.equal(result.response.status, 503);
+    assert.equal(result.data.error.code, "DELETION_RECEIPT_PUBLISH_FAILED");
+
+    const row = await userRow(user.id);
+    assert.ok(row, "the user row must still exist - the hard delete must never have been committed");
+    assert.equal(row.lifecycle_status, "active");
+
+    const stillWorks = await api("/api/account/deletion-preview", { token: user.token });
+    assert.equal(stillWorks.response.status, 200);
+
+    assert.equal(await readReceiptByAccountRef(user.id), null);
+});
+
+test("hard-delete mode: if the receipt is published but the commit then fails, reconciliation completes the hard delete, and a repeated simulated restore cannot permanently reactivate the account", async () => {
+    const user = await registerAndLogin("receiptfirst-hard-commit-fail");
+
+    const faultyService = createAccountDeletionService({ database: createCommitFailingPool(pool), logger });
+    await assert.rejects(
+        () => faultyService.requestAccountDeletion(user.id, {
+            currentPassword: user.password, confirmationPhrase: user.username
+        }, { requestId: "commit-fail-hard" }),
+        (error) => error.code === "DELETION_RECEIPT_RECONCILIATION_REQUIRED"
+    );
+
+    const afterFailedCommit = await userRow(user.id);
+    assert.ok(afterFailedCommit, "the row must still exist - the hard delete rolled back");
+    assert.equal(afterFailedCommit.lifecycle_status, "active");
+
+    const receipt = await readReceiptByAccountRef(user.id);
+    assert.ok(receipt, "the receipt must remain despite the commit failure");
+
+    const diagnosis = await diagnoseDeletionReceipts({ connection: pool });
+    assert.equal(diagnosis.ready, false);
+    assert.ok(diagnosis.restoredActiveAccounts.includes(user.id));
+
+    const deletionService = createAccountDeletionService({ database: pool, logger });
+    const env = reconciliationEnv();
+    await applyReconciliation({ connection: pool, deletionService, databaseName: TEST_DATABASE, env, logger });
+
+    const rowAfterFirstReconcile = await userRow(user.id);
+    assert.equal(rowAfterFirstReconcile, null, "the account must be fully hard-deleted after reconciliation");
+
+    // Simulate a second, independent restore-from-backup bringing the exact
+    // same row id back to active - proves the mechanism is repeatable, not
+    // a one-shot fix.
+    await pool.query(
+        "INSERT INTO users (id, username, email, password_hash) VALUES (?, ?, ?, ?)",
+        [
+            user.id,
+            `restored-${crypto.randomBytes(3).toString("hex")}`,
+            `restored-${crypto.randomBytes(4).toString("hex")}@example.test`,
+            "$2a$10$abcdefghijklmnopqrstuvABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+        ]
+    );
+
+    const secondDiagnosis = await diagnoseDeletionReceipts({ connection: pool });
+    assert.equal(secondDiagnosis.ready, false);
+    assert.ok(secondDiagnosis.restoredActiveAccounts.includes(user.id));
+
+    await applyReconciliation({ connection: pool, deletionService, databaseName: TEST_DATABASE, env, logger });
+
+    const rowAfterSecondReconcile = await userRow(user.id);
+    assert.equal(rowAfterSecondReconcile, null, "the account must be hard-deleted again after the simulated restore");
+
+    const finalDiagnosis = await diagnoseDeletionReceipts({ connection: pool });
+    assert.equal(finalDiagnosis.ready, true);
+});
+
+// ---- Success case ----
+
+test("success case: the receipt exists before commit, the API returns 200, the receipt is valid, the Doctor is ready, and repeated checks are idempotent", async () => {
+    const user = await registerAndLogin("receiptfirst-success");
+    const result = await api("/api/account/deletion-request", {
+        method: "POST",
+        token: user.token,
+        body: { currentPassword: user.password, confirmationPhrase: user.username }
+    });
+    assert.equal(result.response.status, 200, JSON.stringify(result.data));
+
+    const receipt = await readReceiptByAccountRef(user.id);
+    assert.ok(receipt);
+    assert.equal(receipt.lifecycleAction, "deleted");
+
+    const diagnosis1 = await diagnoseDeletionReceipts({ connection: pool });
+    assert.equal(diagnosis1.ready, true);
+
+    const diagnosis2 = await diagnoseDeletionReceipts({ connection: pool });
+    assert.deepEqual(diagnosis2, diagnosis1);
+    assert.equal(await countReceiptsForAccount(user.id), 1);
+});
+
+// ---- Security and concurrency tests ----
+
+test("parallel duplicate execute requests for the same account produce exactly one receipt, never two", async () => {
+    const user = await registerAndLogin("receiptfirst-parallel-receipt");
+    const [first, second] = await Promise.all([
+        api("/api/account/deletion-request", {
+            method: "POST", token: user.token,
+            body: { currentPassword: user.password, confirmationPhrase: user.username }
+        }),
+        api("/api/account/deletion-request", {
+            method: "POST", token: user.token,
+            body: { currentPassword: user.password, confirmationPhrase: user.username }
+        })
+    ]);
+    const statuses = [first.response.status, second.response.status].sort();
+    assert.ok(statuses.includes(200), `expected exactly one success, got ${JSON.stringify(statuses)}`);
+    assert.equal(await countReceiptsForAccount(user.id), 1);
+});
+
+test("retry after a receipt-published-but-commit-failed attempt: a direct client retry succeeds and reuses the existing receipt rather than minting a second one", async () => {
+    const user = await registerAndLogin("receiptfirst-retry");
+
+    const faultyService = createAccountDeletionService({ database: createCommitFailingPool(pool), logger });
+    await assert.rejects(
+        () => faultyService.requestAccountDeletion(user.id, {
+            currentPassword: user.password, confirmationPhrase: user.username
+        }, { requestId: "retry-1" }),
+        (error) => error.code === "DELETION_RECEIPT_RECONCILIATION_REQUIRED"
+    );
+    const receiptAfterFirstAttempt = await readReceiptByAccountRef(user.id);
+    assert.ok(receiptAfterFirstAttempt);
+
+    const retryResult = await api("/api/account/deletion-request", {
+        method: "POST", token: user.token,
+        body: { currentPassword: user.password, confirmationPhrase: user.username }
+    });
+    assert.equal(retryResult.response.status, 200, JSON.stringify(retryResult.data));
+
+    assert.equal(await countReceiptsForAccount(user.id), 1, "the retry must reuse the existing receipt, not mint a second one");
+    const receiptAfterRetry = await readReceiptByAccountRef(user.id);
+    assert.equal(receiptAfterRetry.receiptId, receiptAfterFirstAttempt.receiptId);
+
+    const row = await userRow(user.id);
+    assert.equal(row, null, "hard-delete-eligible account must end up fully deleted after the retry");
+});
+
+test("session rows remain active after a receipt-published-but-commit-failed attempt, since the whole transaction (including session revocation) rolled back", async () => {
+    const user = await registerAndLogin("receiptfirst-session-race");
+    const [[sessionCountBefore]] = await pool.query(
+        "SELECT COUNT(*) AS total FROM user_auth_sessions WHERE user_id = ? AND status = 'active'", [user.id]
+    );
+    assert.ok(Number(sessionCountBefore.total) > 0, "login must have created an active session");
+
+    const faultyService = createAccountDeletionService({ database: createCommitFailingPool(pool), logger });
+    await assert.rejects(
+        () => faultyService.requestAccountDeletion(user.id, {
+            currentPassword: user.password, confirmationPhrase: user.username
+        }, { requestId: "session-race" }),
+        (error) => error.code === "DELETION_RECEIPT_RECONCILIATION_REQUIRED"
+    );
+
+    const [[sessionCountAfter]] = await pool.query(
+        "SELECT COUNT(*) AS total FROM user_auth_sessions WHERE user_id = ? AND status = 'active'", [user.id]
+    );
+    assert.equal(
+        Number(sessionCountAfter.total), Number(sessionCountBefore.total),
+        "session revocation must have rolled back along with everything else"
+    );
+
+    const stillWorks = await api("/api/account/deletion-preview", { token: user.token });
+    assert.equal(stillWorks.response.status, 200, "the original access token must remain valid");
+});
+
+test("a corrupted existing receipt for an account blocks any further deletion attempt fail-closed, rather than silently minting a second, conflicting receipt", async () => {
+    const user = await registerAndLogin("receiptfirst-corrupted-existing");
+
+    const tampered = JSON.parse(JSON.stringify(buildReceipt({
+        receiptId: crypto.randomUUID(),
+        accountRef: user.id,
+        lifecycleAction: "deleted",
+        deletedAt: new Date(),
+        key: Buffer.from(process.env.DELETION_RECEIPT_HMAC_KEY_B64, "base64"),
+        keyId: process.env.DELETION_RECEIPT_HMAC_KEY_ID
+    })));
+    tampered.integrity.signature = "0".repeat(64);
+    await fsPromises.mkdir(RECEIPT_DIR, { recursive: true });
+    await fsPromises.writeFile(path.join(RECEIPT_DIR, `${tampered.receiptId}.json`), JSON.stringify(tampered));
+
+    const result = await api("/api/account/deletion-request", {
+        method: "POST", token: user.token,
+        body: { currentPassword: user.password, confirmationPhrase: user.username }
+    });
+    assert.equal(result.response.status, 503);
+    assert.equal(result.data.error.code, "DELETION_RECEIPT_CORRUPTED");
+
+    const row = await userRow(user.id);
+    assert.equal(row.lifecycle_status, "active", "no account data may change when an existing receipt is corrupted");
+});
+
+test("a receipt file for a different, unrelated account is never mistaken for this account's receipt", async () => {
+    const otherAccountRef = 999999991;
+    const unrelatedReceipt = buildReceipt({
+        receiptId: crypto.randomUUID(),
+        accountRef: otherAccountRef,
+        lifecycleAction: "deleted",
+        deletedAt: new Date(),
+        key: Buffer.from(process.env.DELETION_RECEIPT_HMAC_KEY_B64, "base64"),
+        keyId: process.env.DELETION_RECEIPT_HMAC_KEY_ID
+    });
+    await fsPromises.mkdir(RECEIPT_DIR, { recursive: true });
+    await fsPromises.writeFile(
+        path.join(RECEIPT_DIR, `${unrelatedReceipt.receiptId}.json`),
+        JSON.stringify(unrelatedReceipt)
+    );
+
+    const user = await registerAndLogin("receiptfirst-wrong-accountref");
+    const result = await api("/api/account/deletion-request", {
+        method: "POST", token: user.token,
+        body: { currentPassword: user.password, confirmationPhrase: user.username }
+    });
+    assert.equal(result.response.status, 200, JSON.stringify(result.data));
+
+    const ownReceipt = await readReceiptByAccountRef(user.id);
+    assert.ok(ownReceipt);
+    assert.notEqual(ownReceipt.receiptId, unrelatedReceipt.receiptId);
+
+    const unrelatedStillThere = JSON.parse(
+        await fsPromises.readFile(path.join(RECEIPT_DIR, `${unrelatedReceipt.receiptId}.json`), "utf8")
+    );
+    assert.equal(unrelatedStillThere.accountRef, otherAccountRef);
+});
+
+test("none of the new receipt-first error responses ever leak PII, filesystem paths, or stack traces", async () => {
+    const user = await registerAndLogin("receiptfirst-pii-check");
+    const result = await withBrokenReceiptDirectory(() => api("/api/account/deletion-request", {
+        method: "POST", token: user.token,
+        body: { currentPassword: user.password, confirmationPhrase: user.username }
+    }));
+    assert.equal(result.response.status, 503);
+    const serialized = JSON.stringify(result.data);
+    assert.ok(!serialized.includes(user.username));
+    assert.ok(!serialized.includes(user.email));
+    assert.ok(!serialized.toLowerCase().includes("enotdir"));
+    assert.ok(!serialized.toLowerCase().includes(os.tmpdir().toLowerCase()));
+    assert.ok(!serialized.toLowerCase().includes(".js:"));
 });

@@ -8,6 +8,7 @@ const {
     AccountDeletionStudioOwnershipRequiredError,
     DeletionReceiptConfigurationUnsafeError,
     DeletionReceiptCorruptedError,
+    DeletionReceiptPublishFailedError,
     DeletionReceiptReconciliationRequiredError
 } = require("../../errors/AccountDeletionErrors");
 
@@ -35,6 +36,10 @@ test("each error subclass reports its documented status/code contract", () => {
     assert.deepEqual(
         [new DeletionReceiptReconciliationRequiredError().status, new DeletionReceiptReconciliationRequiredError().code],
         [503, "DELETION_RECEIPT_RECONCILIATION_REQUIRED"]
+    );
+    assert.deepEqual(
+        [new DeletionReceiptPublishFailedError().status, new DeletionReceiptPublishFailedError().code],
+        [503, "DELETION_RECEIPT_PUBLISH_FAILED"]
     );
 });
 
