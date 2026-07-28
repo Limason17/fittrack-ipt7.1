@@ -130,7 +130,8 @@ test(
                     "009_account_self_service",
                     "010_auth_sessions",
                     "011_security_rate_limits",
-                    "012_unified_training_calendar"
+                    "012_unified_training_calendar",
+                    "013_account_lifecycle"
                 ]
             );
 
@@ -155,7 +156,8 @@ test(
                 "009_account_self_service",
                 "010_auth_sessions",
                 "011_security_rate_limits",
-                "012_unified_training_calendar"
+                "012_unified_training_calendar",
+                "013_account_lifecycle"
             ]);
 
             const [tables] = await pool.promise().query(
@@ -228,7 +230,7 @@ test(
                  FROM schema_migrations
                  ORDER BY migration_id`
             );
-            assert.equal(ledgerSnapshot.length, 12);
+            assert.equal(ledgerSnapshot.length, 13);
             assert.ok(ledgerSnapshot.every((row) => row.status === "applied"));
 
             const secondRun = await runner.migrate();
@@ -409,7 +411,8 @@ test(
                 "009_account_self_service",
                 "010_auth_sessions",
                 "011_security_rate_limits",
-                "012_unified_training_calendar"
+                "012_unified_training_calendar",
+                "013_account_lifecycle"
             ]);
             const afterStudioMigration = await personalDataSnapshot(sql);
             assert.deepEqual(
@@ -1604,6 +1607,86 @@ test(
                 runner.migrate(),
                 (error) => error.code === "MIGRATION_STATE_INVALID"
             );
+        } finally {
+            await db.closePool(pool);
+        }
+    }
+);
+
+test(
+    "Stage 5C1: Account-Lifecycle-Schema erzwingt Default, Check-Constraints und Index korrekt",
+    { skip: !RUN_INTEGRATION },
+    async () => {
+        const database = await createDisposableDatabase();
+        const pool = createTestPool(database);
+        const sql = pool.promise();
+
+        try {
+            const runner = createMigrationRunner({ pool, logger: silentLogger() });
+            await runner.migrate();
+
+            async function createUser(username) {
+                const [result] = await sql.query(
+                    `INSERT INTO users (username, email, password_hash)
+                     VALUES (?, ?, 'test-hash')`,
+                    [username, `${username}@example.test`]
+                );
+                return result.insertId;
+            }
+
+            // A user row inserted without mentioning lifecycle_status/
+            // deleted_at at all (exactly how every pre-013 INSERT
+            // statement in the codebase already looks) must default to
+            // 'active'/NULL via the column defaults alone - no backfill
+            // statement should ever be necessary.
+            const userId = await createUser("lifecycle-default-user");
+            const [[defaultRow]] = await sql.query(
+                "SELECT lifecycle_status, deleted_at FROM users WHERE id = ?",
+                [userId]
+            );
+            assert.equal(defaultRow.lifecycle_status, "active");
+            assert.equal(defaultRow.deleted_at, null);
+
+            // chk_users_lifecycle_status: only 'active'/'deleted' are valid.
+            await expectMysqlError(
+                sql.query("UPDATE users SET lifecycle_status = 'suspended' WHERE id = ?", [userId]),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+
+            // chk_users_deleted_at: 'deleted' requires deleted_at set, and
+            // 'active' requires it NULL - neither half of the pair alone
+            // satisfies the constraint.
+            await expectMysqlError(
+                sql.query("UPDATE users SET lifecycle_status = 'deleted' WHERE id = ?", [userId]),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await expectMysqlError(
+                sql.query("UPDATE users SET deleted_at = NOW(3) WHERE id = ?", [userId]),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+            await sql.query(
+                "UPDATE users SET lifecycle_status = 'deleted', deleted_at = NOW(3) WHERE id = ?",
+                [userId]
+            );
+            const [[deletedRow]] = await sql.query(
+                "SELECT lifecycle_status, deleted_at FROM users WHERE id = ?",
+                [userId]
+            );
+            assert.equal(deletedRow.lifecycle_status, "deleted");
+            assert.ok(deletedRow.deleted_at);
+            await expectMysqlError(
+                sql.query("UPDATE users SET lifecycle_status = 'active' WHERE id = ?", [userId]),
+                "ER_CHECK_CONSTRAINT_VIOLATED"
+            );
+
+            const [indexRows] = await sql.query(
+                `SELECT INDEX_NAME AS index_name, COLUMN_NAME AS column_name
+                 FROM information_schema.STATISTICS
+                 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'users' AND INDEX_NAME = 'idx_users_lifecycle_status'`,
+                [database]
+            );
+            assert.equal(indexRows.length, 1);
+            assert.equal(indexRows[0].column_name, "lifecycle_status");
         } finally {
             await db.closePool(pool);
         }

@@ -88,7 +88,7 @@ test("login and registration policies are independent and different clients do n
     assert.equal(headers["RateLimit-Remaining"], "0");
 });
 
-test("Stage 3D: all ten policies exist, are independent, and read env overrides with sane defaults", async () => {
+test("Stage 3D/5C1: all eleven policies exist, are independent, and read env overrides with sane defaults", async () => {
     const store = createMemoryRateLimitStore();
     const limiters = createRateLimiters({
         store,
@@ -100,7 +100,8 @@ test("Stage 3D: all ten policies exist, are independent, and read env overrides 
     });
     for (const name of [
         "login", "registration", "refresh", "logoutAll", "passwordChange",
-        "emailChangeRequest", "emailChangeConfirm", "invitationCreate", "invitationResend", "invitationAccept"
+        "emailChangeRequest", "emailChangeConfirm", "invitationCreate", "invitationResend", "invitationAccept",
+        "deleteRequest"
     ]) {
         assert.equal(typeof limiters[name], "function", `expected a ${name} middleware`);
     }
@@ -138,6 +139,33 @@ test("account rate limiter env var overrides are honoured", async () => {
     assert.equal(outcomes[0], null);
     assert.equal(outcomes[1], null);
     assert.equal(outcomes[2].status, 429);
+});
+
+test("Stage 5C1: account.deleteRequest defaults to 3/60min, is keyed per user, and is independent from passwordChange", async () => {
+    const store = createMemoryRateLimitStore();
+    const policies = createRateLimitPolicies({ env: {} });
+    assert.equal(policies["account.deleteRequest"].max, 3);
+    assert.equal(policies["account.deleteRequest"].windowMs, 60 * 60 * 1000);
+
+    const limiters = createRateLimiters({
+        store,
+        keySecret: TEST_SECRET,
+        now: () => 1000,
+        policies: createRateLimitPolicies({ env: { ACCOUNT_DELETE_RATE_LIMIT_MAX: "2" } })
+    });
+    const res = { setHeader() {} };
+    const outcomes = [];
+    const req = request({ user: { id: 9 } });
+    await limiters.deleteRequest(req, res, (error) => outcomes.push(error || null));
+    await limiters.deleteRequest(req, res, (error) => outcomes.push(error || null));
+    await limiters.deleteRequest(req, res, (error) => outcomes.push(error || null));
+    await limiters.passwordChange(req, res, (error) => outcomes.push(error || null));
+
+    assert.equal(outcomes[0], null);
+    assert.equal(outcomes[1], null);
+    assert.equal(outcomes[2].status, 429);
+    assert.equal(outcomes[2].code, "RATE_LIMIT_EXCEEDED");
+    assert.equal(outcomes[3], null, "passwordChange must not share deleteRequest state");
 });
 
 test("invitation resend limiter is keyed per actor+invitation and reports the dedicated error code", async () => {

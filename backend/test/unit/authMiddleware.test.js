@@ -33,12 +33,14 @@ function fakeDatabase(rows, { onQuery } = {}) {
 // `users LEFT JOIN user_auth_sessions` query.
 function sessionRow({
     userAuthVersion = 1,
+    userLifecycleStatus = "active",
     sessionStatus = "active",
     sessionExpiresAt = new Date(Date.now() + 60_000),
     sessionAuthVersion = 1
 } = {}) {
     return {
         user_auth_version: userAuthVersion,
+        user_lifecycle_status: userLifecycleStatus,
         session_status: sessionStatus,
         session_expires_at: sessionExpiresAt,
         session_auth_version: sessionAuthVersion
@@ -156,6 +158,16 @@ test("Stage 3B2: a session whose own snapshotted auth_version has fallen behind 
         database: fakeDatabase([sessionRow({ userAuthVersion: 2, sessionAuthVersion: 1 })])
     });
     const token = signToken({ id: 42, authVersion: 2, sessionId: VALID_SESSION_ID });
+    const req = { headers: { authorization: `Bearer ${token}` } };
+    const error = await run(middleware, req);
+    assert.equal(error?.code, "AUTH_SESSION_INVALIDATED");
+});
+
+test("Stage 5C1: a token for an account whose lifecycle_status is no longer 'active' (deleted/anonymized) is rejected as AUTH_SESSION_INVALIDATED, even with a matching authVersion and an otherwise-valid session", async () => {
+    const middleware = createAuthenticateToken({
+        database: fakeDatabase([sessionRow({ userLifecycleStatus: "deleted" })])
+    });
+    const token = signToken({ id: 42, authVersion: 1, sessionId: VALID_SESSION_ID });
     const req = { headers: { authorization: `Bearer ${token}` } };
     const error = await run(middleware, req);
     assert.equal(error?.code, "AUTH_SESSION_INVALIDATED");

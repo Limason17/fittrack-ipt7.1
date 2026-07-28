@@ -41,6 +41,25 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um
 > automatisierter Self-Service nötig, siehe
 > `STAGE_5B_PRODUCT_PILOT_READINESS_AUDIT.md` Befund P1-1). Volle Details
 > und die vollständige, real ausgeführte Regression siehe dort.
+>
+> **Nachtrag (2026-07-28, Stage 5C1 Account Deletion Backend & Deletion
+> Receipt Foundation):** Der oben unter Punkt 10 (unten in der Lückenliste)
+> beschriebene P1-Befund ist jetzt **technisch geschlossen** — siehe den
+> neuen Abschnitt „Account-Löschung und Deletion Receipts" weiter unten
+> sowie `STAGE_5C1_ACCOUNT_DELETION_BACKEND.md` für die vollständigen
+> Details. Migration 013 fügt `users.lifecycle_status`/`deleted_at` hinzu;
+> ein Self-Service-Löschendpunkt (Passwort + Bestätigungsphrase) anonymisiert
+> ein Konto mit Studio-Historie unwiderruflich (zufälliger, nicht ableitbarer
+> Platzhaltername/-E-Mail/-Passworthash) oder löscht es vollständig, falls
+> nie eine Studio-Mitgliedschaft existierte. Die zuvor in Zeile 147/166
+> dieses Dokuments dokumentierte Aussage „kein Lösch-/Anonymisierungspfad im
+> Code gefunden" ist damit **nicht mehr zutreffend** und in diesem Dokument
+> entsprechend korrigiert. **Weiterhin offen:** Es gibt noch **keine
+> Frontend-Oberfläche** für diesen Endpunkt (Stage 5C2, nicht begonnen) —
+> ein Endbenutzer kann sein Konto aktuell nur über einen direkten API-Aufruf
+> löschen, nicht über die Weboberfläche. Freitext (Coach-Feedback, Notizen)
+> wird bewusst nicht durchsucht/bereinigt — siehe `notices.freeTextRetention`
+> in der Vorschau-Antwort für die ehrliche Kommunikation dieser Grenze.
 
 ## Auth
 
@@ -138,13 +157,24 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um
 - TLS explizit an Reverse-Proxy delegiert, kein TLS-Code im Repository (bewusst Infrastrukturaufgabe). **[DOKU]**
 - Kein echtes Monitoring/Alerting-System im Repository — nur Health-Endpunkte plus dokumentierte Prozesse. **[GETESTET]** für Health-Endpunkte, **[DOKU]** für Alerting.
 
+## Account-Löschung und Deletion Receipts (Stage 5C1)
+
+- Self-Service-Kontolöschung (`POST /api/account/deletion-request`) verlangt zwingend das aktuelle Passwort **und** eine Bestätigungsphrase (der eigene Benutzername) — keine Einzelbestätigung genügt. **[GETESTET]** `backend/test/integration/accountDeletionApi.test.js`.
+- Sole-Owner-Blocker: ein Konto kann sich nicht löschen, solange es in irgendeinem Studio der einzige aktive Owner ist (`409 ACCOUNT_DELETION_STUDIO_OWNERSHIP_REQUIRED`); die Fehlerantwort listet ausschließlich die **eigenen** betroffenen Studios, nie Daten Dritter. **[GETESTET]**.
+- Hybride Löschstrategie: Anonymisierung (Konto mit Studio-Historie — Zeile bleibt wegen `RESTRICT`-Fremdschlüsseln bestehen, Benutzername/E-Mail/Passworthash werden durch kryptographisch zufällige, **nicht ableitbare** Platzhalter ersetzt) oder vollständiger Hard Delete (Konto ohne jede je existierende Studio-Mitgliedschaft). Welcher Pfad greift, wird ausschließlich serverseitig anhand der tatsächlichen Mitgliedschaftshistorie entschieden. **[GETESTET]**.
+- Auth-Invalidierung dreifach abgesichert: `auth_version`-Inkrement bei Anonymisierung, `authMiddleware.js`s kombinierte Session-Abfrage prüft zusätzlich `lifecycle_status` (kollabiert auf denselben generischen `AUTH_SESSION_INVALIDATED` wie jede andere Ungültigkeitsursache — keine Unterscheidbarkeit „gelöscht" vs. „abgelaufen"), und ein Hard Delete liefert beim Refresh-Versuch strukturell null Zeilen. Login eines gelöschten Kontos scheitert **identisch im Timing** zu einem unbekannten Konto (`bcrypt.compare` läuft immer gegen einen echten Hash, der Lifecycle-Check erfolgt erst danach). **[GETESTET]**.
+- Extern signierte Deletion Receipts (HMAC-SHA256, kanonisches JSON) belegen jede Löschung außerhalb der Datenbank — nie die ursprüngliche E-Mail/den Benutzernamen, nur die interne Konto-Referenz. Atomare Dateipublikation (`link()` statt `rename()` — strukturell nie überschreibbar). Ein Receipt-**Schreib**fehler nach erfolgreichem Commit lässt die HTTP-Antwort nie scheitern (nur Log); eine **unsichere Konfiguration** blockiert dagegen den Start der Löschung selbst (Pre-Flight-Check). Kein stiller Produktionsfallback — alle drei Konfigurationsvariablen sind in Produktion Pflicht. **[GETESTET]** `backend/test/unit/deletionReceipts*.test.js`, `deletionReceiptConfig.test.js`, `deletionReceiptStore.test.js`.
+- Deletion Receipt Doctor (rein lesend) und eine dreifach-acknowledgement-gated Restore-Reconciliation behandeln den Fall, dass ein Backup-Restore ein bereits gelöschtes Konto versehentlich auf `active` zurücksetzt — kein Acknowledgement darf ein bloßes `"true"` sein, jedes muss exakt Datenbankname/Receipt-Verzeichnis referenzieren. **[GETESTET]** `backend/test/unit/deletionReceiptDoctor.test.js`, Integrationstest „restore simulation" in `accountDeletionApi.test.js`.
+- Eigener Rate-Limiter (`account.deleteRequest`, 3/60min, pro Benutzer). **[GETESTET]** `backend/test/unit/rateLimiter.test.js`.
+- **Weiterhin offen:** keine Frontend-Oberfläche (Stage 5C2), keine Freitextbereinigung (bewusst, siehe Nachtrag oben), keine Admin-Löschung fremder Konten, kein Datenexport. Volle Details in `STAGE_5C1_ACCOUNT_DELETION_BACKEND.md`.
+
 ---
 
 ## Datenschutzklassifikation
 
 | Datum | Wer darf lesen | Speicherort | In Logs? | Im Audit? | Im Backup? | Aufbewahrung/Löschung | Bemerkung |
 |---|---|---|---|---|---|---|---|
-| Globale Kontodaten (username, email, password_hash) | Nur der Benutzer selbst (API-seitig) | `users` | Nein (Body-Logging aus) | Nein | Ja, unverschlüsselt | Kein Lösch-/Anonymisierungspfad im Code gefunden | Kein `deleted_at`; Hard-Delete nur möglich, wenn keine RESTRICT-FK-Historie existiert |
+| Globale Kontodaten (username, email, password_hash) | Nur der Benutzer selbst (API-seitig) | `users` | Nein (Body-Logging aus) | Nein | Ja, unverschlüsselt | Seit Stage 5C1: Self-Service-Löschung — Anonymisierung (Konto mit Studio-Historie) oder Hard Delete (keine Historie), `deleted_at`/`lifecycle_status` seit Migration 013 | Nur API-erreichbar, noch keine UI (Stage 5C2); Backup-Artefakte vor der Löschung behalten die Originaldaten bis zum Ablauf der dokumentierten Backup-Retention |
 | Studio-Mitgliedschaftsdaten (Rolle, Status) | Studio-Mitglieder gemäß Rollenmatrix | `studio_memberships` | Nein | Ja (allowlisted: role/status) | Ja | Statustransition (`left`), kein Hard-Delete | — |
 | Einladungs-E-Mails | Owner/Admin des Studios | `studio_invitations.email_normalized` | Nein | Ja (nur role/expiresAt, nicht die E-Mail selbst) | Ja, unverschlüsselt | 7 Tage TTL, danach `expired`, kein Hard-Delete | Betrifft ggf. eine noch nicht registrierte Person |
 | Auditdaten | Owner/Admin | `studio_audit_events` | Nein | — (ist selbst das Audit) | Ja | Kein Lösch-/Retention-Mechanismus im Code gefunden | Append-only nur Konvention, s.o. |
@@ -163,7 +193,7 @@ AES-256-GCM-verschlüsseltes `.ftbackup`; der alte, unverschlüsselte
 `db:backup`/`db:backup:daily`-Pfad ist in Produktion seit der
 Release-Gate-Härtung ausnahmslos gesperrt (siehe „Backups" oben).
 
-**Technischer Ist-Zustand, keine Rechtsauskunft:** Es existiert kein Recht-auf-Löschung-/Anonymisierungs-Mechanismus für Benutzer- oder Trainingsdaten im gesamten Code (weder `DELETE`-Endpunkt für den eigenen Account noch eine Anonymisierungsroutine). Für einen produktiven Betrieb mit echten Nutzerdaten ist das ein offener Punkt, unabhängig von Sicherheits- oder Funktionsreife.
+**Technischer Ist-Zustand, keine Rechtsauskunft:** Seit Stage 5C1 (2026-07-28) existiert ein Recht-auf-Löschung-/Anonymisierungs-Mechanismus für das eigene Konto (`POST /api/account/deletion-request`) — Anonymisierung mit kryptographisch zufälligen, nicht ableitbaren Platzhaltern oder vollständiger Hard Delete, je nach Studio-Historie. Historische Studio-/Trainingsdaten Dritter (Coaching-Beziehungen, Programmzuweisungen, Session-/Feedback-Historie) bleiben davon unverändert erhalten, nur der Verweis auf den Urheber wird anonymisiert. Freitext (Coach-Feedback, Notizen) wird bewusst nicht durchsucht/bereinigt. **Weiterhin offen:** keine Frontend-Oberfläche (Stage 5C2, nur API erreichbar), kein Datenexport, keine Admin-Löschung fremder Konten. Details in `STAGE_5C1_ACCOUNT_DELETION_BACKEND.md`.
 
 ## Auffällige Lücken (Zusammenfassung)
 
@@ -176,5 +206,5 @@ Release-Gate-Härtung ausnahmslos gesperrt (siehe „Backups" oben).
 7. ~~CORS-Konfiguration ungetestet~~ — seit Stage 3D behoben: `CORS_ALLOWED_ORIGINS` wird als exakte Origin-Allowlist validiert und sowohl per HTTP-Test (`corsHeaders.test.js`) als auch echt im Browser (`corsSecurity.spec.js`) geprüft. Diese Zeile war bis zum Stage-5B-Audit (2026-07-27) versehentlich nicht durchgestrichen worden, obwohl der Stage-3D-Nachtrag oben die Behebung bereits beschreibt — ein reiner Dokumentationsfehler (Liste nicht mit eigenem Nachtrag synchronisiert), kein fortbestehender Produktmangel; siehe `STAGE_5B_PRODUCT_PILOT_READINESS_AUDIT.md` Abschnitt 3.
 8. ~~Rate Limiter ist pro Prozess, nicht zentral~~ — seit Stage 3D behoben: ein gemeinsamer, atomarer MySQL-Store (Migration 011, `security_rate_limit_buckets`) wird von jeder Anwendungsinstanz geteilt. Gleicher Korrekturhinweis wie Punkt 7 — bis zum Stage-5B-Audit nicht durchgestrichen, siehe dort Abschnitt 3.
 9. ~~Kein abgeschlossener/nachgewiesener Restore-Drill~~ — seit Stage 2B1 behoben: automatisierter Drill (`db:backup:drill`) und ein manueller Lauf mit synthetischem Schlüssel, beide gegen die lokale MySQL-Instanz, siehe oben.
-10. Kein Recht-auf-Löschung-/Anonymisierungspfad für Benutzerdaten — seit Stage 5B (2026-07-27) als **P1 vor Pilotstart mit echten Personen** eingestuft (siehe Nachtrag oben), nicht nur „vor Produktion offen".
+10. ~~Kein Recht-auf-Löschung-/Anonymisierungspfad für Benutzerdaten~~ — seit Stage 5C1 (2026-07-28) **backendseitig behoben**: Self-Service-Kontolöschung mit Anonymisierung/Hard-Delete, siehe Abschnitt „Account-Löschung und Deletion Receipts" oben. **Weiterhin offen:** keine Frontend-Oberfläche (Stage 5C2), keine Freitextbereinigung (bewusst).
 11. `coachActionEligibility` ist toter Code mit irreführender Bypass-Semantik (Drift-Risiko).

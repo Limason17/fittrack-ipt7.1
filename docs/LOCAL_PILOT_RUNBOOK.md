@@ -307,3 +307,54 @@ Für einen reinen Anwendungs-Reset ohne Datenverlust (z. B. nach einem fehlerhaf
 - Kein Scheduler für automatische, wiederkehrende Backups — `db:backup:create`/`db:backup:daily` müssen manuell oder über eine selbst eingerichtete externe Aufgabenplanung ausgeführt werden.
 - Frontend-Produktionsbuild funktioniert nicht zuverlässig unter Git Bash auf Windows (siehe Abschnitt 21) — PowerShell oder eine echte CI-Umgebung verwenden.
 - Der vollständige, aktuelle Stand aller bekannten Grenzen (technisch, sicherheitsbezogen, betrieblich) steht in `docs/STAGE_4A_FINAL_LOCAL_ACCEPTANCE.md` und `docs/FITTRACK_NEXT_PHASE_RECOMMENDATION.md`.
+
+---
+
+## 24. Account-Löschung und Deletion Receipts (Stage 5C1)
+
+Seit Migration 013 kann ein Benutzer sein eigenes Konto endgültig löschen (`POST /api/account/deletion-request`, aktuell nur über die API erreichbar — es gibt noch keine Frontend-UI, siehe `docs/STAGE_5C1_ACCOUNT_DELETION_BACKEND.md`). Jede Löschung erzeugt bei konfiguriertem Receipt-Subsystem eine extern signierte, manipulationssichere Quittungsdatei ausserhalb des Repositories.
+
+### 24.1 Receipt-Subsystem konfigurieren
+
+Für einen reinen lokalen Piloten ist das Receipt-Subsystem **optional** (unkonfiguriert bleibt ein gültiger, nicht blockierender Zustand ausserhalb von `NODE_ENV=production`). Um es dennoch lokal zu testen:
+
+```powershell
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+Den Wert sowie ein Verzeichnis **ausserhalb** sowohl des Repositories als auch von `BACKUP_OUTPUT_DIRECTORY` setzen:
+
+```powershell
+$env:DELETION_RECEIPT_DIR = "C:\fittrack-deletion-receipts"
+$env:DELETION_RECEIPT_HMAC_KEY_B64 = "<generierter Wert>"
+$env:DELETION_RECEIPT_HMAC_KEY_ID = "pilot-deletion-key-2026"
+```
+
+**In Produktion sind alle drei Variablen Pflicht** — der Prozess startet sonst nicht (Fail-Closed, kein stiller Fallback).
+
+### 24.2 Deletion Receipt Doctor
+
+```powershell
+npm run db:deletion-receipts:doctor
+```
+
+Erwartetes Ergebnis in einer unkonfigurierten Nicht-Produktionsumgebung: `{"state":"not_configured","ready":true,...}`. Bei konfiguriertem Subsystem und konsistentem Zustand: `{"state":"ready","ready":true,...}`. `recovery_required` bedeutet, dass ein Restore (Abschnitt 16) einen Vor-Löschungs-Snapshot zurückgebracht hat oder ein Receipt beschädigt ist — vor dem nächsten Schritt zuerst die Ursache klären (`restoredActiveAccounts`/`corruptedReceipts`/`unknownReceipts` im JSON-Ergebnis).
+
+### 24.3 Reconciliation nach einem Restore
+
+Ein Restore (Abschnitt 16) kann ein bereits gelöschtes Konto versehentlich wieder auf `active` zurücksetzen, falls das Backup vor der Löschung erstellt wurde. Erst prüfen (rein lesend, keine Mutation):
+
+```powershell
+npm run db:deletion-receipts:reconcile:plan
+```
+
+Nur falls `toReapply` tatsächlich betroffene Konten zeigt, mit allen drei exakten Acknowledgements ausführen:
+
+```powershell
+$env:FITTRACK_DELETION_RECONCILE_APPLY = "true"
+$env:FITTRACK_DELETION_RECONCILE_DATABASE_ACK = "reconcile:<aktueller Datenbankname>"
+$env:FITTRACK_DELETION_RECONCILE_RECEIPT_DIR_ACK = "<exakter Wert von DELETION_RECEIPT_DIR>"
+npm run db:deletion-receipts:reconcile:apply
+```
+
+Jedes der drei Acknowledgements muss exakt übereinstimmen — ein blosses `"true"` genügt nirgends allein, verhindert ein versehentliches Reconciliation gegen die falsche Datenbank oder das falsche Receipt-Verzeichnis. Bestehen `corruptedReceipts`/`unknownReceipts`, verweigert der Befehl die Ausführung vollständig; diese müssen zuerst manuell untersucht werden.

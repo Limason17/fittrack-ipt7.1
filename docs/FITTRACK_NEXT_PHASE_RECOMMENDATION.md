@@ -246,6 +246,34 @@
 > Implementierung.
 >
 > ---
+>
+> **Nachtrag (2026-07-28, Stage 5C1 Account Deletion Backend & Deletion
+> Receipt Foundation):** Statt der oben empfohlenen unmittelbar nächsten
+> Phase ("Stage 5C — Studio Operations Dashboard") wurde vom Auftraggeber der
+> in Stage 5B als organisatorischer P1-Befund benannte Punkt priorisiert:
+> der fehlende Lösch-/Anonymisierungsprozess für Personendaten. Ein
+> separater Design-Vorlauf (`STAGE_5C_PERSONAL_DATA_LIFECYCLE_DESIGN.md`,
+> ADR 004) legte die Architektur fest; diese Phase (Stage 5C1) liefert
+> darauf aufbauend das vollständige **Backend**: Migration 013, Self-Service-
+> Löschvorschau/-ausführung mit Sole-Owner-Blocker, hybride
+> Anonymisierung/Hard-Delete-Strategie, atomare 17-Schritte-Löschtransaktion,
+> Auth-Invalidierung, extern signierte Deletion Receipts, Receipt-Doctor und
+> Restore-Reconciliation. Details in `STAGE_5C1_ACCOUNT_DELETION_BACKEND.md`.
+> Der ursprüngliche P1-Befund aus Stage 5B gilt damit als **geschlossen**.
+> **Empfehlung für die unmittelbar nächste Phase: Stage 5C2 — Frontend-UI
+> für Kontolöschung** (Profil-Danger-Zone mit Vorschau/Bestätigungsdialog,
+> Studio-Membership-Removal-UI) — ohne sie ist der neue Backend-Vertrag für
+> Endbenutzer:innen nicht erreichbar. Die in Stage 5B empfohlene "Studio
+> Operations Dashboard"-Phase bleibt als **danach** folgende, unverändert
+> gültige Empfehlung bestehen, nicht verworfen — lediglich zeitlich
+> zurückgestellt. Die weiterhin oben gelisteten operativen
+> Backup-/DB-Härtungspunkte (Stage 2B2B, getrennte DB-Rollen,
+> Backup-Scheduler/Key-Rotation) bleiben unverändert offen. Stage 2B2B
+> bleibt weiterhin **Deferred until first customer / production
+> deployment**; es wurde für Stage 5C1 keine Cloud-Infrastruktur
+> eingerichtet, und Stage 5C2 (Frontend-UI) wurde nicht begonnen.
+>
+> ---
 
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-

@@ -845,3 +845,40 @@ test("CLI maps operational failures to exit code 1 and still closes the pool", a
     assert.equal(output.code, "MIGRATION_DOCTOR_FAILED");
     assert.equal(output.exitCode, 1);
 });
+
+test("Stage 5C1 schema contract covers every account-lifecycle column, index and constraint", () => {
+    const contract = MIGRATION_SCHEMA_CONTRACT.find(
+        (item) => item.migrationId === "013_account_lifecycle"
+    );
+    assert.ok(contract);
+
+    const keys = new Set(
+        contract.checks.map((check) => {
+            if (check.kind === "table") return `table:${check.table}`;
+            if (check.kind === "column") return `column:${check.table}.${check.column}`;
+            if (check.kind === "index") return `index:${check.table}.${check.index}`;
+            return `${check.kind}:${check.table}.${check.constraint}`;
+        })
+    );
+    const expected = [
+        "column:users.lifecycle_status",
+        "column:users.deleted_at",
+        "index:users.idx_users_lifecycle_status",
+        "check_constraint:users.chk_users_lifecycle_status",
+        "check_constraint:users.chk_users_deleted_at"
+    ];
+    for (const key of expected) assert.ok(keys.has(key), `missing schema check ${key}`);
+
+    // No new table for this migration (Section 19: two additive columns
+    // only, no account_deletion_receipts/retention-ledger table).
+    assert.equal(contract.checks.filter((check) => check.kind === "table").length, 0);
+    assert.equal(contract.checks.filter((check) => check.kind === "column").length, 2);
+    assert.equal(contract.checks.filter((check) => check.kind === "index").length, 1);
+    assert.equal(contract.checks.filter((check) => check.kind === "check_constraint").length, 2);
+    assert.equal(contract.checks.length, 5);
+
+    assert.ok(
+        contract.checks.every((check) => check.pendingMissingAllowed === false),
+        "an already-applied Stage 5C1 column, index or constraint must never be treated as optionally missing"
+    );
+});

@@ -144,7 +144,8 @@ before(async () => {
                 rateLimiters: {
                     passwordChange: failingRateLimiters.passwordChange,
                     emailChangeRequest: failingRateLimiters.emailChangeRequest,
-                    emailChangeConfirm: failingRateLimiters.emailChangeConfirm
+                    emailChangeConfirm: failingRateLimiters.emailChangeConfirm,
+                    deleteRequest: failingRateLimiters.deleteRequest
                 }
             })
         }
