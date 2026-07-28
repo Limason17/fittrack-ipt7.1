@@ -5,6 +5,7 @@ const { createApp } = require("./startup/app");
 const { bootstrap } = require("./startup/bootstrap");
 const { createStructuredLogger } = require("./startup/logger");
 const { createReadinessProbe } = require("./startup/readiness");
+const { diagnoseDeletionReceipts } = require("./deletionReceipts/deletionReceiptDoctor");
 
 function readPort(value = process.env.PORT) {
     if (value === undefined || value === null || value === "") {
@@ -48,7 +49,16 @@ function createRuntime({ pool = db, logger = createStructuredLogger() } = {}) {
     };
     const readiness = createReadinessProbe({
         ping: database.verifyConnection,
-        migrationStatus: () => migrationRunner.status({ ensureLedger: false })
+        migrationStatus: () => migrationRunner.status({ ensureLedger: false }),
+        // Section 21.4 point 4: cheap enough to run on every check, since
+        // receipt volume stays small at pilot scale - the same reasoning
+        // that makes this check "run on every application start" also
+        // makes it acceptable on every readiness poll.
+        deletionReceiptStatus: async () => {
+            const sql = typeof pool.promise === "function" ? pool.promise() : pool;
+            const report = await diagnoseDeletionReceipts({ connection: sql });
+            return { ready: report.ready, reason: report.ready ? undefined : report.code };
+        }
     });
 
     return {
