@@ -69,8 +69,29 @@ async function mountView() {
   return wrapper
 }
 
+// CalendarView.vue deliberately reads the real wall clock on mount
+// (`selectedMonth = ref(startOfMonth(new Date()))`, `todayInTimezone(...)`
+// with no injected `now`) - correct product behavior (a user opening the
+// calendar should see the actual current month), but it means every
+// fixture below (`entry()`'s default 2026-07-15, the race-guard test's
+// 2026-09-15) is only visible if the real test-run date happens to fall in
+// the month those fixtures assumed. That held when this file was written
+// in July 2026 and silently broke the moment the wall clock crossed into
+// August - reproduced live: with no system-time pinning, mounting in
+// August 2026 shows "August 2026"/"Oktober 2026" instead of the assumed
+// "Juli 2026"/"September 2026", so none of the July/September-dated fixture
+// entries fall within the rendered grid ("Keine Trainings in diesem
+// Zeitraum"). Fixed by pinning only the `Date` global via fake timers
+// (never `setTimeout`/`setInterval`, which `flushPromises()` and the
+// dialogs below do not need faked) to the exact date these fixtures were
+// always written against - this is dependency injection of the clock at
+// the test-environment boundary, not a production code change.
+const PINNED_NOW = new Date(2026, 6, 15, 12, 0, 0) // 2026-07-15 12:00 local
+
 describe('CalendarView', () => {
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(PINNED_NOW)
     locale.value = 'de'
     calendarApi.getCalendarRange.mockReset().mockResolvedValue({ entries: [] })
     calendarApi.createCalendarEntry.mockReset()
@@ -88,6 +109,7 @@ describe('CalendarView', () => {
   afterEach(() => {
     wrapper?.unmount()
     wrapper = null
+    vi.useRealTimers()
   })
 
   it('loads the visible range exactly once on mount, bounded well under the 93-day cap', async () => {
@@ -122,6 +144,60 @@ describe('CalendarView', () => {
     const firstFrom = calendarApi.getCalendarRange.mock.calls[0][0].from
     const secondFrom = calendarApi.getCalendarRange.mock.calls[1][0].from
     expect(secondFrom).not.toBe(firstFrom)
+  })
+
+  // ---- Date-determinism regression coverage ----
+  // These three tests exist specifically to prove the fixture/system-time
+  // relationship is genuinely under test control, not an artifact of one
+  // month (July) happening to work. Each pins its own system time rather
+  // than relying on the shared PINNED_NOW default from beforeEach.
+
+  it('month boundary: navigating from July into August shows an entry actually scheduled in August', async () => {
+    vi.setSystemTime(new Date(2026, 6, 15, 12, 0, 0)) // 2026-07-15, mount shows July
+    calendarApi.getCalendarRange
+      .mockResolvedValueOnce({ entries: [] }) // initial mount (July)
+      .mockResolvedValueOnce({ entries: [entry({ id: 'aug-1', title: 'August Entry', scheduledDate: '2026-08-10' })] })
+
+    await mountView()
+    expect(wrapper.text()).toContain('Juli 2026')
+
+    await wrapper.find('[aria-label="Nächster Monat"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('August 2026')
+    expect(wrapper.text()).toContain('August Entry')
+  })
+
+  it('year boundary: navigating from December into January shows an entry actually scheduled in the new year', async () => {
+    vi.setSystemTime(new Date(2026, 11, 15, 12, 0, 0)) // 2026-12-15, mount shows December 2026
+    calendarApi.getCalendarRange
+      .mockResolvedValueOnce({ entries: [] }) // initial mount (December 2026)
+      .mockResolvedValueOnce({ entries: [entry({ id: 'jan-1', title: 'January Entry', scheduledDate: '2027-01-10' })] })
+
+    await mountView()
+    expect(wrapper.text()).toContain('Dezember 2026')
+
+    await wrapper.find('[aria-label="Nächster Monat"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Januar 2027')
+    expect(wrapper.text()).toContain('January Entry')
+  })
+
+  it('the visible month always matches the (arbitrarily pinned) system date, and an entry scheduled within it renders - proving no hardcoded assumption about which real month it is', async () => {
+    // Deliberately a month untouched by any other test in this file (not
+    // July, not the December/January pair above) - if anything here were
+    // silently relying on July specifically, this would fail.
+    vi.setSystemTime(new Date(2027, 3, 20, 12, 0, 0)) // 2027-04-20
+    calendarApi.getCalendarRange.mockResolvedValueOnce({
+      entries: [entry({ id: 'apr-1', title: 'April Consistency Entry', scheduledDate: '2027-04-05' })],
+    })
+
+    await mountView()
+
+    expect(wrapper.text()).toContain('April 2027')
+    expect(wrapper.text()).not.toContain('Juli 2026')
+    expect(wrapper.text()).toContain('April Consistency Entry')
   })
 
   it('a stale, superseded response never overwrites more recent data (request race guard)', async () => {
