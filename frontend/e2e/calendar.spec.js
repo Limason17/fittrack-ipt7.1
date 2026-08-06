@@ -212,7 +212,17 @@ test('Persönlicher Ablauf: erstellen, verschieben, bestätigen, verknüpftes Wo
   await completedButton.click()
   await page.getByRole('button', { name: 'Workout öffnen' }).click()
   await expect(page).toHaveURL(/\/workouts$/)
-  await expect(page.getByText('Push Day E2E')).toBeVisible()
+  // page.getByText('Push Day E2E') is ambiguous on this page: WorkoutsView.vue
+  // renders the same title twice - once as a plain <span> inside the small
+  // month-preview widget's day cell (line ~768), and once as the actual
+  // <h3> heading of the workout's own card in the list below (line ~793,
+  // the article.workout-card that also holds its date/exercises/notes/
+  // edit-delete actions - the real record this step is verifying opened).
+  // Only the <h3> carries the ARIA heading role, so targeting that role
+  // resolves the ambiguity without relying on DOM order or position.
+  const openedWorkoutHeading = page.getByRole('heading', { name: 'Push Day E2E', exact: true })
+  await expect(openedWorkoutHeading).toHaveCount(1)
+  await expect(openedWorkoutHeading).toBeVisible()
 
   void auth
 })
