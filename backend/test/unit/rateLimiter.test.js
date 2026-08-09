@@ -168,6 +168,62 @@ test("Stage 5C1: account.deleteRequest defaults to 3/60min, is keyed per user, a
     assert.equal(outcomes[3], null, "passwordChange must not share deleteRequest state");
 });
 
+// Stage 5C2 discovery (frontend E2E for account deletion): accountRouter.js
+// registers `rateLimiters.deleteRequest` BEFORE `authenticate` on
+// POST /account/deletion-request ("router.post('/deletion-request',
+// rateLimiters.deleteRequest, authenticate, ...)"). At the moment the
+// limiter's buildKey (userKey("account-delete"), which reads req.user?.id)
+// actually runs on a real request through that route, authenticate has not
+// executed yet, so req.user is always undefined - every caller collapses
+// into the single shared "account-delete|user:anon" bucket, regardless of
+// whose token is on the request. The test above ("...is keyed per user...")
+// does not catch this: it manually pre-sets req.user before invoking the
+// limiter, which is not how the real route pipeline calls it. This is a
+// genuine, pre-existing Stage 5C1 backend defect, found while building the
+// Stage 5C2 frontend E2E flow - reported as a blocker (see
+// docs/STAGE_5C2_ACCOUNT_DELETION_UI.md and the Stage 5C2 closing report)
+// rather than silently fixed here, since Stage 5C2 is scoped to the
+// frontend only and must not change backend routing/business logic. This
+// test documents today's actual (defective) behavior so a future fix
+// (moving `authenticate` before the rate limiter on this one route) has a
+// ready-made regression test - it will need to be updated to assert true
+// per-user isolation once that fix lands.
+test("KNOWN DEFECT (Stage 5C1, reported not fixed - see Stage 5C2 docs): account.deleteRequest's key resolves req.user before authenticate runs on the real route, so two different users currently share one rate-limit bucket", async () => {
+    const store = createMemoryRateLimitStore();
+    const limiters = createRateLimiters({
+        store,
+        keySecret: TEST_SECRET,
+        now: () => 1000,
+        policies: createRateLimitPolicies({ env: { ACCOUNT_DELETE_RATE_LIMIT_MAX: "2" } })
+    });
+    const res = { setHeader() {} };
+    const outcomes = [];
+
+    // Mirrors the real route wiring exactly: the limiter runs with no
+    // req.user yet, exactly as accountRouter.js actually calls it (before
+    // authenticate) - unlike the test above, which pre-sets req.user and so
+    // never observes this. Three structurally identical requests standing
+    // in for two different authenticated users' first attempts.
+    const userAFirstAttempt = request();
+    const userASecondAttempt = request();
+    const userBFirstAttempt = request();
+
+    await limiters.deleteRequest(userAFirstAttempt, res, (error) => outcomes.push(error || null));
+    await limiters.deleteRequest(userASecondAttempt, res, (error) => outcomes.push(error || null));
+    // User B's very first-ever deletion-request attempt is wrongly
+    // rejected - not because user B made 2 requests, but because user A's
+    // two requests already exhausted the single shared "anon" bucket.
+    await limiters.deleteRequest(userBFirstAttempt, res, (error) => outcomes.push(error || null));
+
+    assert.equal(outcomes[0], null, "user A's 1st attempt is allowed");
+    assert.equal(outcomes[1], null, "user A's 2nd attempt is allowed");
+    assert.equal(
+        outcomes[2]?.status,
+        429,
+        "DEFECT: user B's 1st-ever attempt is rejected because it shares user A's bucket"
+    );
+});
+
 test("invitation resend limiter is keyed per actor+invitation and reports the dedicated error code", async () => {
     const store = createMemoryRateLimitStore();
     const { invitationResend } = createRateLimiters({
