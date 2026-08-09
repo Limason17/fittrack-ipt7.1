@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
+import AccountDeletionDangerZone from '../components/profile/AccountDeletionDangerZone.vue'
 import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 import Tabs from '../components/ui/Tabs.vue'
@@ -414,6 +415,8 @@ async function confirmRevoke() {
             </div>
           </form>
         </article>
+
+        <AccountDeletionDangerZone />
       </div>
 
       <article v-else class="card profile-section">

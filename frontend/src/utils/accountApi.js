@@ -45,3 +45,13 @@ export function confirmEmailChange(token, options) {
         body: { token: requiredToken(token, 'Email change token') },
     })
 }
+
+// Read-only, no destructive side effect - see backend/routes/accountRouter.js
+// (no rate limiter on this endpoint for exactly that reason).
+export function getAccountDeletionPreview(options) {
+    return apiRequest('/account/deletion-preview', authenticated(options))
+}
+
+export function requestAccountDeletion(body, options) {
+    return apiRequest('/account/deletion-request', authenticated({ ...options, method: 'POST', body }))
+}
