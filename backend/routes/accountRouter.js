@@ -42,8 +42,17 @@ function createAccountRouter({
 
     router.post(
         "/change-password",
-        rateLimiters.passwordChange,
+        // authenticate MUST run before the rate limiter: the policy's key
+        // (rateLimiting/rateLimitPolicies.js's userKey()) reads req.user?.id,
+        // which authenticate is what actually populates. Registering the
+        // limiter first left req.user permanently undefined at key-build
+        // time, so every caller - regardless of identity, or even with no
+        // token at all - collapsed onto a single shared
+        // "password-change|user:anon" bucket instead of being isolated per
+        // user (found while building the Stage 5C2 frontend; see
+        // test/integration/accountRateLimitIsolation.test.js).
         authenticate,
+        rateLimiters.passwordChange,
         async (req, res) => {
             const input = validateChangePasswordPayload(req.body);
             const result = await service.changePassword(req.user.id, input);
@@ -53,8 +62,10 @@ function createAccountRouter({
 
     router.post(
         "/email-change-requests",
-        rateLimiters.emailChangeRequest,
+        // Same reasoning as /change-password above: authenticate before the
+        // per-user rate limiter, not after.
         authenticate,
+        rateLimiters.emailChangeRequest,
         async (req, res) => {
             const input = validateEmailChangeRequestPayload(req.body);
             const locale = req.body?.locale === "en" ? "en" : "de";
@@ -115,8 +126,14 @@ function createAccountRouter({
 
     router.post(
         "/deletion-request",
-        rateLimiters.deleteRequest,
+        // Same reasoning as /change-password above: authenticate before the
+        // per-user rate limiter, not after. Previously this also meant an
+        // entirely unauthenticated caller could consume/exhaust the same
+        // shared "account-delete|user:anon" bucket every real user's
+        // requests collapsed into - a trivially unauthenticated denial-of-
+        // service against the account deletion feature.
         authenticate,
+        rateLimiters.deleteRequest,
         async (req, res) => {
             const input = validateAccountDeletionRequestPayload(req.body);
             const result = await deletionService.requestAccountDeletion(req.user.id, input, {
