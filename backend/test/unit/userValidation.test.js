@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const { ValidationError } = require("../../errors/AppError");
 const {
+    validateAccountDeletionRequestPayload,
     validateChangePasswordPayload,
     validateEmailChangeConfirmPayload,
     validateEmailChangeRequestPayload,
@@ -57,6 +58,38 @@ test("change-password payload requires all three fields and applies the same pas
     );
     assert.throws(
         () => validateChangePasswordPayload({ currentPassword: "old-password", newPassword: "short", newPasswordConfirmation: "short" }),
+        ValidationError
+    );
+});
+
+test("Stage 5C1: account-deletion-request payload requires exactly currentPassword and confirmationPhrase", () => {
+    const value = validateAccountDeletionRequestPayload({
+        currentPassword: "correct horse battery staple",
+        confirmationPhrase: "my-username"
+    });
+    assert.equal(value.currentPassword, "correct horse battery staple");
+    assert.equal(value.confirmationPhrase, "my-username");
+
+    assert.throws(
+        () => validateAccountDeletionRequestPayload({ currentPassword: "", confirmationPhrase: "my-username" }),
+        ValidationError
+    );
+    assert.throws(
+        () => validateAccountDeletionRequestPayload({ currentPassword: "x", confirmationPhrase: "" }),
+        ValidationError
+    );
+    assert.throws(
+        () => validateAccountDeletionRequestPayload({}),
+        ValidationError
+    );
+    assert.throws(() => validateAccountDeletionRequestPayload(null), ValidationError);
+});
+
+test("account-deletion-request payload rejects unknown extra fields rather than silently ignoring them", () => {
+    assert.throws(
+        () => validateAccountDeletionRequestPayload({
+            currentPassword: "x", confirmationPhrase: "y", adminOverride: true
+        }),
         ValidationError
     );
 });

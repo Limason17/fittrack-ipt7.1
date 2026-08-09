@@ -2,6 +2,8 @@
 
 Stand: 2026-07-20, Branch `feature/stage-1b2b2b-coach-results-feedback` (Stage 1B.2B2B). Ergänzt um `GET .../coaching-relationships/me`, den Statusfilter auf `.../coached-members/:membershipId/workout-sessions` sowie die neuen Feedback-Routen; alle übrigen Zeilen unverändert aus dem vorherigen Stand übernommen.
 
+**Ergänzung Stage 5C1 (2026-07-24)**: neuer Abschnitt „Account" für `backend/routes/accountRouter.js` (`/api/account`, seit Stage 3B1 gemountet, bislang nicht in diesem Katalog erfasst) inklusive der beiden neuen Deletion-Endpunkte. Alle übrigen Abschnitte unverändert aus dem vorherigen Stand übernommen — sie spiegeln nicht jede seither gemergte Stage (2A–5B); nur der für diese Phase erforderliche Abschnitt wurde ergänzt.
+
 ## Globale Konventionen
 
 - **Fehler-Envelope** (`backend/middleware/httpFoundation.js`): jede Fehlerantwort ist `{ "error": { "code", "message", "requestId", "fields"? } }`. `fields` nur bei `ValidationError`. Unbekannte/5xx-Fehler werden zu `code: "INTERNAL_ERROR"` maskiert — keine Stacktraces, keine SQL-Fragmente im Response-Body.
@@ -15,7 +17,7 @@ Stand: 2026-07-20, Branch `feature/stage-1b2b2b-coach-results-feedback` (Stage 1
 | Klasse | Bedeutung | Betroffene Gruppen |
 |---|---|---|
 | **P0 – Öffentlich/technisch** | Keine personenbezogenen Daten | Health |
-| **P1 – Konto/Identität** | Account-Metadaten, Einstellungen | Auth/Users |
+| **P1 – Konto/Identität** | Account-Metadaten, Einstellungen | Auth/Users, Account |
 | **P2 – Persönliche Trainingsdaten** | Eigene, private Trainingsleistungen | Exercises, Workouts, Progress |
 | **P3 – Studio-Geschäftsdaten** | Organisatorische Metadaten ohne Leistungsdaten | Studios, Memberships, Invitations, Audit, Coaching, Trainingsprogramme, Versionen, Tage, Übungen (Vorgaben), Assignments |
 | **P4 – Studio-Leistungsdaten (höchste Schutzstufe)** | Tatsächliche Trainingsergebnisse einer identifizierbaren Person | Workout-Sessions, Session-Exercises, Session-Sets, Coach-Resultatzugriff, Trainings-Feedback |
@@ -32,6 +34,18 @@ Stand: 2026-07-20, Branch `feature/stage-1b2b2b-coach-results-feedback` (Stage 1
 | PUT | `/api/users/language` | JWT | any | n/a | Sprache setzen | language_preference | message, language_preference | Nein | 400, 401, 404 | P1 | ProfileView.vue | Component+Integration |
 | PUT | `/api/users/weight-unit` | JWT | any | n/a | Gewichtseinheit setzen | weight_unit | message, weight_unit | Nein | 400, 401, 404 | P1 | ProfileView.vue | Component+Integration |
 | PUT | `/api/users/distance-unit` | JWT | any | n/a | Distanzeinheit setzen | distance_unit | message, distance_unit | Nein | 400, 401, 404 | P1 | ProfileView.vue | Component+Integration |
+
+## Account — `backend/routes/accountRouter.js`, mounted at `/api/account` (Stage 3B1 self-service, erweitert um Deletion in Stage 5C1)
+
+| Methode | Pfad | Auth | Rollen | Tenant | Zweck | Wichtige Request-Felder | Response (Top-Level) | Pagination | Fehlercodes | Datenschutz | Frontend | Tests |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| POST | `/api/account/change-password` | JWT (5/60min/User) | any | n/a | Passwort ändern, alle Sessions widerrufen | currentPassword, newPassword, confirmNewPassword | message | Nein | 400, 401, 429 | P1 | ProfileView.vue | Unit+Integration |
+| POST | `/api/account/email-change-requests` | JWT (5/60min/User) | any | n/a | E-Mail-Änderung anfragen (Bestätigungslink) | currentPassword, newEmail | message, delivery | Nein | 400, 401, 409, 429 | P1 | ProfileView.vue | Unit+Integration |
+| GET | `/api/account/email-change-requests/current` | JWT | any | n/a | Eigenen offenen Antrag ansehen | — | emailChangeRequest | Nein | 401 | P1 | ProfileView.vue | Integration |
+| DELETE | `/api/account/email-change-requests/current` | JWT | any | n/a | Eigenen offenen Antrag widerrufen | — | message | Nein | 401, 404 | P1 | ProfileView.vue | Integration |
+| POST | `/api/account/email-change-confirmations` | keine, Token-Besitz (20/15min/IP) | n/a | n/a | E-Mail-Änderung per Token bestätigen | token | message | Nein | 400, 404, 409, 429 | P1 | EmailChangeConfirmView.vue | Unit+Integration |
+| GET | `/api/account/deletion-preview` | JWT | any | n/a | Vorschau der eigenen Kontolöschung (Modus, Blocker, Impact) | — | deletionPreview{mode, studios, blockers, impact, personalDataCounts, preservedHistoryCounts, confirmationPhrase, notices} | Nein | 401 | P1 | *noch keine UI (Stage 5C2)* | Integration |
+| POST | `/api/account/deletion-request` | JWT (3/60min/User) | any | n/a | Eigenes Konto unwiderruflich löschen (anonymisieren oder hard-delete) | currentPassword, confirmationPhrase | accountDeletion{completedAt, studiosAffected} | Nein | 400 `ACCOUNT_DELETION_PHRASE_MISMATCH`, 401, 403, 409 `ACCOUNT_DELETION_STUDIO_OWNERSHIP_REQUIRED`/`ACCOUNT_ALREADY_DELETED`, 429, 503 `ACCOUNT_DELETION_SERVICE_UNAVAILABLE` | P1 | *noch keine UI (Stage 5C2)* | Unit+Integration |
 
 ## Exercises — `backend/routes/exercises.js`, mounted at `/api/exercises`
 

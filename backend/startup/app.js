@@ -22,6 +22,7 @@ const { createAssignmentScheduleRuleV1Router } = require("../routes/assignmentSc
 const { createTrainingCalendarService } = require("../services/trainingCalendarService");
 const { createScheduleRuleService } = require("../services/scheduleRuleService");
 const { createAccountService } = require("../services/accountService");
+const { createAccountDeletionService } = require("../services/accountDeletionService");
 const { createAccountRouter } = require("../routes/accountRouter");
 const {
     createAccountEmailDelivery,
@@ -214,6 +215,7 @@ function defaultRouters({ env, database = db.promise(), transportFactory } = {})
     // consistent with sharedTransportFactory above.
     const sessionService = createSessionService({ database });
     const accountService = createDefaultAccountService({ env, database, transportFactory: sharedTransportFactory, sessionService });
+    const accountDeletionService = createAccountDeletionService({ database, sessionService });
     const rateLimiters = createDefaultRateLimiters({ env, database });
     return {
         users: require("../routes/users"),
@@ -239,10 +241,12 @@ function defaultRouters({ env, database = db.promise(), transportFactory } = {})
         }),
         account: createAccountRouter({
             service: accountService,
+            deletionService: accountDeletionService,
             rateLimiters: {
                 passwordChange: rateLimiters.passwordChange,
                 emailChangeRequest: rateLimiters.emailChangeRequest,
-                emailChangeConfirm: rateLimiters.emailChangeConfirm
+                emailChangeConfirm: rateLimiters.emailChangeConfirm,
+                deleteRequest: rateLimiters.deleteRequest
             }
         }),
         authSession: createAuthSessionRouter({

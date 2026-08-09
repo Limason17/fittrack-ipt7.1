@@ -124,7 +124,14 @@ router.post("/login", loginRateLimiter, async (req, res) => {
     const user = users[0];
     const isMatch = await bcrypt.compare(input.password, user ? user.password_hash : LOGIN_TIMING_DUMMY_HASH);
 
-    if (!user || !isMatch) {
+    // Stage 5C1: a deleted (anonymized) account still has a real row and a
+    // real, cost-10 password_hash - bcrypt.compare above already ran
+    // against it, so this check adds no timing signal of its own. Treating
+    // it identically to "unknown account" (same error, same message)
+    // preserves Section 10/24's enumeration-resistance requirement: a
+    // deleted account must be indistinguishable from one that never
+    // existed.
+    if (!user || user.lifecycle_status !== "active" || !isMatch) {
         throw new AuthenticationError("Invalid email or password.");
     }
 

@@ -82,6 +82,7 @@ function createAuthenticateToken({ database = defaultDatabase } = {}) {
             const sql = typeof database.promise === "function" ? database.promise() : database;
             const [rows] = await sql.query(
                 `SELECT u.auth_version AS user_auth_version,
+                        u.lifecycle_status AS user_lifecycle_status,
                         s.status AS session_status,
                         s.expires_at AS session_expires_at,
                         s.auth_version AS session_auth_version
@@ -99,6 +100,12 @@ function createAuthenticateToken({ database = defaultDatabase } = {}) {
 
             const row = rows[0];
             const userAuthVersion = Number(row.user_auth_version);
+            // Stage 5C1: an independent, second line of defense alongside
+            // auth_version/session revocation (both of which the deletion
+            // transaction already updates atomically) - collapses into the
+            // exact same generic error as every other invalidation cause
+            // above, for the same enumeration-resistance reason.
+            const accountDeleted = row.user_lifecycle_status !== "active";
             const sessionMissing = row.session_status === null;
             const sessionInactive = !sessionMissing && row.session_status !== "active";
             const sessionExpired = !sessionMissing && new Date(row.session_expires_at).getTime() <= Date.now();
@@ -106,6 +113,7 @@ function createAuthenticateToken({ database = defaultDatabase } = {}) {
 
             if (
                 userAuthVersion !== payload.authVersion ||
+                accountDeleted ||
                 sessionMissing ||
                 sessionInactive ||
                 sessionExpired ||

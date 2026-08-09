@@ -276,3 +276,136 @@ list.
   larger, but still single, atomic transaction; the security analysis
   (design document Section 24) adds corresponding scope-boundary tests to
   ensure this never reaches another member's own assignments or calendar.
+
+## Amendment (2026-07-28, Stage 5C1 merge-gate review)
+
+Four corrections made during backend implementation review, before merge to
+`main`. Full detail, rationale, and test evidence for all of these live in
+`docs/STAGE_5C1_ACCOUNT_DELETION_BACKEND.md`; only the decisions that change
+what this ADR itself asserted are restated here.
+
+- **Schedule-rule scope, corrected from creator-only to a union.** The
+  paragraph above ("a schedule rule the deleted account **created** is
+  `disabled` regardless of which member it serves") is **incomplete**: it
+  covers only rules the deleted account created (set B), not rules an
+  *unrelated* coach created for an assignment where the deleted account is
+  the *member* (set A). Leaving a set-A rule active contradicts this
+  section's own stated goal — "one consistent terminal state, not a mix of
+  live and stale" — since the assignment itself is cancelled the instant its
+  member is deleted, while an unrelated creator's rule for that same,
+  now-cancelled assignment would stay `active`. The corrected, final
+  predicate disables the union of both sets, never double-processing a rule
+  that happens to match both. `training_calendar_entries.materializeStudioOccurrences`
+  already re-checks the assignment's own live status separately, so this
+  correction is about eliminating stale/inconsistent state, not a
+  previously-reachable materialization bug.
+- **Deletion Receipt Doctor now fails closed on a missing receipt, not only
+  on a corrupted one.** This ADR's Context section already establishes that
+  a bare structured log line is "insufficient" as the sole proof a deletion
+  happened; treating a *known-missing* receipt as merely self-healable
+  (rather than failing `ready`) left exactly that log line as the only
+  signal until an operator happened to run the Doctor manually. The Doctor
+  now reports `recovery_required`/`ready:false` immediately whenever any
+  deleted account lacks a receipt, exactly as it already did for a
+  corrupted or unknown-schema one — self-healing (via reconciliation) is
+  unchanged, only the interim reporting is stricter.
+  **Known residual limitation, not fixed by this amendment:** this check is
+  a `SELECT ... WHERE lifecycle_status = 'deleted'` — it can only detect a
+  missing receipt for a row that still exists. A hard-delete-eligible
+  account (never any studio membership) leaves no row at all, so a receipt
+  write failure on that specific path remains observable only via the
+  `account_deletion_receipt_write_failed` log line, not via the Doctor. No
+  design in this ADR resolves this, since there is no surviving database
+  state left to check against.
+- **No dedicated CSRF middleware on `/api/account/*`, confirmed as a final
+  decision, not an oversight.** Neither this ADR nor the design document
+  ever mandated CSRF protection for the deletion endpoint specifically (the
+  design document's own CSRF mentions are about invalidating a deleted
+  account's *existing* CSRF/refresh cookies, not about protecting the
+  deletion endpoint's own request). Verified against the actual session
+  architecture: `/api/account/*` is authenticated exclusively by a Bearer
+  access token that is never stored in a cookie and never readable
+  cross-origin; `authMiddleware.js` never inspects cookies for
+  authentication at all. A forged cross-site request therefore cannot
+  supply the one credential this endpoint requires, regardless of which
+  cookies a browser would otherwise attach automatically — the same
+  precondition CSRF protection exists to guarantee, met here by
+  construction rather than by an additional token. Integration tests prove
+  both a cookie-only forged request (real, valid cookies, no Authorization
+  header) and a disallowed cross-site origin (simple request and
+  Authorization-requiring preflight alike) are rejected.
+- **Personal-exercise and personal-calendar-entry retention, corrected to
+  match this design's own stated intent.** The implementation had drifted
+  from what this ADR and the design document actually specify:
+  `exercises.user_id`'s `ON DELETE SET NULL` combined with the existing
+  `GET /exercises` query (`WHERE user_id = ? OR user_id IS NULL`) meant a
+  hard-deleted account's personal exercises would have resurfaced as
+  globally-visible rows — now corrected by deleting them as personal data,
+  in both modes, before any hard delete can occur. Personal calendar
+  entries were being deleted unconditionally regardless of status; the
+  design document's own retention classification (`persoenliche
+  PLANNED-Eintraege werden hart geloescht`) already specified PLANNED-only
+  deletion, historical (COMPLETED/SKIPPED/CANCELLED) entries retained — now
+  corrected accordingly, with one necessary further refinement the
+  documents did not anticipate: retention is only possible when the `users`
+  row survives (anonymize mode); a hard-delete-eligible account's calendar
+  entries are removed regardless of status, since `training_calendar_entries.user_id`
+  is `ON DELETE CASCADE` and no row remains for a retained entry to attach
+  to.
+
+## Amendment 2 (2026-07-28, receipt-first commit protocol — merge blocker)
+
+A sixth, more serious issue surfaced after the first amendment: **a receipt
+write failure following a successful hard delete was unrecoverable.** The
+implementation committed the database transaction (including the hard
+`DELETE FROM users`) *before* attempting to publish the receipt, as a
+best-effort step. Reproduced live against a disposable database: the
+`users` row is gone, no receipt file exists (the write failed), and the
+Deletion Receipt Doctor reports `ready:true` — it has nothing to check
+against. A later restore of an older backup could reactivate the account
+with zero trace it was ever deleted. This directly contradicts this ADR's
+own stated purpose for the receipt subsystem (Context section: an external,
+tamper-evident record that survives exactly the failure modes the database
+itself cannot) and was a genuine merge blocker, not an accepted limitation.
+
+**Corrected to a receipt-first commit protocol.** The receipt is now
+resolved — either an existing valid receipt for this exact `accountRef` is
+reused, or a new one is generated and durably published — *inside* the
+still-open database transaction, before `COMMIT` is ever issued:
+
+- If receipt resolution/publication fails, the whole transaction rolls
+  back (no account data changes, no HTTP 200, a stable 503).
+- If the receipt is durably published but the subsequent `COMMIT` itself
+  fails, the receipt is never removed. The account row (for anonymize) or
+  the still-existing row (for hard delete, since the failed commit rolled
+  the `DELETE` back too) is caught by the Deletion Receipt Doctor through
+  the exact same `restoredActiveAccounts` check that already detects a
+  genuine backup restore — a valid receipt against a row that still shows
+  `active` instead of `deleted`. Reconciliation completes the deletion
+  idempotently, reusing the same receipt rather than minting a second one.
+
+This closes the reuse-for-idempotency requirement more generally too:
+before generating any new receipt, the codebase now scans for an
+already-valid receipt matching the account (`findValidReceiptForAccount`,
+`deletionReceiptStore.js`) — a receipt claiming this account's reference
+but failing verification blocks fail-closed rather than being silently
+replaced, and a client retry, a second reconciliation pass, or a
+resumed-after-commit-failure attempt all converge on the same single
+receipt for the account, never an unbounded number of them.
+
+**Residual, narrower limitation (not resolved, and not resolvable without
+a persistent record outside `users` — which this ADR's Consequences
+section already rejects: "A new retention-ledger database table... is
+deliberately file-based, not a database object"):** if a receipt for an
+**already-completed** deletion is lost afterward through some unrelated
+external event (a stray manual deletion of the file, an unrelated disk
+fault), the Doctor's `missingReceipts` check can only detect this for an
+anonymized account (the row still exists to check `lifecycle_status`
+against). A hard-deleted account's row is gone by then, so this specific,
+narrower after-the-fact file-loss case remains undetectable. This is a
+materially smaller and different problem than the one this amendment
+fixes: it requires an independent, later event to sever a link that the
+receipt-first protocol itself always establishes correctly.
+
+Full detail, reproduction, and test evidence in
+`docs/STAGE_5C1_ACCOUNT_DELETION_BACKEND.md` Section 0b.
