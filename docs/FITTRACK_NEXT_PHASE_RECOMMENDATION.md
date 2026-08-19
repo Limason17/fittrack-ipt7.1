@@ -298,6 +298,33 @@
 > bleibt unverändert: **Stage 5C2 — Frontend-UI für Kontolöschung**.
 >
 > ---
+>
+> **Nachtrag (2026-08-09, Stage 5C2 Account Deletion UI / Profile Danger
+> Zone):** Die empfohlene Phase wurde umgesetzt — Profil-Danger-Zone,
+> Preview-Dialog, Sole-Owner-Blocker und zweistufige Bestätigung, vollständig
+> auf dem bereits gemergten Stage-5C1-Vertrag aufbauend, keine neue
+> Backend-Fachlogik. Details in `STAGE_5C2_ACCOUNT_DELETION_UI.md`. Dabei
+> gefunden: ein echter, vorbestehender Stage-5C1-Backend-Defekt — der
+> `account.deleteRequest`-Rate-Limiter liest `req.user?.id` für seinen
+> Schlüssel, läuft in `accountRouter.js` aber **vor** `authenticate`, sodass
+> `req.user` dabei immer `undefined` ist und alle Aufrufer einen einzigen
+> geteilten Bucket teilen statt pro Benutzer isoliert zu sein (dasselbe
+> Registrierungsmuster betrifft auch `change-password` und
+> `email-change-requests`). Bewusst nicht in dieser reinen Frontend-Phase
+> behoben, stattdessen mit einem minimalen Regressionstest dokumentiert
+> (`backend/test/unit/rateLimiter.test.js`). **Empfehlung für die
+> unmittelbar nächste Phase: eine kleine, gezielte Backend-Korrektur** —
+> `authenticate` projektweit vor jeden benutzer-geschlüsselten Rate Limiter
+> stellen (mindestens `deleteRequest`, `passwordChange`,
+> `emailChangeRequest`), danach den bestehenden "pro Benutzer"-Unit-Test so
+> erweitern, dass er die reale Middleware-Kette prüft statt `req.user`
+> vorab zu setzen. Danach optional, jeweils als eigene kleine Phase: Studio-
+> Membership-Removal-UI und/oder ein Datenexport-Feature ("Recht auf
+> Datenübertragbarkeit"). Stage 2B2B bleibt weiterhin **Deferred until first
+> customer / production deployment**; keine Cloud-Infrastruktur, keine
+> echten Benutzerkonten gelöscht.
+>
+> ---
 
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-

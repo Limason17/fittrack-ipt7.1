@@ -101,6 +101,36 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um
 > Vorgang). Volle Details in `STAGE_5C1_ACCOUNT_DELETION_BACKEND.md`
 > Abschnitt 0b.
 
+> **Nachtrag (2026-08-09, Stage 5C2 Account Deletion UI — Korrektur einer
+> bestehenden Aussage):** Beim Bau des Frontend-E2E-Flows für die
+> Kontolöschung wurde entdeckt, dass die weiter unten unter "Account
+> Deletion" gelistete Aussage "Eigener Rate-Limiter (`account.deleteRequest`,
+> 3/60min, **pro Benutzer**). **[GETESTET]**" in der Praxis **nicht**
+> zutrifft: `accountRouter.js` registriert `rateLimiters.deleteRequest`
+> **vor** `authenticate` auf `POST /account/deletion-request` — zum
+> Zeitpunkt, an dem der Limiter-Schlüssel (`userKey("account-delete")`,
+> liest `req.user?.id`) tatsächlich berechnet wird, ist `req.user` also
+> immer `undefined`, und jeder Aufruf kollabiert auf einen einzigen,
+> geteilten `"account-delete|user:anon"`-Bucket statt pro Benutzer isoliert
+> zu sein. Der zitierte "**[GETESTET]**"-Verweis
+> (`backend/test/unit/rateLimiter.test.js`) prüft das nicht wirklich: der
+> bestehende Test setzt `req.user` manuell **vor** dem Limiter-Aufruf, was
+> nicht der echten Route-Reihenfolge entspricht. Dasselbe Registrierungsmuster
+> (Rate Limiter vor `authenticate`) gilt ebenso für `change-password` und
+> `email-change-requests` — der Befund ist also nicht auf den
+> Löschendpunkt beschränkt. **Praktische Auswirkung:** ein einzelner
+> Benutzer (oder ein einzelner falscher Versuch) kann das jeweilige
+> Kontingent für alle anderen Benutzer im selben Zeitfenster mit
+> erschöpfen. Nicht in Stage 5C2 behoben (reines Frontend-Scope, keine
+> Backend-Routing-Änderung) — stattdessen mit einem minimalen,
+> reproduzierbaren Regressionstest dokumentiert
+> (`backend/test/unit/rateLimiter.test.js`, Test "KNOWN DEFECT..."). Volle
+> Herleitung in `STAGE_5C2_ACCOUNT_DELETION_UI.md` Abschnitt 13. Empfehlung:
+> `authenticate` projektweit vor jeden benutzer-geschlüsselten Rate Limiter
+> stellen, danach den bestehenden "pro Benutzer"-Unit-Test so erweitern,
+> dass er die reale Middleware-Kette über den echten Router prüft statt
+> `req.user` vorab zu setzen.
+
 ## Auth
 
 - JWT HS256, Payload ausschließlich `{ id }` — keine Rolle, keine Studio-Zugehörigkeit im Token; Rolle wird bei **jedem** Request live aus der DB gelesen und geprüft. **[GETESTET]** `backend/test/unit/authMiddleware.test.js`, `backend/test/integration/trainingApi.test.js:115-122`.
@@ -205,7 +235,7 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um
 - Auth-Invalidierung dreifach abgesichert: `auth_version`-Inkrement bei Anonymisierung, `authMiddleware.js`s kombinierte Session-Abfrage prüft zusätzlich `lifecycle_status` (kollabiert auf denselben generischen `AUTH_SESSION_INVALIDATED` wie jede andere Ungültigkeitsursache — keine Unterscheidbarkeit „gelöscht" vs. „abgelaufen"), und ein Hard Delete liefert beim Refresh-Versuch strukturell null Zeilen. Login eines gelöschten Kontos scheitert **identisch im Timing** zu einem unbekannten Konto (`bcrypt.compare` läuft immer gegen einen echten Hash, der Lifecycle-Check erfolgt erst danach). **[GETESTET]**.
 - Extern signierte Deletion Receipts (HMAC-SHA256, kanonisches JSON) belegen jede Löschung außerhalb der Datenbank — nie die ursprüngliche E-Mail/den Benutzernamen, nur die interne Konto-Referenz. Atomare Dateipublikation (`link()` statt `rename()` — strukturell nie überschreibbar). Ein Receipt-**Schreib**fehler nach erfolgreichem Commit lässt die HTTP-Antwort nie scheitern (nur Log); eine **unsichere Konfiguration** blockiert dagegen den Start der Löschung selbst (Pre-Flight-Check). Kein stiller Produktionsfallback — alle drei Konfigurationsvariablen sind in Produktion Pflicht. **[GETESTET]** `backend/test/unit/deletionReceipts*.test.js`, `deletionReceiptConfig.test.js`, `deletionReceiptStore.test.js`.
 - Deletion Receipt Doctor (rein lesend) und eine dreifach-acknowledgement-gated Restore-Reconciliation behandeln den Fall, dass ein Backup-Restore ein bereits gelöschtes Konto versehentlich auf `active` zurücksetzt — kein Acknowledgement darf ein bloßes `"true"` sein, jedes muss exakt Datenbankname/Receipt-Verzeichnis referenzieren. Der Doctor meldet `ready:false` sofort bei **jedem** fehlenden Receipt, nicht nur bei einem beschädigten. Seit dem Receipt-first-Commit-Protokoll (Merge-Blocker-Fix) gilt das jetzt zuverlässig auch für hart gelöschte Konten: das Receipt wird publiziert, **bevor** die Transaktion committet — ein Commit-Fehler danach lässt die Kontenzeile (per Rollback) bestehen, was der Doctor über denselben Mechanismus wie einen echten Restore erkennt; ein Receipt-Schreibfehler selbst lässt die Transaktion nie committen. **[GETESTET]** `backend/test/unit/deletionReceiptDoctor.test.js`, `backend/test/unit/deletionReceiptStore.test.js` (`findValidReceiptForAccount`), sowie die dedizierten Anonymisierungs-/Hard-Delete-/Retry-/Konkurrenz-Tests in `accountDeletionApi.test.js`.
-- Eigener Rate-Limiter (`account.deleteRequest`, 3/60min, pro Benutzer). **[GETESTET]** `backend/test/unit/rateLimiter.test.js`.
+- Eigener Rate-Limiter (`account.deleteRequest`, 3/60min, ~~pro Benutzer~~ **[KORRIGIERT, Stage 5C2]** tatsächlich ein einziger geteilter Bucket, siehe Nachtrag 2026-08-09 oben). **[GETESTET, aber Test prüfte bislang nicht die reale Middleware-Reihenfolge]** `backend/test/unit/rateLimiter.test.js`.
 - Terminierungsregel-Deaktivierung deckt die Vereinigung aus Mitglied-Scope (Assignment, dessen Mitglied das gelöschte Konto ist, unabhängig vom Regel-Ersteller) und Ersteller-Scope (vom Konto selbst erstellte Regeln) ab — verhindert sowohl eine „Phantom-Coach"-Materialisierung als auch eine stale aktive Regel für ein bereits abgesagtes Assignment. Persönliche Übungen werden in beiden Löschmodi explizit gelöscht (nie über `ON DELETE SET NULL` global sichtbar). Kein dediziertes CSRF-Mittel für `/api/account/deletion-request` — verifiziert als endgültige, sichere Architekturentscheidung (Bearer-only, keine Cookie-Authentifizierung möglich). **[GETESTET]** dedizierte Integrationstests in `accountDeletionApi.test.js`.
 - **Weiterhin offen:** keine Frontend-Oberfläche (Stage 5C2), keine Freitextbereinigung (bewusst, siehe Nachtrag oben), keine Admin-Löschung fremder Konten, kein Datenexport. Volle Details in `STAGE_5C1_ACCOUNT_DELETION_BACKEND.md`.
 

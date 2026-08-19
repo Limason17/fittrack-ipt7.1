@@ -891,6 +891,65 @@ export const messages = {
                 emailChangeRevoked: 'Anfrage widerrufen.',
                 confirmRevokeTitle: 'Anfrage widerrufen?',
                 confirmRevokeDescription: 'Der Bestätigungslink für {email} wird ungültig.',
+
+                dangerZone: {
+                    title: 'Gefahrenbereich',
+                    sectionTitle: 'Konto dauerhaft löschen',
+                    description: 'Diese Aktion entfernt dein FitTrack-Konto dauerhaft. Bestimmte fachliche Studio-Historie kann aus rechtlichen und betrieblichen Gründen in anonymisierter Form erhalten bleiben.',
+                    openAction: 'Konto löschen',
+
+                    previewTitle: 'Konto löschen',
+                    previewLoading: 'Auswirkungen werden geladen...',
+                    previewError: 'Die Auswirkungen konnten nicht geladen werden. Bitte versuche es erneut.',
+                    retryAction: 'Erneut versuchen',
+
+                    impactGroupRemoved: 'Wird entfernt',
+                    impactGroupPreserved: 'Kann erhalten bleiben',
+                    impactGroupNotices: 'Hinweise',
+                    impactNone: 'Keine.',
+
+                    countWorkouts: 'Persönliche Workouts',
+                    countProgressEntries: 'Fortschrittseinträge',
+                    countPersonalExercises: 'Persönliche Übungen',
+                    countPersonalCalendarEntries: 'Persönliche Kalendereinträge',
+                    countRunningWorkoutSessions: 'Laufende Studio-Sessions (werden abgebrochen)',
+                    countActiveAssignments: 'Aktive Programmzuweisungen',
+                    countActiveCoachingRelationships: 'Aktive Coaching-Beziehungen',
+                    countActiveScheduleRules: 'Aktive Terminierungsregeln',
+                    countFutureStudioCalendarEntries: 'Geplante Studio-Kalendereinträge (werden storniert)',
+                    countStudioWorkoutSessions: 'Abgeschlossene Studio-Sessions',
+                    countProgramAssignments: 'Programmzuweisungen (Historie)',
+                    countCoachFeedbackReceived: 'Erhaltenes Coach-Feedback',
+                    countCoachFeedbackAuthored: 'Verfasstes Coach-Feedback',
+
+                    emailReuseNotice: 'Deine ursprüngliche E-Mail-Adresse kann nach erfolgreicher Löschung erneut für ein neues Konto verwendet werden.',
+
+                    blockerTitle: 'Löschung aktuell nicht möglich',
+                    blockerExplanation: 'Vor der Kontolöschung muss mindestens ein weiterer aktiver Owner vorhanden sein.',
+                    blockerStudiosLabel: 'Betroffene Studios:',
+                    blockerClose: 'Verstanden',
+
+                    continueAction: 'Weiter',
+                    cancelAction: 'Abbrechen',
+
+                    confirmTitle: 'Konto endgültig löschen',
+                    confirmDescription: 'Bitte bestätige die Löschung mit deinem aktuellen Passwort und der Bestätigungsphrase.',
+                    passwordLabel: 'Aktuelles Passwort',
+                    phraseLabel: 'Bestätigungsphrase',
+                    phraseHint: 'Gib zur Bestätigung genau deinen Benutzernamen ein: {username}',
+                    phraseMismatch: 'Die eingegebene Phrase stimmt nicht mit deinem Benutzernamen überein.',
+                    deleteAction: 'Konto endgültig löschen',
+                    deleting: 'Konto wird gelöscht...',
+
+                    errorPasswordInvalid: 'Das aktuelle Passwort ist nicht korrekt.',
+                    errorPhraseMismatch: 'Die Bestätigungsphrase stimmt nicht mit deinem Benutzernamen überein.',
+                    errorRateLimited: 'Zu viele Versuche. Bitte versuche es später erneut.',
+                    errorServiceUnavailable: 'Die Kontolöschung ist momentan aus Sicherheitsgründen nicht verfügbar. Versuche es später erneut.',
+                    errorOwnershipRaced: 'Ein anderer Vorgang hat die Voraussetzungen verändert. Die Auswirkungen wurden aktualisiert.',
+                    errorGeneric: 'Das hat leider nicht funktioniert. Bitte versuche es erneut.',
+
+                    deletionSuccessToast: 'Dein Konto wurde gelöscht.',
+                },
             },
         },
         accountEmailChangeConfirm: {
@@ -2083,6 +2142,65 @@ export const messages = {
                 emailChangeRevoked: 'Request revoked.',
                 confirmRevokeTitle: 'Revoke request?',
                 confirmRevokeDescription: 'The confirmation link for {email} will become invalid.',
+
+                dangerZone: {
+                    title: 'Danger zone',
+                    sectionTitle: 'Permanently delete account',
+                    description: 'This action permanently removes your FitTrack account. Certain studio training history may be retained in anonymized form for legal and operational reasons.',
+                    openAction: 'Delete account',
+
+                    previewTitle: 'Delete account',
+                    previewLoading: 'Loading impact...',
+                    previewError: 'The impact could not be loaded. Please try again.',
+                    retryAction: 'Try again',
+
+                    impactGroupRemoved: 'Will be removed',
+                    impactGroupPreserved: 'May be retained',
+                    impactGroupNotices: 'Notices',
+                    impactNone: 'None.',
+
+                    countWorkouts: 'Personal workouts',
+                    countProgressEntries: 'Progress entries',
+                    countPersonalExercises: 'Personal exercises',
+                    countPersonalCalendarEntries: 'Personal calendar entries',
+                    countRunningWorkoutSessions: 'Running studio sessions (will be aborted)',
+                    countActiveAssignments: 'Active program assignments',
+                    countActiveCoachingRelationships: 'Active coaching relationships',
+                    countActiveScheduleRules: 'Active schedule rules',
+                    countFutureStudioCalendarEntries: 'Planned studio calendar entries (will be cancelled)',
+                    countStudioWorkoutSessions: 'Completed studio sessions',
+                    countProgramAssignments: 'Program assignments (history)',
+                    countCoachFeedbackReceived: 'Coach feedback received',
+                    countCoachFeedbackAuthored: 'Coach feedback authored',
+
+                    emailReuseNotice: 'Your original e-mail address can be used again for a new account after the deletion completes.',
+
+                    blockerTitle: 'Deletion not currently possible',
+                    blockerExplanation: 'At least one other active owner must exist before you can delete your account.',
+                    blockerStudiosLabel: 'Affected studios:',
+                    blockerClose: 'Understood',
+
+                    continueAction: 'Continue',
+                    cancelAction: 'Cancel',
+
+                    confirmTitle: 'Permanently delete account',
+                    confirmDescription: 'Please confirm the deletion with your current password and the confirmation phrase.',
+                    passwordLabel: 'Current password',
+                    phraseLabel: 'Confirmation phrase',
+                    phraseHint: 'To confirm, type your username exactly: {username}',
+                    phraseMismatch: 'The phrase you entered does not match your username.',
+                    deleteAction: 'Permanently delete account',
+                    deleting: 'Deleting account...',
+
+                    errorPasswordInvalid: 'The current password is incorrect.',
+                    errorPhraseMismatch: 'The confirmation phrase does not match your username.',
+                    errorRateLimited: 'Too many attempts. Please try again later.',
+                    errorServiceUnavailable: 'Account deletion is temporarily unavailable for security reasons. Please try again later.',
+                    errorOwnershipRaced: 'Another change affected the requirements. The impact has been refreshed.',
+                    errorGeneric: 'That did not work. Please try again.',
+
+                    deletionSuccessToast: 'Your account has been deleted.',
+                },
             },
         },
         accountEmailChangeConfirm: {
