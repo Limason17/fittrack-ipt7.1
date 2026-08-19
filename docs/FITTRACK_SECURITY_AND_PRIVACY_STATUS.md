@@ -131,6 +131,40 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um
 > dass er die reale Middleware-Kette über den echten Router prüft statt
 > `req.user` vorab zu setzen.
 
+> **Nachtrag (2026-08-09, PR #29 — Rate-Limiter-Reihenfolge behoben):** Die
+> im vorherigen Nachtrag beschriebene Empfehlung ist umgesetzt.
+> `accountRouter.js` registriert `authenticate` jetzt vor allen drei
+> betroffenen Limitern (`deleteRequest`, `passwordChange`,
+> `emailChangeRequest`); der Schlüssel sieht dadurch immer die reale
+> `req.user.id`, kein geteilter `"...|user:anon"`-Bucket mehr möglich. Belegt
+> durch neue Route-Level-Integrationstests
+> (`backend/test/integration/accountRateLimitIsolation.test.js`): zwei
+> verschiedene Benutzer haben nachweislich getrennte Buckets, derselbe
+> Benutzer bleibt korrekt limitiert, ein unauthentifizierter Aufruf bleibt
+> `401` und kann nie einen Bucket für einen echten Benutzer mitverbrauchen —
+> vor dem Fix reproduzierten alle neun Fälle den Defekt, danach grün. Der auf
+> Stage 5C2 hinzugefügte `KNOWN DEFECT`-Unit-Test wurde entfernt statt auf
+> eine falsche Erwartung umgeschrieben, da die Route-Level-Tests dieselbe
+> Garantie stärker und realitätsnäher belegen. Damit ist die weiter unten
+> unter "Account-Löschung und Deletion Receipts" stehende
+> **[KORRIGIERT, Stage 5C2]**-Anmerkung ("tatsächlich ein einziger geteilter
+> Bucket") ihrerseits veraltet — siehe die entsprechende Korrektur dort.
+>
+> **Nachtrag (2026-08-19, Stage 5D Current-State Audit):** Vollständiges,
+> rein dokumentarisches Audit — keine neue Sicherheitsfunktion, kein
+> Produktcode geändert. Alle unten dokumentierten Kernaussagen wurden gegen
+> den heutigen Code erneut stichprobenartig verifiziert (Rate-Limiter-
+> Reihenfolge in `accountRouter.js`, RBAC-Rollen/-Permissions in
+> `domain/studioDomain.js`/`studioPolicy.js`, Deletion-Receipt-Module).
+> Ausserdem korrigiert: zwei weitere Stellen in diesem Dokument behaupteten
+> noch "keine Frontend-Oberfläche (Stage 5C2)" für die Kontolöschung — seit
+> PR #30 falsch, siehe die jeweiligen Korrekturen unten. **Neuer, nicht
+> sicherheitskritischer Fund:** ein High-Severity-`npm audit`-Advisory im
+> Frontend (`nanoid@3.3.17`, GHSA-2v37-7h3g-55p8, transitiv über `postcss`,
+> reiner Build-Tooling-Pfad ohne Backend-Betroffenheit) — bewusst nicht
+> behoben (Dependency-Upgrade ausserhalb des Scopes dieses Doku-Audits).
+> Volle Details: `docs/STAGE_5D_CURRENT_STATE_AUDIT.md`.
+
 ## Auth
 
 - JWT HS256, Payload ausschließlich `{ id }` — keine Rolle, keine Studio-Zugehörigkeit im Token; Rolle wird bei **jedem** Request live aus der DB gelesen und geprüft. **[GETESTET]** `backend/test/unit/authMiddleware.test.js`, `backend/test/integration/trainingApi.test.js:115-122`.
@@ -235,9 +269,9 @@ Stand: 2026-07-19, geprüfter Commit `8a8da30` (main), ergänzt am 2026-07-20 um
 - Auth-Invalidierung dreifach abgesichert: `auth_version`-Inkrement bei Anonymisierung, `authMiddleware.js`s kombinierte Session-Abfrage prüft zusätzlich `lifecycle_status` (kollabiert auf denselben generischen `AUTH_SESSION_INVALIDATED` wie jede andere Ungültigkeitsursache — keine Unterscheidbarkeit „gelöscht" vs. „abgelaufen"), und ein Hard Delete liefert beim Refresh-Versuch strukturell null Zeilen. Login eines gelöschten Kontos scheitert **identisch im Timing** zu einem unbekannten Konto (`bcrypt.compare` läuft immer gegen einen echten Hash, der Lifecycle-Check erfolgt erst danach). **[GETESTET]**.
 - Extern signierte Deletion Receipts (HMAC-SHA256, kanonisches JSON) belegen jede Löschung außerhalb der Datenbank — nie die ursprüngliche E-Mail/den Benutzernamen, nur die interne Konto-Referenz. Atomare Dateipublikation (`link()` statt `rename()` — strukturell nie überschreibbar). Ein Receipt-**Schreib**fehler nach erfolgreichem Commit lässt die HTTP-Antwort nie scheitern (nur Log); eine **unsichere Konfiguration** blockiert dagegen den Start der Löschung selbst (Pre-Flight-Check). Kein stiller Produktionsfallback — alle drei Konfigurationsvariablen sind in Produktion Pflicht. **[GETESTET]** `backend/test/unit/deletionReceipts*.test.js`, `deletionReceiptConfig.test.js`, `deletionReceiptStore.test.js`.
 - Deletion Receipt Doctor (rein lesend) und eine dreifach-acknowledgement-gated Restore-Reconciliation behandeln den Fall, dass ein Backup-Restore ein bereits gelöschtes Konto versehentlich auf `active` zurücksetzt — kein Acknowledgement darf ein bloßes `"true"` sein, jedes muss exakt Datenbankname/Receipt-Verzeichnis referenzieren. Der Doctor meldet `ready:false` sofort bei **jedem** fehlenden Receipt, nicht nur bei einem beschädigten. Seit dem Receipt-first-Commit-Protokoll (Merge-Blocker-Fix) gilt das jetzt zuverlässig auch für hart gelöschte Konten: das Receipt wird publiziert, **bevor** die Transaktion committet — ein Commit-Fehler danach lässt die Kontenzeile (per Rollback) bestehen, was der Doctor über denselben Mechanismus wie einen echten Restore erkennt; ein Receipt-Schreibfehler selbst lässt die Transaktion nie committen. **[GETESTET]** `backend/test/unit/deletionReceiptDoctor.test.js`, `backend/test/unit/deletionReceiptStore.test.js` (`findValidReceiptForAccount`), sowie die dedizierten Anonymisierungs-/Hard-Delete-/Retry-/Konkurrenz-Tests in `accountDeletionApi.test.js`.
-- Eigener Rate-Limiter (`account.deleteRequest`, 3/60min, ~~pro Benutzer~~ **[KORRIGIERT, Stage 5C2]** tatsächlich ein einziger geteilter Bucket, siehe Nachtrag 2026-08-09 oben). **[GETESTET, aber Test prüfte bislang nicht die reale Middleware-Reihenfolge]** `backend/test/unit/rateLimiter.test.js`.
+- Eigener Rate-Limiter (`account.deleteRequest`, 3/60min, pro Benutzer — ~~zwischenzeitlich (Stage 5C2) tatsächlich ein einziger geteilter Bucket~~ **[ERNEUT KORRIGIERT, PR #29]** seit `authenticate` vor dem Limiter läuft, wieder echt pro Benutzer isoliert, siehe Nachtrag 2026-08-09 "Rate-Limiter-Reihenfolge behoben" oben). **[GETESTET, jetzt auf echter Route-Ebene]** `backend/test/integration/accountRateLimitIsolation.test.js`.
 - Terminierungsregel-Deaktivierung deckt die Vereinigung aus Mitglied-Scope (Assignment, dessen Mitglied das gelöschte Konto ist, unabhängig vom Regel-Ersteller) und Ersteller-Scope (vom Konto selbst erstellte Regeln) ab — verhindert sowohl eine „Phantom-Coach"-Materialisierung als auch eine stale aktive Regel für ein bereits abgesagtes Assignment. Persönliche Übungen werden in beiden Löschmodi explizit gelöscht (nie über `ON DELETE SET NULL` global sichtbar). Kein dediziertes CSRF-Mittel für `/api/account/deletion-request` — verifiziert als endgültige, sichere Architekturentscheidung (Bearer-only, keine Cookie-Authentifizierung möglich). **[GETESTET]** dedizierte Integrationstests in `accountDeletionApi.test.js`.
-- **Weiterhin offen:** keine Frontend-Oberfläche (Stage 5C2), keine Freitextbereinigung (bewusst, siehe Nachtrag oben), keine Admin-Löschung fremder Konten, kein Datenexport. Volle Details in `STAGE_5C1_ACCOUNT_DELETION_BACKEND.md`.
+- **Weiterhin offen:** ~~keine Frontend-Oberfläche (Stage 5C2)~~ **[KORRIGIERT]** seit Stage 5C2 vorhanden (Profil → Sicherheit → Gefahrenbereich); keine Freitextbereinigung (bewusst, siehe Nachtrag oben), keine Admin-Löschung fremder Konten, kein Datenexport. Volle Details in `STAGE_5C1_ACCOUNT_DELETION_BACKEND.md` und `STAGE_5C2_ACCOUNT_DELETION_UI.md`.
 
 ---
 

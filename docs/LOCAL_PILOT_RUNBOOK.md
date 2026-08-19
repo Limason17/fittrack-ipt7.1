@@ -69,7 +69,7 @@ npm ci
 npm run db:dev:init
 ```
 
-`db:dev:init` erstellt die in `DB_NAME` konfigurierte Datenbank nur, wenn sie fehlt, und wendet danach alle versionierten Migrationen an (aktuell 001–011). Der Befehl ist additiv, lässt eine bereits vorhandene Datenbank unverändert und ist in `NODE_ENV=production` gesperrt.
+`db:dev:init` erstellt die in `DB_NAME` konfigurierte Datenbank nur, wenn sie fehlt, und wendet danach alle versionierten Migrationen an (aktuell 001–013, Stand Stage 5D, 2026-08-19 — siehe `docs/STAGE_5D_CURRENT_STATE_AUDIT.md`). Der Befehl ist additiv, lässt eine bereits vorhandene Datenbank unverändert und ist in `NODE_ENV=production` gesperrt.
 
 ---
 
@@ -79,10 +79,10 @@ npm run db:dev:init
 npm run db:migrate:doctor
 ```
 
-Erwartetes Ergebnis auf einer frischen oder bereits korrekt migrierten Datenbank:
+Erwartetes Ergebnis auf einer frischen oder bereits korrekt migrierten Datenbank (Stand Stage 5D, 2026-08-19 — `applied` wächst mit jeder neuen Migration, zuletzt real gegen eine Scratch-Datenbank verifiziert):
 
 ```json
-{"state":"ready", ..., "summary":{"applied":11,"pending":0,"dirty":0,"drift":0,"unknown":0,"schemaIssues":0,"ledgerIssues":0}}
+{"state":"ready", ..., "summary":{"applied":13,"pending":0,"dirty":0,"drift":0,"unknown":0,"schemaIssues":0,"ledgerIssues":0}}
 ```
 
 Bei jedem anderen Zustand (`pending`, `dirty`, `drift`, `unknown` jeweils `> 0`) vor dem nächsten Schritt zuerst `docs/MIGRATION_RECOVERY.md` konsultieren.
@@ -312,7 +312,7 @@ Für einen reinen Anwendungs-Reset ohne Datenverlust (z. B. nach einem fehlerhaf
 
 ## 24. Account-Löschung und Deletion Receipts (Stage 5C1)
 
-Seit Migration 013 kann ein Benutzer sein eigenes Konto endgültig löschen (`POST /api/account/deletion-request`, aktuell nur über die API erreichbar — es gibt noch keine Frontend-UI, siehe `docs/STAGE_5C1_ACCOUNT_DELETION_BACKEND.md`). Jede Löschung erzeugt bei konfiguriertem Receipt-Subsystem eine extern signierte, manipulationssichere Quittungsdatei ausserhalb des Repositories — **und zwar nach dem Receipt-first-Commit-Protokoll: das Receipt wird publiziert, bevor die Datenbank-Transaktion committet wird**, nicht danach. Ein Receipt-Schreibfehler rollt die gesamte Löschung zurück (kein HTTP 200, keine Kontoänderung); ein Commit-Fehler nach erfolgreicher Receipt-Publikation lässt das Receipt unangetastet bestehen und wird vom Doctor erkannt (Abschnitt 24.2).
+Seit Migration 013 kann ein Benutzer sein eigenes Konto endgültig löschen (`POST /api/account/deletion-request`, siehe `docs/STAGE_5C1_ACCOUNT_DELETION_BACKEND.md`). **Seit Stage 5C2 (2026-08-09) auch über die Weboberfläche erreichbar:** Profil → Tab „Sicherheit" → Abschnitt „Gefahrenbereich" (`docs/STAGE_5C2_ACCOUNT_DELETION_UI.md`) — Vorschau der Auswirkungen, Sole-Owner-Blocker-Anzeige, zweistufige Bestätigung mit aktuellem Passwort und Bestätigungsphrase. Jede Löschung erzeugt bei konfiguriertem Receipt-Subsystem eine extern signierte, manipulationssichere Quittungsdatei ausserhalb des Repositories — **und zwar nach dem Receipt-first-Commit-Protokoll: das Receipt wird publiziert, bevor die Datenbank-Transaktion committet wird**, nicht danach. Ein Receipt-Schreibfehler rollt die gesamte Löschung zurück (kein HTTP 200, keine Kontoänderung); ein Commit-Fehler nach erfolgreicher Receipt-Publikation lässt das Receipt unangetastet bestehen und wird vom Doctor erkannt (Abschnitt 24.2).
 
 ### 24.1 Receipt-Subsystem konfigurieren
 

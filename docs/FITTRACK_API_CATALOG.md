@@ -4,6 +4,8 @@ Stand: 2026-07-20, Branch `feature/stage-1b2b2b-coach-results-feedback` (Stage 1
 
 **Ergänzung Stage 5C1 (2026-07-24)**: neuer Abschnitt „Account" für `backend/routes/accountRouter.js` (`/api/account`, seit Stage 3B1 gemountet, bislang nicht in diesem Katalog erfasst) inklusive der beiden neuen Deletion-Endpunkte. Alle übrigen Abschnitte unverändert aus dem vorherigen Stand übernommen — sie spiegeln nicht jede seither gemergte Stage (2A–5B); nur der für diese Phase erforderliche Abschnitt wurde ergänzt.
 
+**Korrektur Stage 5D (2026-08-19, `docs/STAGE_5D_CURRENT_STATE_AUDIT.md`)**: zwei vollständige, seit Stage 5A1/5A3 gemountete Router-Module fehlten in diesem Katalog komplett — Abschnitte „Training Calendar" (`trainingCalendarV1.js`) und „Assignment Schedule Rules" (`assignmentScheduleRuleV1.js`) unten neu ergänzt, direkt gegen den Router-Quellcode verifiziert. Ausserdem war die Spalte „Frontend" für die gesamte Workout-Session-/Coach-Resultat-Gruppe seit Stage 1B.2B2A/1B.2B2B veraltet (behauptete durchgängig „Kein Frontend-Nutzer") — korrigiert. Alle übrigen Zeilen unverändert aus dem vorherigen Stand übernommen; dies ist weiterhin kein vollständiger Neuabgleich jeder einzelnen Zelle gegen jede seither gemergte Stage.
+
 ## Globale Konventionen
 
 - **Fehler-Envelope** (`backend/middleware/httpFoundation.js`): jede Fehlerantwort ist `{ "error": { "code", "message", "requestId", "fields"? } }`. `fields` nur bei `ValidationError`. Unbekannte/5xx-Fehler werden zu `code: "INTERNAL_ERROR"` maskiert — keine Stacktraces, keine SQL-Fragmente im Response-Body.
@@ -18,8 +20,8 @@ Stand: 2026-07-20, Branch `feature/stage-1b2b2b-coach-results-feedback` (Stage 1
 |---|---|---|
 | **P0 – Öffentlich/technisch** | Keine personenbezogenen Daten | Health |
 | **P1 – Konto/Identität** | Account-Metadaten, Einstellungen | Auth/Users, Account |
-| **P2 – Persönliche Trainingsdaten** | Eigene, private Trainingsleistungen | Exercises, Workouts, Progress |
-| **P3 – Studio-Geschäftsdaten** | Organisatorische Metadaten ohne Leistungsdaten | Studios, Memberships, Invitations, Audit, Coaching, Trainingsprogramme, Versionen, Tage, Übungen (Vorgaben), Assignments |
+| **P2 – Persönliche Trainingsdaten** | Eigene, private Trainingsleistungen | Exercises, Workouts, Progress, Training Calendar |
+| **P3 – Studio-Geschäftsdaten** | Organisatorische Metadaten ohne Leistungsdaten | Studios, Memberships, Invitations, Audit, Coaching, Trainingsprogramme, Versionen, Tage, Übungen (Vorgaben), Assignments, Assignment Schedule Rules |
 | **P4 – Studio-Leistungsdaten (höchste Schutzstufe)** | Tatsächliche Trainingsergebnisse einer identifizierbaren Person | Workout-Sessions, Session-Exercises, Session-Sets, Coach-Resultatzugriff, Trainings-Feedback |
 
 ---
@@ -73,6 +75,20 @@ Stand: 2026-07-20, Branch `feature/stage-1b2b2b-coach-results-feedback` (Stage 1
 | GET | `/api/progress/summary` | JWT | any | n/a | Aggregierte PRs/1RM pro Übung | — | Array | Nein | 401 | P2 | ProgressView.vue | Component+Integration |
 | POST | `/api/progress` | JWT | any | n/a | Manuellen Eintrag anlegen | exercise_id, metrics, entry_date | message, progressId | Nein | 400, 401 | P2 | ProgressView.vue | Component+Integration |
 | DELETE | `/api/progress/:id` | JWT | any (Owner) | n/a | Manuellen Eintrag löschen | — | message | Nein | 400, 401, 404, 409 `DERIVED_PROGRESS_IMMUTABLE` | P2 | ProgressView.vue | Component+Integration |
+
+## Training Calendar — `backend/routes/trainingCalendarV1.js`, mounted at `/api/v1` (Stage 5A1 Backend, Stage 5A2 UI — bislang nicht in diesem Katalog erfasst, Stage-5D-Ergänzung)
+
+Bewusst **nicht** studio-scoped: jede Route nutzt ausschliesslich `authenticateToken`, keinen Studio-Tenant-Kontext — der persönliche Kalender ist rein `user_id`-isoliert, exakt wie `/api/workouts`/`/api/progress` (siehe Kommentar in `trainingCalendarV1.js`). Studio-Workout-Termine erscheinen im selben Lesemodell, werden aber über die bestehende Workout-Session-/Assignment-Autorisierung befüllt, nicht über eine eigene Tenant-Prüfung dieser Route.
+
+| Methode | Pfad | Auth | Rollen | Tenant | Zweck | Request-Felder | Response | Pagination | Fehlercodes | Datenschutz | Frontend | Tests |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| GET | `/api/v1/training-calendar` | JWT | any | n/a (`user_id`-isoliert) | Kalenderbereich lesen (persönlich + Studio-Termine vereinheitlicht) | from, to (Query) | entries: [...] | Nein | 400, 401 | P2 | CalendarView.vue | Integration+E2E |
+| POST | `/api/v1/training-calendar` | JWT | any | n/a | Persönlichen Kalendereintrag anlegen | title, scheduledDate, ... | calendarEntry{...} | Nein | 400, 401 | P2 | CalendarView.vue | Integration+E2E |
+| PATCH | `/api/v1/training-calendar/:entryId` | JWT | any (Owner der Zeile) | n/a | Persönlichen Eintrag bearbeiten | wie POST (Teilmenge) | calendarEntry{...} | Nein | 400, 401, 404, 409 | P2 | CalendarView.vue | Integration+E2E |
+| POST | `.../training-calendar/:entryId/reschedule` | JWT | any (Owner der Zeile) | n/a | Persönlichen Eintrag verschieben | scheduledDate | calendarEntry{...} | Nein | 400, 401, 404, 409 | P2 | CalendarView.vue | Integration+E2E |
+| POST | `.../training-calendar/:entryId/complete` | JWT | any (Owner der Zeile) | n/a | Eintrag als abgeschlossen bestätigen | — | calendarEntry{...} | Nein | 401, 404, 409 | P2 | CalendarView.vue | Integration+E2E |
+| POST | `.../training-calendar/:entryId/skip` | JWT | any (Owner der Zeile) | n/a | Eintrag überspringen | — | calendarEntry{...} | Nein | 401, 404, 409 | P2 | CalendarView.vue | Integration+E2E |
+| POST | `.../training-calendar/:entryId/cancel` | JWT | any (Owner der Zeile) | n/a | Eintrag absagen | — | calendarEntry{...} | Nein | 401, 404, 409 | P2 | CalendarView.vue | Integration+E2E |
 
 ## Studios — `backend/routes/studioV1.js`, mounted at `/api/v1`
 
@@ -163,29 +179,41 @@ Stand: 2026-07-20, Branch `feature/stage-1b2b2b-coach-results-feedback` (Stage 1
 | GET | `.../program-assignments/:id` | JWT | owner/admin/trainer (Coachees) | Studio-Kontext | Zuweisung im Detail (mit Mitglied) | — | programAssignment{...,member} | Nein | 401, 403, 404 | P3 | — (nicht im Frontend verwendet) | Integration |
 | PATCH | `.../program-assignments/:id` | JWT | owner/admin/trainer (Coachees) | Studio-Kontext | Abschließen/Abbrechen | status | programAssignment{...} | Nein | 400, 401, 403, 404, 409 | P3 | ProgramAssignmentsView.vue | Component+Integration |
 
+## Assignment Schedule Rules — `backend/routes/assignmentScheduleRuleV1.js` (Stage 5A3 — bislang nicht in diesem Katalog erfasst, Stage-5D-Ergänzung)
+
+Terminierungsregeln für eine Programmzuweisung (welcher Programmtag an welchem Wochentag, ab wann, mit welcher Wiederholung stattfindet) — verdrahtet die in Stage 5A1 bereits bestehende Domänenlogik an eine Owner-/Admin-/Trainer-Oberfläche. `SCHEDULE_RULE_MANAGE` (erstellen/ändern) haben owner/admin/trainer; `SCHEDULE_RULE_READ` (lesen) zusätzlich auch member (`domain/studioPolicy.js`).
+
+| Methode | Pfad | Auth | Rollen | Tenant | Zweck | Request-Felder | Response | Pagination | Fehlercodes | Datenschutz | Frontend | Tests |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| POST | `.../program-assignments/:assignmentId/schedule-rules` | JWT | owner/admin/trainer (`SCHEDULE_RULE_MANAGE`) | Studio-Kontext | Terminierungsregel erstellen | weekday, intervalWeeks, activeFrom, activeUntil? | scheduleRule{...} | Nein | 400, 401, 403, 404, 409 | P3 | ScheduleRulesView.vue | Component+Integration+E2E |
+| GET | `.../program-assignments/:assignmentId/schedule-rules` | JWT | owner/admin/trainer/member (`SCHEDULE_RULE_READ`) | Studio-Kontext | Terminierungsregeln listen | — | scheduleRules: [...] | Nein | 401, 403, 404 | P3 | ScheduleRulesView.vue | Component+Integration+E2E |
+| PATCH | `.../program-assignments/:assignmentId/schedule-rules/:ruleId` | JWT | owner/admin/trainer (`SCHEDULE_RULE_MANAGE`) | Studio-Kontext | Regel ändern/deaktivieren | wie POST (Teilmenge), status | scheduleRule{...} | Nein | 400, 401, 403, 404, 409 | P3 | ScheduleRulesView.vue | Component+Integration+E2E |
+
 ## Workout-Sessions — `backend/routes/workoutSessionV1.js`
 
 | Methode | Pfad | Auth | Rollen | Tenant | Zweck | Request-Felder | Response | Pagination | Fehlercodes | Datenschutz | Frontend | Tests |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| POST | `.../program-assignments/:id/workout-sessions` | JWT | alle (nur eigene Zuweisung) | Studio-Kontext | Session starten, idempotent | programDayId, clientStartKey | workoutSession{...,exercises} | Nein | 400, 401, 403, 404, 409 | **P4** | **Kein Frontend-Nutzer** | Unit+Integration |
-| GET | `.../workout-sessions/me` | JWT | alle (nur eigene) | Studio-Kontext | Eigene Sessions listen | page, limit | workoutSessions, pagination | Ja | 401, 403, 404 | **P4** | **Kein Frontend-Nutzer** | Integration |
-| GET | `.../workout-sessions/:id` | JWT | alle (nur eigene) | Studio-Kontext | Eigene Session im Detail | — | workoutSession{...,exercises} | Nein | 401, 403, 404 | **P4** | **Kein Frontend-Nutzer** | Integration |
-| PATCH | `.../workout-sessions/:id` | JWT | alle (nur eigene) | Studio-Kontext | Notiz autosave, Revision-Guard | memberNote, expectedRevision | workoutSession{...} | Nein | 400, 401, 403, 404, 409 | **P4** | **Kein Frontend-Nutzer** | Unit+Integration |
-| POST | `.../workout-sessions/:id/complete` | JWT | alle (nur eigene) | Studio-Kontext | Session abschließen | — | workoutSession{...,status:'completed'} | Nein | 401, 403, 404, 409 | **P4** | **Kein Frontend-Nutzer** | Integration |
-| POST | `.../workout-sessions/:id/abort` | JWT | alle (nur eigene) | Studio-Kontext | Session abbrechen | — | workoutSession{...,status:'aborted'} | Nein | 401, 403, 404, 409 | **P4** | **Kein Frontend-Nutzer** | Integration |
+| POST | `.../program-assignments/:id/workout-sessions` | JWT | alle (nur eigene Zuweisung) | Studio-Kontext | Session starten, idempotent | programDayId, clientStartKey | workoutSession{...,exercises} | Nein | 400, 401, 403, 404, 409 | **P4** | MyTrainingPlanView.vue | Unit+Integration+E2E |
+| GET | `.../workout-sessions/me` | JWT | alle (nur eigene) | Studio-Kontext | Eigene Sessions listen | page, limit | workoutSessions, pagination | Ja | 401, 403, 404 | **P4** | WorkoutSessionHistoryView.vue, MyTrainingPlanView.vue | Integration+E2E |
+| GET | `.../workout-sessions/:id` | JWT | alle (nur eigene) | Studio-Kontext | Eigene Session im Detail | — | workoutSession{...,exercises} | Nein | 401, 403, 404 | **P4** | WorkoutSessionView.vue (über `utils/workoutSessionState.js`) | Integration+E2E |
+| PATCH | `.../workout-sessions/:id` | JWT | alle (nur eigene) | Studio-Kontext | Notiz autosave, Revision-Guard | memberNote, expectedRevision | workoutSession{...} | Nein | 400, 401, 403, 404, 409 | **P4** | WorkoutSessionView.vue | Unit+Integration+E2E |
+| POST | `.../workout-sessions/:id/complete` | JWT | alle (nur eigene) | Studio-Kontext | Session abschließen | — | workoutSession{...,status:'completed'} | Nein | 401, 403, 404, 409 | **P4** | WorkoutSessionView.vue | Integration+E2E |
+| POST | `.../workout-sessions/:id/abort` | JWT | alle (nur eigene) | Studio-Kontext | Session abbrechen | — | workoutSession{...,status:'aborted'} | Nein | 401, 403, 404, 409 | **P4** | WorkoutSessionView.vue | Integration+E2E |
 
 ## Session-Exercises — `backend/routes/workoutSessionV1.js`
 
 | Methode | Pfad | Auth | Rollen | Tenant | Zweck | Request-Felder | Response | Pagination | Fehlercodes | Datenschutz | Frontend | Tests |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| PATCH | `.../exercises/:id` | JWT | alle (nur eigene Session) | Studio-Kontext | Übungsstatus/Notiz, Revision-Guard | status, memberNote, expectedRevision | workoutExercise{...} | Nein | 400, 401, 403, 404, 409 | **P4** | **Kein Frontend-Nutzer** | Unit+Integration |
+| PATCH | `.../exercises/:id` | JWT | alle (nur eigene Session) | Studio-Kontext | Übungsstatus/Notiz, Revision-Guard | status, memberNote, expectedRevision | workoutExercise{...} | Nein | 400, 401, 403, 404, 409 | **P4** | WorkoutSessionView.vue (über `utils/workoutSessionState.js`) | Unit+Integration+E2E |
 
 ## Session-Sets — `backend/routes/workoutSessionV1.js`
 
 | Methode | Pfad | Auth | Rollen | Tenant | Zweck | Request-Felder | Response | Pagination | Fehlercodes | Datenschutz | Frontend | Tests |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| POST | `.../exercises/:id/sets` | JWT | alle (nur eigene Session) | Studio-Kontext | Zusätzlichen Satz anlegen | `{}` (leer) | workoutSet{...} | Nein | 400, 401, 403, 404, 409 | **P4** | **Kein Frontend-Nutzer** | Integration |
-| PATCH | `.../exercises/:id/sets/:setId` | JWT | alle (nur eigene Session) | Studio-Kontext | Ist-Werte erfassen, Revision-Guard | status, actualReps, actualWeight, actualDurationMinutes, actualDistanceKm, actualRpe, memberNote, expectedRevision | workoutSet{...} | Nein | 400 (auch `WORKOUT_RESULT_INVALID`), 401, 403, 404, 409 | **P4** | **Kein Frontend-Nutzer** | Unit+Integration |
+| POST | `.../exercises/:id/sets` | JWT | alle (nur eigene Session) | Studio-Kontext | Zusätzlichen Satz anlegen | `{}` (leer) | workoutSet{...} | Nein | 400, 401, 403, 404, 409 | **P4** | WorkoutSessionView.vue (über `utils/workoutSessionState.js`) | Integration+E2E |
+| PATCH | `.../exercises/:id/sets/:setId` | JWT | alle (nur eigene Session) | Studio-Kontext | Ist-Werte erfassen, Revision-Guard | status, actualReps, actualWeight, actualDurationMinutes, actualDistanceKm, actualRpe, memberNote, expectedRevision | workoutSet{...} | Nein | 400 (auch `WORKOUT_RESULT_INVALID`), 401, 403, 404, 409 | **P4** | WorkoutSessionView.vue (über `utils/workoutSessionState.js`) | Unit+Integration+E2E |
+
+**Korrektur Stage 5D:** die neun Zeilen oben behaupteten zuvor durchgängig „Kein Frontend-Nutzer" — das war zum Stand PR #7 (vor Stage 1B.2B2A/B) korrekt, ist aber seit `WorkoutSessionView.vue`/`MyTrainingPlanView.vue`/`WorkoutSessionHistoryView.vue` (jeweils über `utils/workoutSessionApi.js` bzw. dessen State-Wrapper `utils/workoutSessionState.js`) falsch — per `grep` gegen den Frontend-Quellcode verifiziert, nicht nur behauptet.
 
 ## Coach-Resultatzugriff — `backend/routes/workoutSessionV1.js`
 
@@ -217,4 +245,12 @@ Feedback ist **append-only**: keine PATCH-/DELETE-Route existiert. `clientFeedba
 
 ## Zusammenfassung
 
-**68 Endpunkte** über 7 Router-Module plus 3 Inline-Health-Routen, vollständig durch Quellcode-Lesen verifiziert. Auffälligster Befund: Die komplette **Workout-Session-Gruppe (10 Endpunkte, Datenschutzklasse P4, die sensibelste Datenklasse im System) hat keinen einzigen Frontend-Aufrufer.** Das Backend ist vollständig gebaut, unit- und integrationsgetestet (siehe `FITTRACK_CURRENT_STATUS.md`), aber aus der Web-Oberfläche heraus für keinen Benutzer nutzbar — das ist der zentrale, bereits im Abschlussbericht zu Stage 1B.2B1 angekündigte offene Punkt für Stage 1B.2B2.
+~~**68 Endpunkte** über 7 Router-Module plus 3 Inline-Health-Routen... Auffälligster Befund: Die komplette **Workout-Session-Gruppe (10 Endpunkte, Datenschutzklasse P4, die sensibelste Datenklasse im System) hat keinen einzigen Frontend-Aufrufer.**~~
+
+**[KORRIGIERT, Stage 5D, 2026-08-19]** Beide Aussagen waren zum Stand PR #7 (2026-07-19) zutreffend und sind es seit Stage 1B.2B2A/B, 5A1 und 5A3 nicht mehr:
+
+- **Dieser Katalog dokumentiert nach den Stage-5D-Ergänzungen 88 Endpunkte** über **11 Router-Module** (`users`, `accountRouter`, `exercises`, `workouts`, `progress`, `trainingCalendarV1`, `studioV1`, `trainingProgramV1`, `assignmentScheduleRuleV1`, `workoutSessionV1`) plus 3 Inline-Health-Routen. Ein grober Quellcode-Abgleich (`grep` über alle `router.<methode>(...)`-Aufrufe in `backend/routes/*.js`) zählt **89** tatsächliche Route-Registrierungen plus die 3 Health-Routen = **92** — die verbleibende kleine Differenz zu den 88 dokumentierten Zeilen wurde in diesem Audit nicht bis zur letzten Zeile aufgelöst (dieses Audit hat gezielt die zwei **vollständig fehlenden** Gruppen ergänzt und die eine bekannte falsche Zeilen-Behauptung korrigiert, aber keinen erschöpfenden Zeile-für-Zeile-Neuabgleich jeder bereits vorher dokumentierten Route durchgeführt).
+- Die Workout-Session-Gruppe (10 Endpunkte, weiterhin Datenschutzklasse P4) hat **seit Stage 1B.2B2A** (Member-Ausführungs-UI, PR #9) und **Stage 1B.2B2B** (Coach-Resultat-/Feedback-UI, PR #10) reale Frontend-Aufrufer — `WorkoutSessionView.vue`, `MyTrainingPlanView.vue`, `WorkoutSessionHistoryView.vue`, `CoachResultsView.vue`, `CoachSessionDetailView.vue` — siehe die korrigierten Frontend-Spalten oben.
+- **Zusätzlich in diesem Audit ergänzt:** die komplette Training-Calendar-Gruppe (Stage 5A1/5A2, 7 Endpunkte) und die Assignment-Schedule-Rules-Gruppe (Stage 5A3, 3 Endpunkte) fehlten zuvor vollständig in diesem Katalog.
+
+Volle Details und Methodik: `docs/STAGE_5D_CURRENT_STATE_AUDIT.md` Abschnitt 16.

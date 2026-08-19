@@ -325,6 +325,42 @@
 > echten Benutzerkonten gelöscht.
 >
 > ---
+>
+> **Nachtrag (2026-08-09, PR #29 — Rate-Limiter-Reihenfolge behoben):** Die
+> oben empfohlene kleine Backend-Korrektur ist umgesetzt: `authenticate`
+> läuft jetzt in `accountRouter.js` vor allen drei betroffenen Limitern,
+> belegt durch neue Route-Level-Tests
+> (`accountRateLimitIsolation.test.js`), die den Defekt vor dem Fix
+> reproduzierten. Stage 5C2 wurde danach mit `main` synchronisiert, der
+> dadurch gegenstandslose `KNOWN DEFECT`-Unit-Test entfernt. **Empfehlung
+> für die unmittelbar nächste Phase:** siehe folgenden Nachtrag (Stage 5D).
+>
+> ---
+>
+> **Nachtrag (2026-08-19, Stage 5D Current-State Audit):** Vollständiges,
+> rein dokumentarisches Audit nach Stage 5C2 (siehe
+> `docs/STAGE_5D_CURRENT_STATE_AUDIT.md`) — keine neue Produktfunktion,
+> keine Migration, keine Dependency-Änderung. Bestätigt: die weiter unten
+> in diesem Dokument gelistete Aussage "Kein Recht-auf-Löschung-/
+> Anonymisierungspfad für Benutzer-, Trainings- oder Feedbackdaten" (Abschnitt
+> "Weiterhin nicht blockierend, aber vormerken") ist seit Stage 5C1/5C2
+> **nicht mehr zutreffend** und dort entsprechend korrigiert. **Neuer Fund:**
+> ein High-Severity-`npm audit`-Advisory im Frontend (`nanoid@3.3.17`,
+> transitiv über `postcss`, GHSA-2v37-7h3g-55p8) — bewusst nicht behoben
+> (ausserhalb des Scopes eines reinen Doku-Audits). **Empfehlung für die
+> unmittelbar nächste Phase, in dieser Reihenfolge:** (1) ein kleiner,
+> gezielter npm-Security-Hotfix für das neue `nanoid`-Advisory, analog zum
+> bereits etablierten Muster `hotfix/npm-security-advisories-2026-08`; (2)
+> danach weiterhin die seit mehreren Nachträgen zurückgestellte
+> "Backup-/DB-Härtung"-Fortsetzung (Stage 2B2B echter Bucket, getrennte
+> DB-Rollen, Scheduler/Key-Rotation) als grösste verbleibende
+> Produktions-Blocker; (3) funktional, falls stattdessen priorisiert:
+> Studio-Membership-Removal-UI und/oder ein Datenexport-Feature, jeweils
+> klein und unabhängig. Stage 2B2B bleibt weiterhin **Deferred until first
+> customer / production deployment**; keine Cloud-Infrastruktur
+> eingerichtet.
+>
+> ---
 
 Basierend auf `FITTRACK_CURRENT_STATUS.md` (Stand PR #7) sowie den seither
 integrierten Phasen Stage 1B.2B2A (PR #9), Stage 1B.2B2B (PR #10, Coach-
@@ -427,8 +463,11 @@ ab, dies vor den verbleibenden operativen Punkten zu priorisieren.
   Weiterhin unverdrahtet.
 - **Login-Timing-Seitenkanal** (Konto-Enumeration über `bcrypt.compare`-
   Timing).
-- **Kein Recht-auf-Löschung-/Anonymisierungspfad** für Benutzer-,
-  Trainings- oder Feedbackdaten.
+- ~~Kein Recht-auf-Löschung-/Anonymisierungspfad für Benutzer-, Trainings-
+  oder Feedbackdaten~~ — **[KORRIGIERT, Stage 5C1/5C2]** seit
+  `POST /api/account/deletion-request` (Backend) und der Profil-Danger-Zone
+  (Frontend) vollständig implementiert; siehe
+  `docs/STAGE_5D_CURRENT_STATE_AUDIT.md` Abschnitt 11.
 - **Kein Bounce-/Complaint-Handling und keine Zustell-Warteschlange** für
   den neuen SMTP-Versand (bewusst außerhalb des Stage-2A-Umfangs, siehe
   dessen „Bekannte Einschränkungen").
