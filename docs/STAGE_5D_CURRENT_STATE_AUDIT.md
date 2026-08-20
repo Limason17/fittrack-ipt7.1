@@ -121,7 +121,34 @@ Es besteht **keine** Grundlage für die Behauptung, produktive externe Infrastru
 - **Falsch/veraltet:** Die Spalte "Frontend" behauptet für die gesamte Workout-Session-/Coach-Resultat-Gruppe (10 Endpunkte) durchgängig "Kein Frontend-Nutzer" — das war zum Stand PR #7 korrekt, ist aber seit Stage 1B.2B2A (Member-UI, PR #9) und Stage 1B.2B2B (Coach-Resultat-UI, PR #10) **falsch**: `WorkoutSessionView.vue`, `MyTrainingPlanView.vue`, `WorkoutSessionHistoryView.vue`, `CoachResultsView.vue`, `CoachSessionDetailView.vue` rufen `utils/workoutSessionApi.js` tatsächlich auf (per `grep` gegen den Quellcode verifiziert, nicht nur behauptet).
 - Die abschliessende "Zusammenfassung" (68 Endpunkte, "keine Web-Oberfläche für die sensibelste Datenklasse") war entsprechend ebenfalls veraltet.
 
-Alle drei Punkte sind in `docs/FITTRACK_API_CATALOG.md` in diesem Audit korrigiert (siehe Abschnitt 26/`docs`-Diff) — reine Dokumentationskorrektur, keine API geändert.
+Alle drei Punkte wurden in `docs/FITTRACK_API_CATALOG.md` korrigiert. Ein daraufhin durchgeführter grober `grep`-Abgleich (`router.<methode>(...)`-Aufrufe zählen) ergab **92 rohe Route-Registrierungen gegenüber 88 katalogisierten Zeilen** — eine damals transparent berichtete, aber nicht aufgelöste Differenz von 4. Diese Differenz wurde in einer anschliessenden Merge-Gate-Prüfung (Abschnitt 16.1) vollständig und deterministisch aufgelöst.
+
+### 16.1 Merge-Gate-Nachtrag: deterministischer Route-vs-Katalog-Abgleich (2026-08-19)
+
+**Methodik:** ein Node-Skript lädt jede der 11 Router-Factories aus `backend/routes/*.js` direkt (mit minimalen No-op-Stubs für verpflichtende `rateLimiters`/`sessionService`-Parameter, ohne je eine Datenbankverbindung oder Middleware tatsächlich auszuführen) und liest den echten Express-`Router.stack` jedes gebauten Router-Objekts aus — `layer.route.path` + `layer.route.methods` pro registrierter Route, keine Text-/Regex-Zählung von Quellcode-Zeilen. Jede Route wird mit ihrem tatsächlichen `app.use(prefix, router)`-Mount-Präfix aus `startup/app.js` (direkt gelesen, nicht neu hergeleitet) zum effektiven Pfad zusammengesetzt.
+
+**Ergebnis:** **92 rohe Route-Registrierungen = 92 eindeutige (Methode+Pfad)-Kombinationen — keine einzige Duplikat-Registrierung.** Alle 11 Router sind nachweislich gemountet (direkt aus `startup/app.js` zitiert, Abschnitt 5); es existiert kein toter/nicht gemounteter Router und kein Test-only-Router unter `backend/routes/`.
+
+**Ursache der Differenz 92 vs. 88 (Abschnitt 16):** kein Zählfehler, keine Aliase, keine Mehrfachmethoden auf derselben Route, keine automatischen Express-Nebenwirkungen (HEAD/OPTIONS werden von Express automatisch aus registrierten GET-Routen abgeleitet und sind korrekt **nicht** als eigene Katalogzeilen zu führen) — sondern **exakt vier real fehlende, produktiv erreichbare Endpunkte**, beide bereits vor Stage 5A1/5A3 existierend und schlicht nie in den Katalog aufgenommen:
+
+| # | Methode + Pfad | Router-Datei | Seit | Warum übersehen |
+|---|---|---|---|---|
+| 1 | `POST /api/auth/refresh` | `authSessionRouter.js` | Stage 3B2 | ganzer Abschnitt "Auth Session" fehlte im Katalog |
+| 2 | `POST /api/auth/logout` | `authSessionRouter.js` | Stage 3B2 | s.o. |
+| 3 | `POST /api/auth/logout-all` | `authSessionRouter.js` | Stage 3B2 | s.o. |
+| 4 | `POST /api/v1/studios/:studioId/invitations/:invitationId/resend` | `studioV1.js` | Stage 3C | Abschnitt "Invitations" existierte bereits, diese eine Zeile fehlte |
+
+**Kategorisierung aller 92 Routen** (verbindlich, keine ungeklärten Fälle):
+
+- **A. korrekt dokumentiert:** 88 (alle vor dieser Prüfung bereits katalogisierten Zeilen wurden gegen die 92er-Ground-Truth-Liste einzeln abgeglichen — jede einzelne bildet eine reale, existierende Route ab, keine Karteileiche gefunden).
+- **B. fehlte im Katalog:** 4 (Tabelle oben) — jetzt ergänzt, siehe unten.
+- **C. bewusst nicht separat zu katalogisieren:** 0 — die drei Health-Routen sind bereits als eigener Abschnitt katalogisiert, kein Endpunkt wurde als "zu trivial" ausgeklammert.
+- **D. Alias-/Doppelregistrierung:** 0 — das Skript bestätigt keine einzige doppelte (Methode+Pfad)-Kombination.
+- **E. tote/nicht gemountete Route:** 0 — alle 11 Router sind aktiv gemountet.
+
+**Korrektur in `docs/FITTRACK_API_CATALOG.md`:** neuer Abschnitt „Auth Session" (`/api/auth/refresh`, `/logout`, `/logout-all`, Verträge direkt aus `authSessionRouter.js`/`rateLimiting/rateLimitPolicies.js` abgeleitet — Rate-Limits 30/5min/IP bzw. 10/15min/User, CSRF-/Origin-Pflicht, `Cache-Control: no-store`) sowie eine neue Zeile für `.../invitations/:invitationId/resend` im bestehenden Abschnitt „Invitations" (Vertrag aus `studioV1.js`/`studioService.js#resendInvitation` abgeleitet, inkl. aller vier realen `409`-Fehlercodes). Keine Verträge erfunden — jedes Feld/jeder Fehlercode stammt direkt aus dem gelesenen Service-/Router-Code.
+
+**Endresultat:** Katalog dokumentiert jetzt **exakt 92 Zeilen** = **92 tatsächlich gemountete Endpunkte**. Differenz: **0**.
 
 ## 17. Migrationen
 
